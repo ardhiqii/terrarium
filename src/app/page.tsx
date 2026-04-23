@@ -1,65 +1,120 @@
-import Image from "next/image";
+import { getAllContent, getAllTags } from '@/lib/content'
+import ContentCard from '@/components/ContentCard'
+import GardenLogo from '@/components/GardenLogo'
+import Link from 'next/link'
+import type { Metadata } from 'next'
 
-export default function Home() {
+export const metadata: Metadata = {
+  title: "Ardhiqi's Garden",
+  description: "Aufa's digital garden — notes, projects, and ideas in various states of growth.",
+}
+
+export default function HomePage() {
+  const allContent = getAllContent()
+  const tags = getAllTags()
+
+  const noteCount = allContent.filter((i) => i.type === 'note').length
+  const projectCount = allContent.filter((i) => i.type === 'project').length
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <div className="max-w-4xl mx-auto px-4 sm:px-6">
+
+      {/* ── Hero ── */}
+      <section className="flex flex-col items-center text-center pt-20 pb-16">
+        <GardenLogo markSize={80} className="mb-6" />
+
+        <p
+          className="text-base leading-relaxed max-w-md mt-4"
+          style={{ color: 'var(--muted)' }}
+        >
+          I&apos;m <strong style={{ color: 'var(--foreground)' }}>Aufa</strong> — this is where I pour
+          out ideas, document things I&apos;ve built, and think out loud.
+          Notes are messy. Projects are real. Everything connects.
+        </p>
+
+        {/* Stats */}
+        <div className="flex items-center gap-3 mt-8 flex-wrap justify-center">
+          <Link
+            href="/notes"
+            className="flex items-center gap-2 px-4 py-2 rounded-full border text-sm transition-all hover:shadow-sm"
+            style={{ background: 'var(--card-bg)', borderColor: 'var(--card-border)' }}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+            <span
+              className="w-2 h-2 rounded-full"
+              style={{ background: 'var(--note-color)' }}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+            <span style={{ color: 'var(--muted)' }}>{noteCount} notes</span>
+          </Link>
+
+          <Link
+            href="/projects"
+            className="flex items-center gap-2 px-4 py-2 rounded-full border text-sm transition-all hover:shadow-sm"
+            style={{ background: 'var(--card-bg)', borderColor: 'var(--card-border)' }}
           >
-            Documentation
-          </a>
+            <span
+              className="w-2 h-2 rounded-full"
+              style={{ background: 'var(--project-color)' }}
+            />
+            <span style={{ color: 'var(--muted)' }}>{projectCount} projects</span>
+          </Link>
+
+          <Link
+            href="/tags"
+            className="flex items-center gap-2 px-4 py-2 rounded-full border text-sm transition-all hover:shadow-sm"
+            style={{ background: 'var(--card-bg)', borderColor: 'var(--card-border)' }}
+          >
+            <span style={{ color: 'var(--muted)' }}>{tags.length} tags</span>
+          </Link>
+
+          <Link
+            href="/graph"
+            className="flex items-center gap-2 px-4 py-2 rounded-full border text-sm transition-all hover:shadow-sm"
+            style={{ background: 'var(--card-bg)', borderColor: 'var(--card-border)' }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ color: 'var(--muted)' }}>
+              <circle cx="5" cy="12" r="2.5" />
+              <circle cx="19" cy="5" r="2.5" />
+              <circle cx="19" cy="19" r="2.5" />
+              <line x1="7.5" y1="12" x2="16.5" y2="6" />
+              <line x1="7.5" y1="12" x2="16.5" y2="18" />
+            </svg>
+            <span style={{ color: 'var(--muted)' }}>explore graph</span>
+          </Link>
         </div>
-      </main>
+      </section>
+
+      {/* Divider */}
+      <div className="border-t" style={{ borderColor: 'var(--border)' }} />
+
+      {/* ── Feed ── */}
+      <section className="py-12">
+        <h2
+          className="text-xs font-semibold uppercase tracking-widest mb-6"
+          style={{ color: 'var(--muted)', letterSpacing: '0.15em' }}
+        >
+          Recent
+        </h2>
+
+        {allContent.length === 0 ? (
+          <div
+            className="rounded-xl border border-dashed p-12 text-center"
+            style={{ borderColor: 'var(--border)' }}
+          >
+            <p className="font-medium mb-1">The garden is empty</p>
+            <p className="text-sm" style={{ color: 'var(--muted)' }}>
+              Add your first note to <code className="text-xs">content/notes/</code> or project to{' '}
+              <code className="text-xs">content/projects/</code>
+            </p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {allContent.map((item) => (
+              <ContentCard key={item.href} item={item} />
+            ))}
+          </div>
+        )}
+      </section>
+
     </div>
-  );
+  )
 }

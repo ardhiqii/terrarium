@@ -1,0 +1,78 @@
+---
+title: "Digital Garden"
+date: "2026-04-23"
+description: "Building a personal knowledge publishing site with Next.js, MDX, backlinks, and a graph view."
+tags: ["next.js", "web", "writing", "tools"]
+type: "project"
+---
+
+This site is the project. A digital garden built to explore how personal knowledge can be published and connected.
+
+## Goals
+
+- Write in plain Markdown/MDX files — no CMS, no database
+- Connect ideas with `[[wikilinks]]` and show backlinks
+- Visualize the whole thing as a force-directed graph
+- Keep it fast, readable, and easy to maintain
+
+## Tech stack
+
+| Layer | Choice |
+|---|---|
+| Framework | Next.js 16 (App Router) |
+| Styling | Tailwind CSS v4 |
+| Content | MDX files + gray-matter |
+| Graph | react-force-graph-2d |
+| Hosting | Vercel |
+
+## How wikilinks work
+
+When you write `[[Graph View]]` in any note, the garden:
+
+1. Scans all content files at build time
+2. Resolves the title to a slug and href
+3. Transforms the `[[...]]` syntax into a proper `<a>` tag
+4. Records the reverse link (backlink) on the target page
+
+This means every note that is linked to shows a **"Linked from"** section at the bottom — like a bibliography in reverse.
+
+## Content structure
+
+```
+content/
+├── notes/          # Short ideas, observations
+│   └── *.mdx
+└── projects/       # Longer writeups
+    └── *.mdx
+```
+
+Each file uses YAML frontmatter:
+
+```yaml
+---
+title: "My Idea"
+date: "2026-04-23"
+tags: ["design", "web"]
+description: "A short summary"
+type: "note"
+---
+```
+
+## What I learned
+
+The hardest part was the wikilink resolver. You need to handle:
+
+- Titles that don't exactly match slugs (`"My Cool Note"` → `my-cool-note`)
+- Case insensitivity
+- Links to notes that don't exist yet (dead links)
+
+The solution was to build a `titleToFile` lookup at build time and fall back to a `#` anchor for unresolved links.
+
+## Next steps
+
+- RSS feed
+- Full-text search with better ranking
+- "Recently updated" vs "recently created" distinction
+- Note maturity indicators (seedling / budding / evergreen)
+
+See also: [[What Is a Digital Garden?]], [[Graph View]]
