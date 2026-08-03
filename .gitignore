@@ -49,3 +49,6 @@ reports/
 # skills-lock.json IS committed so the skill set can be reinstalled.
 .agents/
 .claude/
+
+# sync layer: local SQLite database (src/lib/sync/sqlite-store.ts)
+/.data/
