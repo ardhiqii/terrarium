@@ -239,11 +239,9 @@ export const GARDEN_ITEMS: ItemDef[] = [
  */
 export const COMMIT_ITEMS: ItemDef[] = [
   {
-    // `ItemId` (types.ts) is frozen outside of `UnlockContext` for this task,
-    // and only ever appears as `ItemDef.id`'s type, so widening it would not
-    // require updating a single consumer. Left untouched anyway, per the
-    // letter of the freeze; the ids below are asserted instead of adding to
-    // the union. Flagged in the T9 report as a place worth revisiting.
+    // These three ids are proper members of `ItemId` in types.ts. They were
+    // briefly type-asserted while that union was frozen; the union has since
+    // been widened and the assertions removed.
     id: 'ember-trail',
     name: 'Ember Trail',
     requirement: `${EMBER_TRAIL_TARGET_DAYS} consecutive days with a commit`,
