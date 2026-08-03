@@ -1,0 +1,198 @@
+{
+  "login": "ardhiqii",
+  "repos": [
+    {
+      "name": "notenext",
+      "language": "TypeScript",
+      "createdAt": "2025-11-03T15:22:50Z",
+      "pushedAt": "2026-08-03T00:16:27Z",
+      "sizeKb": 629,
+      "fork": false
+    },
+    {
+      "name": "getting-better-cp",
+      "language": "Java",
+      "createdAt": "2026-03-16T08:33:06Z",
+      "pushedAt": "2026-07-09T15:34:51Z",
+      "sizeKb": 27,
+      "fork": false
+    },
+    {
+      "name": "leetcode",
+      "language": "Java",
+      "createdAt": "2025-02-21T04:34:05Z",
+      "pushedAt": "2026-06-18T07:46:38Z",
+      "sizeKb": 325,
+      "fork": false
+    },
+    {
+      "name": "dev-dex",
+      "language": "TypeScript",
+      "createdAt": "2026-04-27T03:49:45Z",
+      "pushedAt": "2026-05-19T10:38:56Z",
+      "sizeKb": 146,
+      "fork": false
+    },
+    {
+      "name": "ardhiqii",
+      "language": null,
+      "createdAt": "2026-02-28T23:41:54Z",
+      "pushedAt": "2026-04-14T15:55:11Z",
+      "sizeKb": 8,
+      "fork": false
+    },
+    {
+      "name": "GoatStore",
+      "language": "TypeScript",
+      "createdAt": "2025-08-20T03:25:19Z",
+      "pushedAt": "2025-11-28T08:28:20Z",
+      "sizeKb": 3288,
+      "fork": false
+    },
+    {
+      "name": "social",
+      "language": "Go",
+      "createdAt": "2025-03-25T08:19:28Z",
+      "pushedAt": "2025-09-04T06:59:05Z",
+      "sizeKb": 123,
+      "fork": false
+    },
+    {
+      "name": "vue-course",
+      "language": "Vue",
+      "createdAt": "2024-09-16T07:07:47Z",
+      "pushedAt": "2025-07-16T01:55:49Z",
+      "sizeKb": 1640,
+      "fork": false
+    },
+    {
+      "name": "game-store",
+      "language": "C#",
+      "createdAt": "2025-03-04T05:05:27Z",
+      "pushedAt": "2025-03-04T06:38:18Z",
+      "sizeKb": 4,
+      "fork": false
+    },
+    {
+      "name": "discord-clone",
+      "language": "TypeScript",
+      "createdAt": "2024-05-25T19:39:29Z",
+      "pushedAt": "2024-09-05T07:07:01Z",
+      "sizeKb": 650,
+      "fork": false
+    },
+    {
+      "name": "Sportify",
+      "language": "JavaScript",
+      "createdAt": "2024-02-18T07:40:32Z",
+      "pushedAt": "2024-08-20T02:40:32Z",
+      "sizeKb": 2035,
+      "fork": false
+    },
+    {
+      "name": "cmblabs-frontend-internship-test",
+      "language": "JavaScript",
+      "createdAt": "2024-01-18T02:12:02Z",
+      "pushedAt": "2024-01-18T02:19:07Z",
+      "sizeKb": 665,
+      "fork": false
+    },
+    {
+      "name": "twitter-clone",
+      "language": "TypeScript",
+      "createdAt": "2023-11-22T04:51:03Z",
+      "pushedAt": "2023-11-22T04:55:57Z",
+      "sizeKb": 96,
+      "fork": false
+    },
+    {
+      "name": "Restaurants",
+      "language": "TypeScript",
+      "createdAt": "2023-09-05T13:26:57Z",
+      "pushedAt": "2023-09-07T04:08:57Z",
+      "sizeKb": 60,
+      "fork": false
+    },
+    {
+      "name": "pokedex",
+      "language": "JavaScript",
+      "createdAt": "2023-06-25T01:59:05Z",
+      "pushedAt": "2023-06-25T04:37:07Z",
+      "sizeKb": 168,
+      "fork": false
+    },
+    {
+      "name": "model-api",
+      "language": "Python",
+      "createdAt": "2023-06-09T17:21:42Z",
+      "pushedAt": "2023-06-12T14:37:58Z",
+      "sizeKb": 97553,
+      "fork": false
+    },
+    {
+      "name": "BidTrade",
+      "language": "JavaScript",
+      "createdAt": "2023-04-04T21:04:31Z",
+      "pushedAt": "2023-06-09T09:14:31Z",
+      "sizeKb": 1007,
+      "fork": false
+    },
+    {
+      "name": "talent-growth-fe",
+      "language": "TypeScript",
+      "createdAt": "2023-04-13T17:48:45Z",
+      "pushedAt": "2023-04-13T17:48:47Z",
+      "sizeKb": 16,
+      "fork": false
+    },
+    {
+      "name": "talent-growth-be",
+      "language": "JavaScript",
+      "createdAt": "2023-04-13T16:49:41Z",
+      "pushedAt": "2023-04-13T17:40:03Z",
+      "sizeKb": 78,
+      "fork": false
+    },
+    {
+      "name": "ExpenseTracker",
+      "language": "JavaScript",
+      "createdAt": "2023-03-25T01:30:58Z",
+      "pushedAt": "2023-04-02T22:08:10Z",
+      "sizeKb": 204,
+      "fork": false
+    },
+    {
+      "name": "Meals-App",
+      "language": "JavaScript",
+      "createdAt": "2023-02-07T08:20:54Z",
+      "pushedAt": "2023-02-25T04:57:20Z",
+      "sizeKb": 458,
+      "fork": false
+    },
+    {
+      "name": "indonesia-future",
+      "language": "JavaScript",
+      "createdAt": "2022-08-22T09:57:19Z",
+      "pushedAt": "2022-09-09T10:37:45Z",
+      "sizeKb": 24510,
+      "fork": false
+    },
+    {
+      "name": "WeatherApp",
+      "language": "JavaScript",
+      "createdAt": "2021-12-26T12:03:43Z",
+      "pushedAt": "2022-09-04T16:45:22Z",
+      "sizeKb": 1713,
+      "fork": false
+    },
+    {
+      "name": "dashboard",
+      "language": "JavaScript",
+      "createdAt": "2022-06-17T12:17:47Z",
+      "pushedAt": "2022-09-04T16:42:50Z",
+      "sizeKb": 1027,
+      "fork": false
+    }
+  ],
+  "fetchedAt": "2026-08-03T00:27:50.673Z"
+}

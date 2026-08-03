@@ -13,11 +13,11 @@ export default function GraphPage() {
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-16">
       <div className="mb-8">
-        <h1 className="text-2xl font-semibold mb-2" style={{ fontFamily: 'Inter, sans-serif' }}>
+        <h1 className="font-ui text-2xl font-semibold mb-2">
           Graph
         </h1>
-        <p className="text-sm" style={{ color: 'var(--muted)' }}>
-          {graphData.nodes.length} nodes · {graphData.links.length} connections. Click a node to navigate.
+        <p className="font-ui text-sm" style={{ color: 'var(--ink-muted)' }}>
+          {graphData.nodes.length} nodes, {graphData.links.length} connections. Click a node to navigate.
         </p>
       </div>
 

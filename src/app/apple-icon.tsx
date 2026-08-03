@@ -3,7 +3,64 @@ import { ImageResponse } from 'next/og'
 export const size = { width: 180, height: 180 }
 export const contentType = 'image/png'
 
+const ACCENT = '#2f4bd4'
+const PAPER = '#f1f1ee'
+
+/**
+ * iOS home-screen icon. Uses the 11x11 grid from `GardenMark`, not the
+ * favicon's reduced 7x7, because at 180px there is plenty of room for the
+ * detail and it should match the site logo exactly.
+ */
+
+const GRID = 11
+
+// 'p' paper · 'm' muted paper · '.' background
+// Matches GardenMark's grid exactly.
+const PIXELS = [
+  '....pp.....',
+  '....pp.....',
+  '.....p.....',
+  '..mm.p.pp..',
+  '.mmmmppppp.',
+  '..mmmppp...',
+  '.....p.....',
+  '.....p.....',
+  '.....p.....',
+  '....ppp....',
+  '..mmmmmmm..',
+]
+
+const FILL: Record<string, string> = { p: PAPER, m: PAPER }
+const OPACITY: Record<string, number> = { p: 1, m: 0.65 }
+
 export default function AppleIcon() {
+  const cells: React.ReactElement[] = []
+  for (let y = 0; y < PIXELS.length; y++) {
+    const row = PIXELS[y]
+    let x = 0
+    while (x < row.length) {
+      const ch = row[x]
+      if (ch === '.') {
+        x++
+        continue
+      }
+      let run = 1
+      while (x + run < row.length && row[x + run] === ch) run++
+      cells.push(
+        <rect
+          key={`${x}-${y}`}
+          x={x}
+          y={y}
+          width={run}
+          height={1}
+          fill={FILL[ch]}
+          opacity={OPACITY[ch]}
+        />
+      )
+      x += run
+    }
+  }
+
   return new ImageResponse(
     (
       <div
@@ -13,15 +70,11 @@ export default function AppleIcon() {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          background: 'transparent',
+          background: ACCENT,
         }}
       >
-        <svg width="140" height="168" viewBox="0 0 40 48" fill="none">
-          <path d="M10 43 Q20 41 30 43" stroke="#7c5233" strokeWidth="2" strokeLinecap="round" />
-          <line x1="20" y1="43" x2="20" y2="9" stroke="#4a7c59" strokeWidth="2" strokeLinecap="round" />
-          <path d="M20 28 C20 28 4 26 4 16 C4 9 13 10 20 24" fill="#4a7c59" />
-          <path d="M20 22 C20 22 36 20 36 10 C36 3 27 4 20 18" fill="#7cbf8e" />
-          <circle cx="20" cy="8" r="3" fill="#4a7c59" />
+        <svg width="150" height="150" viewBox={`0 0 ${GRID} ${GRID}`}>
+          {cells}
         </svg>
       </div>
     ),

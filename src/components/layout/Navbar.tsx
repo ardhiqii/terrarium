@@ -5,11 +5,14 @@ import { usePathname } from 'next/navigation'
 import { useState } from 'react'
 import ThemeToggle from './ThemeToggle'
 import GardenMark from '../GardenMark'
+import { siteConfig } from '@/lib/site-config'
 
 const NAV_LINKS = [
   { href: '/', label: 'Home' },
   { href: '/notes', label: 'Notes' },
   { href: '/projects', label: 'Projects' },
+  { href: '/companions', label: 'Companions' },
+  { href: '/garden', label: 'Garden' },
   { href: '/graph', label: 'Graph' },
   { href: '/search', label: 'Search' },
 ]
@@ -21,7 +24,7 @@ export default function Navbar() {
   return (
     <header
       className="sticky top-0 z-50 border-b"
-      style={{ background: 'var(--background)', borderColor: 'var(--border)' }}
+      style={{ background: 'var(--paper)', borderColor: 'var(--rule)' }}
     >
       <div className="max-w-4xl mx-auto px-4 sm:px-6">
         <div className="flex items-center justify-between h-14">
@@ -32,10 +35,14 @@ export default function Navbar() {
           >
             <GardenMark size={24} />
             <span
-              className="text-sm font-semibold tracking-widest uppercase"
-              style={{ fontFamily: 'Inter, sans-serif', letterSpacing: '0.1em' }}
+              className="font-ui text-sm font-semibold tracking-widest uppercase"
+              style={{ letterSpacing: '0.1em' }}
             >
-              ardhiqi<span style={{ color: 'var(--note-color)' }}>·</span>garden
+              {siteConfig.wordmark.lead}
+              <span style={{ color: 'var(--accent)' }}>
+                {siteConfig.wordmark.separator}
+              </span>
+              {siteConfig.wordmark.trail}
             </span>
           </Link>
 
@@ -50,10 +57,10 @@ export default function Navbar() {
                 <Link
                   key={link.href}
                   href={link.href}
-                  className="px-3 py-1.5 rounded-md text-sm transition-colors"
+                  className="font-ui px-3 py-1.5 text-sm transition-colors"
                   style={{
-                    color: isActive ? 'var(--foreground)' : 'var(--muted)',
-                    background: isActive ? 'var(--tag-bg)' : 'transparent',
+                    color: isActive ? 'var(--ink)' : 'var(--ink-muted)',
+                    background: isActive ? 'var(--paper-raised)' : 'transparent',
                     fontWeight: isActive ? 500 : 400,
                   }}
                 >
@@ -71,9 +78,11 @@ export default function Navbar() {
             <ThemeToggle />
             <button
               onClick={() => setOpen(!open)}
-              className="p-1.5 rounded-md"
-              style={{ color: 'var(--muted)' }}
+              className="p-1.5"
+              style={{ color: 'var(--ink-muted)' }}
               aria-label="Toggle menu"
+              aria-expanded={open}
+              aria-controls="mobile-nav"
             >
               {open ? (
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -93,7 +102,7 @@ export default function Navbar() {
 
         {/* Mobile menu */}
         {open && (
-          <nav className="sm:hidden pb-3 flex flex-col gap-1">
+          <nav id="mobile-nav" className="sm:hidden pb-3 flex flex-col gap-1">
             {NAV_LINKS.map((link) => {
               const isActive =
                 link.href === '/'
@@ -104,10 +113,10 @@ export default function Navbar() {
                   key={link.href}
                   href={link.href}
                   onClick={() => setOpen(false)}
-                  className="px-3 py-2 rounded-md text-sm"
+                  className="font-ui px-3 py-2 text-sm"
                   style={{
-                    color: isActive ? 'var(--foreground)' : 'var(--muted)',
-                    background: isActive ? 'var(--tag-bg)' : 'transparent',
+                    color: isActive ? 'var(--ink)' : 'var(--ink-muted)',
+                    background: isActive ? 'var(--paper-raised)' : 'transparent',
                     fontWeight: isActive ? 500 : 400,
                   }}
                 >

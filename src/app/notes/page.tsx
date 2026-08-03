@@ -13,22 +13,22 @@ export default function NotesPage() {
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-16">
       <div className="mb-10">
-        <h1 className="text-2xl font-semibold mb-2" style={{ fontFamily: 'Inter, sans-serif' }}>
+        <h1 className="font-ui text-2xl font-semibold mb-2">
           Notes
         </h1>
-        <p className="text-sm" style={{ color: 'var(--muted)' }}>
-          {notes.length} {notes.length === 1 ? 'note' : 'notes'} — short ideas, observations, and learnings.
+        <p className="font-ui text-sm" style={{ color: 'var(--ink-muted)' }}>
+          {notes.length} {notes.length === 1 ? 'note' : 'notes'}. Short ideas, observations, and learnings.
         </p>
       </div>
 
       {notes.length === 0 ? (
-        <div className="rounded-xl border border-dashed p-10 text-center" style={{ borderColor: 'var(--border)' }}>
-          <p className="text-sm" style={{ color: 'var(--muted)' }}>
-            No notes yet. Add an MDX file to <code className="text-xs">content/notes/</code>
+        <div className="border border-dashed p-10 text-center" style={{ borderColor: 'var(--rule)' }}>
+          <p className="font-ui text-sm" style={{ color: 'var(--ink-muted)' }}>
+            No notes yet. Add an MDX file to <code className="font-data text-xs">content/notes/</code>
           </p>
         </div>
       ) : (
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col divide-y divide-[color:var(--rule)]">
           {notes.map((item) => (
             <ContentCard key={item.href} item={item} />
           ))}

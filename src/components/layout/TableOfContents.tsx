@@ -9,8 +9,8 @@ export default function TableOfContents({ entries }: TocProps) {
   if (entries.length < 2) return null
 
   return (
-    <nav className="text-sm">
-      <p className="font-medium mb-3 uppercase tracking-wider text-xs" style={{ color: 'var(--muted)' }}>
+    <nav className="font-ui text-sm">
+      <p className="font-data font-medium mb-3 uppercase tracking-wider text-xs" style={{ color: 'var(--ink-muted)' }}>
         On this page
       </p>
       <ul className="space-y-1.5">
@@ -22,7 +22,7 @@ export default function TableOfContents({ entries }: TocProps) {
             <Link
               href={`#${entry.id}`}
               className="block hover:opacity-80 transition-opacity leading-snug"
-              style={{ color: 'var(--muted)' }}
+              style={{ color: 'var(--ink-muted)' }}
             >
               {entry.text}
             </Link>

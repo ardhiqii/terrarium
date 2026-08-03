@@ -1,4 +1,5 @@
 import GardenMark from './GardenMark'
+import { siteConfig } from '@/lib/site-config'
 
 interface GardenLogoProps {
   /** Size of the mark in px */
@@ -19,14 +20,17 @@ export default function GardenLogo({
       <GardenMark size={markSize} />
       {showName && (
         <span
-          className="text-sm font-semibold tracking-widest uppercase"
+          className="font-ui text-sm font-semibold tracking-widest uppercase"
           style={{
-            fontFamily: 'Inter, sans-serif',
             letterSpacing: '0.12em',
-            color: 'var(--foreground)',
+            color: 'var(--ink)',
           }}
         >
-          ardhiqi<span style={{ color: 'var(--note-color)' }}>·</span>garden
+          {siteConfig.wordmark.lead}
+          <span style={{ color: 'var(--accent)' }}>
+            {siteConfig.wordmark.separator}
+          </span>
+          {siteConfig.wordmark.trail}
         </span>
       )}
     </div>

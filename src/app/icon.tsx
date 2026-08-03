@@ -3,7 +3,55 @@ import { ImageResponse } from 'next/og'
 export const size = { width: 32, height: 32 }
 export const contentType = 'image/png'
 
+// ImageResponse renders via satori, which cannot read CSS custom properties,
+// so the tokens from globals.css are inlined as literals.
+const ACCENT = '#2f4bd4'
+const PAPER = '#f1f1ee'
+
+/**
+ * Favicon: the same pixel sprout as `GardenMark`, reduced from 11x11 to 7x7.
+ *
+ * Same mark and same language as the site logo. Only the resolution changes,
+ * because 11 cells across a 16px tab is 1.4px per cell, which is sub-pixel and
+ * turns to mush. Seven cells give roughly 2.3px each and stay crisp.
+ *
+ * Paper on accent rather than ink on paper, since a pale square with a dark
+ * mark is what made the earlier favicon read as a smudge, and this holds
+ * contrast against both light and dark browser chrome.
+ */
+
+const GRID = 7
+
+// 'p' paper · '.' background
+const PIXELS = [
+  '..p.p..',
+  '.ppppp.',
+  '.ppppp.',
+  '...p...',
+  '...p...',
+  '...p...',
+  '..ppp..',
+]
+
 export default function Icon() {
+  const cells: React.ReactElement[] = []
+  for (let y = 0; y < PIXELS.length; y++) {
+    const row = PIXELS[y]
+    let x = 0
+    while (x < row.length) {
+      if (row[x] !== 'p') {
+        x++
+        continue
+      }
+      let run = 1
+      while (x + run < row.length && row[x + run] === 'p') run++
+      cells.push(
+        <rect key={`${x}-${y}`} x={x} y={y} width={run} height={1} fill={PAPER} />
+      )
+      x += run
+    }
+  }
+
   return new ImageResponse(
     (
       <div
@@ -13,25 +61,11 @@ export default function Icon() {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          background: 'transparent',
+          background: ACCENT,
         }}
       >
-        <svg
-          width="28"
-          height="34"
-          viewBox="0 0 40 48"
-          fill="none"
-        >
-          {/* Ground */}
-          <path d="M10 43 Q20 41 30 43" stroke="#7c5233" strokeWidth="2" strokeLinecap="round" />
-          {/* Stem */}
-          <line x1="20" y1="43" x2="20" y2="9" stroke="#4a7c59" strokeWidth="2" strokeLinecap="round" />
-          {/* Left leaf */}
-          <path d="M20 28 C20 28 4 26 4 16 C4 9 13 10 20 24" fill="#4a7c59" />
-          {/* Right leaf */}
-          <path d="M20 22 C20 22 36 20 36 10 C36 3 27 4 20 18" fill="#7cbf8e" />
-          {/* Bud */}
-          <circle cx="20" cy="8" r="3" fill="#4a7c59" />
+        <svg width="28" height="28" viewBox={`0 0 ${GRID} ${GRID}`}>
+          {cells}
         </svg>
       </div>
     ),

@@ -12,6 +12,8 @@ export function buildGraphData(): GraphData {
     href: item.href,
     type: item.type,
     val: 1,
+    backlinkCount: backlinksMap.get(item.slug)?.length ?? 0,
+    maturity: item.maturity,
   }))
 
   const links: GraphLink[] = []

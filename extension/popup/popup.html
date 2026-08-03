@@ -1,0 +1,66 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Garden Creatures</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="gc-header">
+      <h1>Garden Creatures</h1>
+      <p class="gc-sub">The pokedex, in your browser.</p>
+    </header>
+
+    <form id="gc-handle-form" class="gc-row">
+      <label for="gc-handle">GitHub handle</label>
+      <input id="gc-handle" name="handle" type="text" placeholder="octocat" autocomplete="off" />
+      <button type="submit">Load</button>
+    </form>
+
+    <section id="gc-status" class="gc-status" hidden></section>
+
+    <section id="gc-main" class="gc-plate" hidden>
+      <div class="gc-sprite-wrap">
+        <img id="gc-sprite" class="gc-sprite" alt="" />
+      </div>
+      <div class="gc-plate-info">
+        <div id="gc-name" class="gc-name"></div>
+        <div id="gc-blurb" class="gc-blurb"></div>
+        <div class="gc-xpbar">
+          <div id="gc-xpbar-fill" class="gc-xpbar-fill"></div>
+        </div>
+        <div id="gc-xp-label" class="gc-xp-label mono"></div>
+      </div>
+    </section>
+
+    <section id="gc-items-section" class="gc-section" hidden>
+      <h2>Items</h2>
+      <div id="gc-items" class="gc-items"></div>
+    </section>
+
+    <section id="gc-repos-section" class="gc-section" hidden>
+      <h2>Repo creatures</h2>
+      <div id="gc-repos" class="gc-repos"></div>
+    </section>
+
+    <details class="gc-settings">
+      <summary>Settings</summary>
+      <form id="gc-settings-form" class="gc-settings-form">
+        <label for="gc-api-base">API base URL</label>
+        <input id="gc-api-base" name="apiBase" type="text" placeholder="http://localhost:3000" />
+        <label class="gc-checkbox">
+          <input id="gc-debug" name="debug" type="checkbox" />
+          Debug logging (console)
+        </label>
+        <div class="gc-debug-row mono">
+          Network calls this session: <span id="gc-network-count">0</span>
+          <button type="button" id="gc-reset-count">reset</button>
+        </div>
+        <button type="submit">Save settings</button>
+      </form>
+    </details>
+
+    <script src="../common/core.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

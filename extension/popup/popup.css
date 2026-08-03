@@ -1,0 +1,217 @@
+:root {
+  --gc-paper: #f1f1ee;
+  --gc-ink: #141416;
+  --gc-ink-muted: #6b6b70;
+  --gc-rule: #d9d9d4;
+  --gc-accent: #2f4bd4;
+  --gc-accent-soft: #e6e9fb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --gc-paper: #131316;
+    --gc-ink: #e8e8e4;
+    --gc-ink-muted: #96969c;
+    --gc-rule: #2b2b31;
+    --gc-accent: #8298ff;
+    --gc-accent-soft: #1c2140;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  width: 320px;
+  margin: 0;
+  padding: 14px;
+  background: var(--gc-paper);
+  color: var(--gc-ink);
+  font: 13px/1.4 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+
+.mono {
+  font-family: ui-monospace, "Geist Mono", SFMono-Regular, Menlo, monospace;
+}
+
+.gc-header h1 {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: -0.01em;
+}
+.gc-sub {
+  margin: 2px 0 12px;
+  color: var(--gc-ink-muted);
+  font-size: 11px;
+}
+
+.gc-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.gc-row label { display: none; }
+.gc-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+input[type="text"] {
+  padding: 5px 7px;
+  border: 1px solid var(--gc-rule);
+  background: transparent;
+  color: var(--gc-ink);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+button {
+  padding: 5px 10px;
+  border: 1px solid var(--gc-rule);
+  background: var(--gc-accent-soft);
+  color: var(--gc-accent);
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+button:hover { filter: brightness(1.05); }
+
+.gc-status {
+  margin-bottom: 10px;
+  color: var(--gc-ink-muted);
+  font-size: 12px;
+}
+.gc-status.gc-error { color: #c0392b; }
+
+.gc-plate {
+  display: flex;
+  gap: 10px;
+  padding: 10px;
+  margin-bottom: 12px;
+  border: 1px solid var(--gc-rule);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--gc-paper) 92%, var(--gc-ink) 4%);
+}
+
+.gc-sprite-wrap {
+  width: 64px;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.gc-sprite {
+  width: 64px;
+  height: 64px;
+  image-rendering: pixelated;
+}
+
+.gc-plate-info { min-width: 0; flex: 1; }
+.gc-name { font-weight: 600; font-size: 13px; }
+.gc-blurb {
+  color: var(--gc-ink-muted);
+  font-size: 11px;
+  margin: 2px 0 6px;
+}
+.gc-xpbar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--gc-rule);
+  overflow: hidden;
+}
+.gc-xpbar-fill {
+  height: 100%;
+  background: var(--gc-accent);
+  width: 0%;
+}
+.gc-xp-label {
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--gc-ink-muted);
+}
+
+.gc-section h2 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--gc-ink-muted);
+  margin: 12px 0 6px;
+  border-top: 1px solid var(--gc-rule);
+  padding-top: 10px;
+}
+
+.gc-items {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+.gc-item {
+  padding: 6px;
+  border: 1px solid var(--gc-rule);
+  border-radius: 4px;
+  font-size: 10.5px;
+}
+.gc-item.locked {
+  opacity: 0.45;
+}
+.gc-item-name { font-weight: 600; }
+.gc-item-req { color: var(--gc-ink-muted); margin-top: 2px; }
+
+.gc-repos {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.gc-repo-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid var(--gc-rule);
+  border-radius: 4px;
+  font-size: 11px;
+}
+.gc-repo-sprite {
+  width: 20px;
+  height: 20px;
+  image-rendering: pixelated;
+  flex: 0 0 auto;
+}
+.gc-repo-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gc-repo-stage { color: var(--gc-ink-muted); }
+
+.gc-settings {
+  margin-top: 14px;
+  border-top: 1px solid var(--gc-rule);
+  padding-top: 8px;
+}
+.gc-settings summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--gc-ink-muted);
+}
+.gc-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.gc-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.gc-debug-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--gc-ink-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}

@@ -4,6 +4,7 @@ import rehypePrettyCode from 'rehype-pretty-code'
 import rehypeSlug from 'rehype-slug'
 import rehypeAutolinkHeadings from 'rehype-autolink-headings'
 import { buildWikilinkMap } from './backlinks'
+import { WIKILINK_REGEX, parseWikilink, slugify } from './utils'
 import { visit } from 'unist-util-visit'
 import type { ReactElement } from 'react'
 
@@ -26,17 +27,17 @@ function remarkWikilinks(): (tree: any) => void {
     visit(tree, 'text', (node: any, index: number | undefined, parent: any) => {
       if (!parent || index === undefined) return
 
-      const regex = /\[\[([^\]]+)\]\]/g
+      const regex = new RegExp(WIKILINK_REGEX.source, 'g')
       const text: string = node.value
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const parts: any[] = []
       let lastIndex = 0
 
-      regex.lastIndex = 0
       let match: RegExpExecArray | null
       while ((match = regex.exec(text)) !== null) {
-        const title = match[1].trim()
-        const href = wikilinkMap.get(title.toLowerCase()) ?? `#${title.toLowerCase()}`
+        // Supports both [[Title]] and [[Title|display text]].
+        const { target, label } = parseWikilink(match[1])
+        const href = wikilinkMap.get(target.toLowerCase()) ?? `#${slugify(target)}`
 
         if (match.index > lastIndex) {
           parts.push({ type: 'text', value: text.slice(lastIndex, match.index) })
@@ -46,7 +47,7 @@ function remarkWikilinks(): (tree: any) => void {
           type: 'link',
           url: href,
           title: null,
-          children: [{ type: 'text', value: title }],
+          children: [{ type: 'text', value: label }],
           data: { hProperties: { className: ['wikilink'] } },
         })
 

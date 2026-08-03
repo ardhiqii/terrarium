@@ -44,13 +44,13 @@ export default function SearchClient({ items }: SearchClientProps) {
     <div className="max-w-2xl">
       {/* Input */}
       <div
-        className="flex items-center gap-3 px-4 py-3 rounded-xl border transition-all"
+        className="flex items-center gap-3 px-4 py-3 border transition-colors"
         style={{
-          background: 'var(--card-bg)',
-          borderColor: focused ? 'var(--accent)' : 'var(--border)',
+          background: 'var(--paper-raised)',
+          borderColor: focused ? 'var(--accent)' : 'var(--rule)',
         }}
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--muted)', flexShrink: 0 }}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--ink-muted)', flexShrink: 0 }}>
           <circle cx="11" cy="11" r="8" />
           <line x1="21" y1="21" x2="16.65" y2="16.65" />
         </svg>
@@ -60,16 +60,16 @@ export default function SearchClient({ items }: SearchClientProps) {
           onChange={(e) => setQuery(e.target.value)}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
-          placeholder="Search notes, projects, tags…"
-          className="flex-1 bg-transparent outline-none text-sm"
-          style={{ color: 'var(--foreground)' }}
+          placeholder="Search notes, projects, tags."
+          className="font-ui flex-1 bg-transparent outline-none text-sm"
+          style={{ color: 'var(--ink)' }}
           autoFocus
         />
         {query && (
           <button
             onClick={() => setQuery('')}
             className="flex-shrink-0 transition-opacity hover:opacity-60"
-            style={{ color: 'var(--muted)' }}
+            style={{ color: 'var(--ink-muted)' }}
             aria-label="Clear search"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -82,58 +82,53 @@ export default function SearchClient({ items }: SearchClientProps) {
 
       {/* Results count */}
       {showResults && (
-        <p className="mt-3 text-xs" style={{ color: 'var(--muted)' }}>
+        <p className="font-data mt-3 text-xs" style={{ color: 'var(--ink-muted)' }}>
           {results.length} result{results.length !== 1 ? 's' : ''}
         </p>
       )}
 
       {/* Empty */}
       {showEmpty && (
-        <p className="mt-6 text-sm" style={{ color: 'var(--muted)' }}>
+        <p className="font-ui mt-6 text-sm" style={{ color: 'var(--ink-muted)' }}>
           No results for &ldquo;{query}&rdquo;.
         </p>
       )}
 
       {/* Results */}
       {showResults && (
-        <ul className="mt-4 space-y-2">
+        <ul className="mt-4 flex flex-col divide-y divide-[color:var(--rule)]">
           {results.map((item) => (
             <li key={item.href}>
               <Link
                 href={item.href}
-                className="flex items-start gap-3 px-4 py-3 rounded-xl border transition-all hover:shadow-sm group"
-                style={{ background: 'var(--card-bg)', borderColor: 'var(--border)' }}
+                className="flex items-start gap-3 px-1 py-3 group"
               >
                 <span
-                  className="mt-0.5 w-1.5 h-1.5 rounded-full flex-shrink-0"
-                  style={{
-                    background: item.type === 'project' ? 'var(--project-color)' : 'var(--note-color)',
-                  }}
-                />
+                  className="font-data mt-0.5 text-xs uppercase flex-shrink-0"
+                  style={{ color: item.type === 'project' ? 'var(--accent)' : 'var(--ink-muted)' }}
+                >
+                  {item.type === 'project' ? 'project' : 'note'}
+                </span>
                 <div className="flex-1 min-w-0">
-                  <p className="font-medium text-sm group-hover:opacity-80 transition-opacity">
+                  <p className="font-ui font-medium text-sm group-hover:opacity-80 transition-opacity">
                     {item.title}
                   </p>
                   {item.description && (
-                    <p className="text-xs mt-0.5 truncate" style={{ color: 'var(--muted)' }}>
+                    <p className="font-ui text-xs mt-0.5 truncate" style={{ color: 'var(--ink-muted)' }}>
                       {item.description}
                     </p>
                   )}
                   {item.tags.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-1.5">
+                    <div className="font-data flex flex-wrap gap-2 mt-1.5 text-xs uppercase">
                       {item.tags.map((tag) => (
-                        <span
-                          key={tag}
-                          className="text-xs px-1.5 py-0.5 rounded"
-                          style={{ background: 'var(--tag-bg)', color: 'var(--tag-text)' }}
-                        >
-                          {tag}
+                        <span key={tag} style={{ color: 'var(--ink-muted)' }}>
+                          #{tag}
                         </span>
                       ))}
                     </div>
                   )}
                 </div>
-                <span className="text-xs flex-shrink-0" style={{ color: 'var(--muted)' }}>
+                <span className="font-data text-xs flex-shrink-0" style={{ color: 'var(--ink-muted)' }}>
                   {item.collection}
                 </span>
               </Link>
@@ -144,7 +139,7 @@ export default function SearchClient({ items }: SearchClientProps) {
 
       {/* Idle state */}
       {!query && (
-        <p className="mt-6 text-sm" style={{ color: 'var(--muted)' }}>
+        <p className="font-ui mt-6 text-sm" style={{ color: 'var(--ink-muted)' }}>
           Type to search across all notes and projects.
         </p>
       )}
