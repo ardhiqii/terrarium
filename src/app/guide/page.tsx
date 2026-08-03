@@ -6,6 +6,7 @@ import {
   COMMIT_XP_DAILY_CAP,
 } from '@/lib/game/types'
 import { GARDEN_ITEMS, COMMIT_ITEMS } from '@/lib/game/items'
+import { VARIANT_DEFS } from '@/lib/game/variants'
 import { CLUSTER_THRESHOLD } from '@/lib/game/clusters-from-items'
 import { CreatureSprite } from '@/components/game/CreatureSprite'
 import TableOfContents from '@/components/layout/TableOfContents'
@@ -35,6 +36,7 @@ const XP_RATE_ROWS: { label: string; unit: string; rate: number }[] = [
 const TOC_ENTRIES: TocEntry[] = [
   { id: 'how-xp-works', text: 'How XP works', level: 2 },
   { id: 'the-four-stages', text: 'The four stages', level: 2 },
+  { id: 'variants', text: 'Variants', level: 2 },
   { id: 'companions', text: 'Companions', level: 2 },
   { id: 'items', text: 'Items', level: 2 },
   { id: 'where-xp-comes-from', text: 'Where XP comes from', level: 2 },
@@ -174,6 +176,50 @@ export default async function GuidePage() {
                       {stage.blurb}
                     </p>
                   </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section id="variants" className="mb-14 scroll-mt-20">
+            <h2 className="font-ui text-xl font-semibold tracking-tighter mb-4">
+              Variants
+            </h2>
+            <div className="max-w-[65ch] font-prose text-base leading-relaxed mb-6" style={{ color: 'var(--ink-muted)' }}>
+              <p className="mb-3">
+                Stage says how much. Variant says how the work is shaped.
+                Every threshold below is a ratio, never a raw count, so a
+                nine-note garden and a nine-hundred-note garden can both
+                qualify for the same one. Most gardens qualify for none of
+                the four: these thresholds were picked to sit past what a
+                typical garden reaches, not to hand one out on arrival.
+              </p>
+              <p>
+                A creature earns at most one. When a garden clears more than
+                one threshold at once, the most specific signal wins:{' '}
+                <span className="font-data text-sm">
+                  var. deep {'>'} var. woven {'>'} var. broad {'>'} var. steady
+                </span>
+                . No sprite changes and no glow; the variant renders as its
+                name, in the accent colour, next to the stage name above.
+              </p>
+            </div>
+
+            <div style={{ borderTop: '1px solid var(--rule)' }}>
+              {VARIANT_DEFS.map((def) => (
+                <div key={def.id} className="py-4" style={{ borderBottom: '1px solid var(--rule)' }}>
+                  <h3
+                    className="font-data text-sm font-semibold mb-1"
+                    style={{ color: 'var(--accent)' }}
+                  >
+                    {def.label}
+                  </h3>
+                  <p className="font-prose text-sm leading-relaxed" style={{ color: 'var(--ink)' }}>
+                    {def.blurb}
+                  </p>
+                  <p className="font-data text-xs mt-1" style={{ color: 'var(--ink-muted)' }}>
+                    {def.requirement}
+                  </p>
                 </div>
               ))}
             </div>

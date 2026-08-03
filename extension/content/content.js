@@ -61,6 +61,15 @@
     .${CLASS_PREFIX}stage {
       opacity: 0.85;
     }
+    .${CLASS_PREFIX}variant {
+      /* Same accent lock as DESIGN.md 2.1 (--accent). No glow, no sprite
+         change: this text colour is the entire treatment, mirroring
+         SpecimenPlate.tsx on the site itself. */
+      color: #2f4bd4;
+    }
+    .${CLASS_PREFIX}badge.gcx-dark .${CLASS_PREFIX}variant {
+      color: #8298ff;
+    }
   `
 
   // ---------------------------------------------------------------------
@@ -145,6 +154,21 @@
   }
 
   /**
+   * The variant suffix alone (e.g. "var. woven"), or '' when the creature
+   * behind `state` doesn't qualify for one. Kept separate from
+   * `stageAbbrev` so `buildBadge` can render it in its own accent-coloured
+   * span, the same no-glow, no-sprite-change treatment `SpecimenPlate.tsx`
+   * uses on the site itself. `state` is the raw `/api/creature` JSON body,
+   * which carries `stats` and `github` verbatim from the `CreatureState` it
+   * wraps, so this costs no extra fetch beyond what the badge already has.
+   */
+  function variantSuffix(state) {
+    if (!state) return ''
+    const variant = GC.resolveVariant(state.stats, state.github)
+    return variant ? `var. ${variant}` : ''
+  }
+
+  /**
    * Draws the first frame of an animated GIF to a canvas and returns it,
    * so reduced-motion users still see the creature but it does not move.
    * Falls back to the original <img> if canvas drawing fails for any
@@ -211,6 +235,14 @@
     label.className = `${CLASS_PREFIX}stage`
     label.textContent = stageAbbrev(state)
     badge.appendChild(label)
+
+    const suffix = variantSuffix(state)
+    if (suffix) {
+      const variantLabel = document.createElement('span')
+      variantLabel.className = `${CLASS_PREFIX}variant`
+      variantLabel.textContent = ` · ${suffix}`
+      badge.appendChild(variantLabel)
+    }
 
     root.appendChild(badge)
     return host

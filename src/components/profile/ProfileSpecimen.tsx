@@ -1,5 +1,6 @@
 import type { SyncedUser } from '@/lib/sync/types'
 import { resolveStage } from '@/lib/game/stages'
+import { isBroadRatio } from '@/lib/game/variants'
 import { CreatureSprite } from '@/components/game/CreatureSprite'
 import { XpBar } from '@/components/game/XpBar'
 import Avatar from './Avatar'
@@ -22,6 +23,16 @@ export async function ProfileSpecimen({ user }: ProfileSpecimenProps) {
   const resolved = resolveStage(snapshot.totalXp)
   const companionCount = snapshot.companions.length
   const lastSynced = new Date(user.updatedAt)
+
+  // `SyncedSnapshot` (src/lib/sync/types.ts) is frozen and carries only
+  // noteCount/projectCount/totalWords/tagCount, never resolvedWikilinks,
+  // maturityCounts, or a commit streak. That is enough to check `broad`
+  // (tags per entry) honestly, but not `woven`, `deep`, or `steady`, which
+  // this synced shape has no data for at all. Rather than guess, this
+  // profile only ever shows `broad` and shows nothing for the other three.
+  // Syncing the other three needs a schema-version bump; see the T30 report.
+  const entryCount = snapshot.noteCount + snapshot.projectCount
+  const variant = isBroadRatio(entryCount, snapshot.tagCount) ? 'broad' : null
 
   return (
     <div>
@@ -56,6 +67,12 @@ export async function ProfileSpecimen({ user }: ProfileSpecimenProps) {
               style={{ color: 'var(--ink-muted)', letterSpacing: '0.15em' }}
             >
               Specimen {resolved.stage.index} of 4 . {resolved.stage.name}
+              {variant && (
+                <>
+                  {' . '}
+                  <span style={{ color: 'var(--accent)' }}>var. {variant}</span>
+                </>
+              )}
             </p>
 
             <XpBar
