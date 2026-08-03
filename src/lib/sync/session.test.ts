@@ -54,10 +54,17 @@ describe('StubSessionProvider and getSessionProvider', () => {
     expect(() => new StubSessionProvider()).toThrow(/production/i)
   })
 
-  it('getSessionProvider() refuses to run in production', async () => {
+  it('getSessionProvider() never hands back the stub in production', async () => {
+    // Signed-out, not thrown. Refusing the stub is correct (it reads the
+    // handle from an env var, so shipping it would let anyone sign in as
+    // anyone), but throwing broke `npm run build` outright, because
+    // `layout.tsx` reads the session at the root during prerendering.
+    // Fail closed, not broken: no session, but every public page renders.
     vi.stubEnv('NODE_ENV', 'production')
     const { getSessionProvider } = await import('./session')
-    expect(() => getSessionProvider()).toThrow(/production/i)
+    const provider = getSessionProvider()
+    expect(provider.id).not.toBe('stub')
+    await expect(provider.current()).resolves.toBeNull()
   })
 
   it('getSessionProvider() returns a working stub outside production', async () => {

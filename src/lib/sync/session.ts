@@ -79,13 +79,29 @@ export class StubSessionProvider implements SessionProvider {
  * provider too, if a developer wants to test against real GitHub locally).
  * No caller of `getSessionProvider()` needs to change.
  */
+/**
+ * Always signed out. What production gets until GitHub OAuth exists.
+ *
+ * Refusing the stub in production is correct: it reads the handle from an env
+ * var, so shipping it would let anyone sign in as anyone. But THROWING was the
+ * wrong refusal. `layout.tsx` reads the session at the root, so a throw during
+ * static prerendering failed `npm run build` outright and the site could not be
+ * built at all.
+ *
+ * Signed-out is the safe answer, not an absent one: no session means no sync,
+ * no leaderboard, and no profile actions, while every public page still
+ * renders. Fail closed, not broken.
+ */
+class SignedOutSessionProvider implements SessionProvider {
+  readonly id = 'github' as const
+  async current(): Promise<Session | null> {
+    return null
+  }
+}
+
 export function getSessionProvider(): SessionProvider {
   if (process.env.NODE_ENV === 'production') {
-    throw new Error(
-      'No production SessionProvider is configured (GitHub OAuth is not ' +
-        'implemented yet). Refusing to fall back to StubSessionProvider in ' +
-        'production: that would let anyone sign in as anyone.'
-    )
+    return new SignedOutSessionProvider()
   }
   return new StubSessionProvider()
 }
