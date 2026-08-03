@@ -1,3 +1,5 @@
+import type { Maturity } from './game/types'
+
 export type ContentType = 'note' | 'project'
 
 export interface FrontMatter {
@@ -7,6 +9,8 @@ export interface FrontMatter {
   tags: string[]
   type: ContentType
   image?: string
+  /** How settled this note is. Absent means 'seedling'. */
+  maturity?: Maturity
 }
 
 export interface ContentMeta extends FrontMatter {
@@ -27,6 +31,10 @@ export interface GraphNode {
   href: string
   type: ContentType
   val?: number
+  /** Count of incoming wikilinks. Drives node size, the hub signal. */
+  backlinkCount: number
+  /** Absent means 'seedling', same convention as MaturityMark. Notes only. */
+  maturity?: Maturity
 }
 
 export interface GraphLink {

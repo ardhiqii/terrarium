@@ -1,0 +1,65 @@
+{
+  "grass:sporeling": {
+    "id": 191,
+    "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/191.gif",
+    "width": 26,
+    "height": 40,
+    "fetchedAt": "2026-08-01T00:00:00.000Z"
+  },
+  "grass:mossling": {
+    "id": 43,
+    "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/43.gif",
+    "width": 37,
+    "height": 50,
+    "fetchedAt": "2026-08-01T00:00:00.000Z"
+  },
+  "grass:bracken": {
+    "id": 2,
+    "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/2.gif",
+    "width": 58,
+    "height": 51,
+    "fetchedAt": "2026-08-01T00:00:00.000Z"
+  },
+  "grass:heartwood": {
+    "id": 389,
+    "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/389.gif",
+    "width": 78,
+    "height": 80,
+    "fetchedAt": "2026-08-01T00:00:00.000Z"
+  },
+  "bloom:sporeling": {
+    "id": 187,
+    "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/187.gif",
+    "width": 64,
+    "height": 66,
+    "fetchedAt": "2026-08-01T17:34:25.895Z"
+  },
+  "tide:sporeling": {
+    "id": 258,
+    "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/258.gif",
+    "width": 43,
+    "height": 49,
+    "fetchedAt": "2026-08-01T17:34:26.147Z"
+  },
+  "current:sporeling": {
+    "id": 172,
+    "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/172.gif",
+    "width": 44,
+    "height": 49,
+    "fetchedAt": "2026-08-01T17:34:26.138Z"
+  },
+  "bedrock:sporeling": {
+    "id": 74,
+    "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/74.gif",
+    "width": 61,
+    "height": 45,
+    "fetchedAt": "2026-08-01T17:34:25.917Z"
+  },
+  "bloom:mossling": {
+    "id": 188,
+    "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/188.gif",
+    "width": 52,
+    "height": 42,
+    "fetchedAt": "2026-08-02T12:38:14.889Z"
+  }
+}
