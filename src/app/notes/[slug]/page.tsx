@@ -6,6 +6,7 @@ import { getBacklinks } from '@/lib/backlinks'
 import { renderMDX, extractToc } from '@/lib/mdx'
 import TableOfContents from '@/components/layout/TableOfContents'
 import Backlinks from '@/components/Backlinks'
+import MaturityMark from '@/components/MaturityMark'
 import type { Metadata } from 'next'
 
 interface Props {
@@ -42,9 +43,9 @@ export default async function NotePage({ params }: Props) {
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-12">
       {/* Breadcrumb */}
-      <nav className="mb-8 text-sm" style={{ color: 'var(--muted)' }}>
+      <nav className="font-ui mb-8 text-sm" style={{ color: 'var(--ink-muted)' }}>
         <Link href="/" className="hover:opacity-70 transition-opacity">Home</Link>
-        <span className="mx-2">·</span>
+        <span className="mx-2">.</span>
         <Link href="/notes" className="hover:opacity-70 transition-opacity">Notes</Link>
       </nav>
 
@@ -53,7 +54,7 @@ export default async function NotePage({ params }: Props) {
         <article>
           {/* Cover image */}
           {item.image && (
-            <div className="mb-8 rounded-xl overflow-hidden border" style={{ borderColor: 'var(--border)' }}>
+            <div className="mb-8 overflow-hidden border" style={{ borderColor: 'var(--rule)' }}>
               <Image
                 src={item.image}
                 alt={item.title}
@@ -67,38 +68,34 @@ export default async function NotePage({ params }: Props) {
 
           {/* Header */}
           <header className="mb-8">
-            <div className="flex items-center gap-2 mb-3">
-              <span
-                className="text-xs font-medium px-2 py-0.5 rounded-full"
-                style={{ background: 'rgba(74,124,89,0.1)', color: 'var(--note-color)' }}
-              >
+            <div className="font-data flex items-center gap-2 mb-3 text-xs uppercase tracking-wide flex-wrap">
+              <span className="font-medium" style={{ color: 'var(--ink-muted)' }}>
                 note
               </span>
-              <time className="text-xs" style={{ color: 'var(--muted)' }} dateTime={item.date}>
+              <span style={{ color: 'var(--rule)' }}>.</span>
+              <time style={{ color: 'var(--ink-muted)' }} dateTime={item.date}>
                 {new Date(item.date).toLocaleDateString('en-US', {
                   year: 'numeric', month: 'long', day: 'numeric',
                 })}
               </time>
+              <MaturityMark maturity={item.maturity} className="ml-auto" />
             </div>
-            <h1
-              className="text-3xl font-semibold tracking-tight mb-3"
-              style={{ fontFamily: 'Inter, sans-serif' }}
-            >
+            <h1 className="font-ui text-3xl font-semibold tracking-tight mb-3">
               {item.title}
             </h1>
             {item.description && (
-              <p className="text-base" style={{ color: 'var(--muted)' }}>
+              <p className="font-ui text-base" style={{ color: 'var(--ink-muted)' }}>
                 {item.description}
               </p>
             )}
             {item.tags.length > 0 && (
-              <div className="flex flex-wrap gap-2 mt-4">
+              <div className="font-data flex flex-wrap gap-2 mt-4 text-xs uppercase tracking-wide">
                 {item.tags.map((tag) => (
                   <Link
                     key={tag}
                     href={`/tags/${tag}`}
-                    className="text-xs px-2.5 py-1 rounded-lg transition-opacity hover:opacity-70"
-                    style={{ background: 'var(--tag-bg)', color: 'var(--tag-text)' }}
+                    className="border px-2.5 py-1 transition-colors hover:border-[color:var(--ink-muted)]"
+                    style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}
                   >
                     {tag}
                   </Link>
@@ -108,7 +105,7 @@ export default async function NotePage({ params }: Props) {
           </header>
 
           {/* MDX body */}
-          <div className="prose prose-base max-w-none">
+          <div className="prose prose-base">
             {mdxContent}
           </div>
 

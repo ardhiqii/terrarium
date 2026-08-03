@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import type { ContentMeta } from '@/lib/types'
+import MaturityMark from './MaturityMark'
 
 interface ContentCardProps {
   item: ContentMeta
@@ -9,66 +10,45 @@ export default function ContentCard({ item }: ContentCardProps) {
   const isProject = item.type === 'project'
 
   return (
-    <article
-      className="group rounded-xl border p-5 transition-all hover:shadow-sm"
-      style={{
-        background: 'var(--card-bg)',
-        borderColor: 'var(--card-border)',
-      }}
-    >
+    <article className="group py-5">
       <Link href={item.href} className="block">
-        {/* Type badge + date row */}
-        <div className="flex items-center gap-2 mb-2.5">
+        {/* Type + date + maturity row */}
+        <div className="font-data flex items-center gap-2 mb-2.5 text-xs uppercase tracking-wide flex-wrap">
           <span
-            className="text-xs font-medium px-2 py-0.5 rounded-full"
-            style={{
-              background: isProject ? 'rgba(181,94,58,0.1)' : 'rgba(74,124,89,0.1)',
-              color: isProject ? 'var(--project-color)' : 'var(--note-color)',
-            }}
+            className="font-medium"
+            style={{ color: isProject ? 'var(--accent)' : 'var(--ink-muted)' }}
           >
             {isProject ? 'project' : 'note'}
           </span>
-          <time
-            className="text-xs"
-            style={{ color: 'var(--muted)' }}
-            dateTime={item.date}
-          >
+          <span style={{ color: 'var(--rule)' }}>.</span>
+          <time style={{ color: 'var(--ink-muted)' }} dateTime={item.date}>
             {new Date(item.date).toLocaleDateString('en-US', {
               year: 'numeric',
               month: 'short',
               day: 'numeric',
             })}
           </time>
+          <MaturityMark maturity={item.maturity} className="ml-auto" />
         </div>
 
         {/* Title */}
-        <h2
-          className="font-semibold text-base mb-1.5 group-hover:opacity-80 transition-opacity leading-snug"
-          style={{ fontFamily: 'Inter, sans-serif' }}
-        >
+        <h2 className="font-ui font-semibold text-base mb-1.5 group-hover:opacity-80 transition-opacity leading-snug">
           {item.title}
         </h2>
 
         {/* Description */}
         {item.description && (
-          <p className="text-sm leading-relaxed mb-3" style={{ color: 'var(--muted)' }}>
+          <p className="font-ui text-sm leading-relaxed mb-3" style={{ color: 'var(--ink-muted)' }}>
             {item.description}
           </p>
         )}
 
         {/* Tags */}
         {item.tags.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
+          <div className="font-data flex flex-wrap gap-2 text-xs uppercase tracking-wide">
             {item.tags.map((tag) => (
-              <span
-                key={tag}
-                className="text-xs px-2 py-0.5 rounded-md"
-                style={{
-                  background: 'var(--tag-bg)',
-                  color: 'var(--tag-text)',
-                }}
-              >
-                {tag}
+              <span key={tag} style={{ color: 'var(--ink-muted)' }}>
+                #{tag}
               </span>
             ))}
           </div>

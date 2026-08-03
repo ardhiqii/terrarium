@@ -11,11 +11,11 @@ export default function Backlinks({ backlinks }: BacklinksProps) {
   return (
     <section
       className="mt-12 pt-8 border-t"
-      style={{ borderColor: 'var(--border)' }}
+      style={{ borderColor: 'var(--rule)' }}
     >
       <h3
-        className="text-xs font-semibold uppercase tracking-wider mb-4"
-        style={{ color: 'var(--muted)' }}
+        className="font-data text-xs font-semibold uppercase tracking-wider mb-4"
+        style={{ color: 'var(--ink-muted)' }}
       >
         Linked from
       </h3>
@@ -24,16 +24,16 @@ export default function Backlinks({ backlinks }: BacklinksProps) {
           <li key={bl.slug}>
             <Link
               href={bl.href}
-              className="flex items-center gap-2 text-sm hover:opacity-80 transition-opacity"
+              className="font-ui flex items-center gap-2 text-sm hover:opacity-80 transition-opacity"
             >
               <span
-                className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                style={{
-                  background: bl.type === 'project' ? 'var(--project-color)' : 'var(--note-color)',
-                }}
-              />
+                className="font-data text-xs uppercase"
+                style={{ color: bl.type === 'project' ? 'var(--accent)' : 'var(--ink-muted)' }}
+              >
+                {bl.type === 'project' ? 'project' : 'note'}
+              </span>
               <span>{bl.title}</span>
-              <span className="text-xs ml-auto" style={{ color: 'var(--muted)' }}>
+              <span className="font-data text-xs ml-auto" style={{ color: 'var(--ink-muted)' }}>
                 {bl.collection}
               </span>
             </Link>

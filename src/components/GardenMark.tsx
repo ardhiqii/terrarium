@@ -1,57 +1,85 @@
 interface GardenMarkProps {
+  /** Rendered width in px. Height matches, the grid is square. */
   size?: number
   className?: string
 }
 
 /**
- * Clean geometric garden mark — a centered plant with two
- * balanced leaves, a stem, bud at top, and a ground line.
- * Native viewBox: 40 × 48
+ * The garden mark: a sprout drawn on an 11x11 pixel grid.
+ *
+ * Pixel art rather than smooth vector, because the whole product is pixel
+ * creatures. A rounded bezier leaf next to a 32x32 sprite reads as two
+ * different products. This also survives being tiny: the cells land on whole
+ * pixels instead of turning to mush.
+ *
+ * Colour comes from theme tokens, so it inverts correctly in dark mode. The
+ * bud is the single accent, matching the rule that colour lives in the
+ * creature sprites and not the site chrome.
  */
+
+const GRID = 11
+
+// '.' transparent · 'i' ink · 'm' muted · 'a' accent
+const PIXELS = [
+  '....aa.....',
+  '....aa.....',
+  '.....i.....',
+  '..mm.i.ii..',
+  '.mmmmiiiii.',
+  '..mmmiii...',
+  '.....i.....',
+  '.....i.....',
+  '.....i.....',
+  '....iii....',
+  '..mmmmmmm..',
+] as const
+
+const FILL: Record<string, string> = {
+  i: 'var(--ink)',
+  m: 'var(--ink-muted)',
+  a: 'var(--accent)',
+}
+
 export default function GardenMark({ size = 40, className }: GardenMarkProps) {
-  const h = Math.round((size * 48) / 40)
+  const cells: React.ReactElement[] = []
+
+  for (let y = 0; y < PIXELS.length; y++) {
+    const row = PIXELS[y]
+    let x = 0
+    while (x < row.length) {
+      const ch = row[x]
+      if (ch === '.') {
+        x++
+        continue
+      }
+      // Merge horizontal runs of the same colour into one rect, so the mark
+      // stays a handful of nodes rather than 121 of them.
+      let run = 1
+      while (x + run < row.length && row[x + run] === ch) run++
+      cells.push(
+        <rect
+          key={`${x}-${y}`}
+          x={x}
+          y={y}
+          width={run}
+          height={1}
+          fill={FILL[ch]}
+        />
+      )
+      x += run
+    }
+  }
 
   return (
     <svg
       width={size}
-      height={h}
-      viewBox="0 0 40 48"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
+      height={size}
+      viewBox={`0 0 ${GRID} ${GRID}`}
       className={className}
+      shapeRendering="crispEdges"
       aria-hidden="true"
     >
-      {/* Ground line */}
-      <path
-        d="M10 43 Q20 41 30 43"
-        stroke="#7c5233"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-
-      {/* Stem */}
-      <line
-        x1="20" y1="43"
-        x2="20" y2="9"
-        stroke="#4a7c59"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-
-      {/* Left leaf — emerges lower on stem, sweeps left */}
-      <path
-        d="M20 28 C20 28 4 26 4 16 C4 9 13 10 20 24"
-        fill="#4a7c59"
-      />
-
-      {/* Right leaf — emerges higher on stem, sweeps right, lighter */}
-      <path
-        d="M20 22 C20 22 36 20 36 10 C36 3 27 4 20 18"
-        fill="#7cbf8e"
-      />
-
-      {/* Bud at tip */}
-      <circle cx="20" cy="8" r="3" fill="#4a7c59" />
+      {cells}
     </svg>
   )
 }

@@ -12,10 +12,10 @@ export default function SearchPage() {
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-16">
       <div className="mb-10">
-        <h1 className="text-2xl font-semibold mb-2" style={{ fontFamily: 'Inter, sans-serif' }}>
+        <h1 className="font-ui text-2xl font-semibold mb-2">
           Search
         </h1>
-        <p className="text-sm" style={{ color: 'var(--muted)' }}>
+        <p className="font-ui text-sm" style={{ color: 'var(--ink-muted)' }}>
           Search across {allContent.length} notes and projects.
         </p>
       </div>

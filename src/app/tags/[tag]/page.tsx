@@ -28,20 +28,20 @@ export default async function TagPage({ params }: Props) {
 
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-16">
-      <nav className="mb-8 text-sm" style={{ color: 'var(--muted)' }}>
+      <nav className="font-ui mb-8 text-sm" style={{ color: 'var(--ink-muted)' }}>
         <Link href="/tags" className="hover:opacity-70 transition-opacity">Tags</Link>
       </nav>
 
       <div className="mb-10">
-        <h1 className="text-2xl font-semibold mb-2" style={{ fontFamily: 'Inter, sans-serif' }}>
+        <h1 className="font-ui text-2xl font-semibold mb-2">
           #{tag}
         </h1>
-        <p className="text-sm" style={{ color: 'var(--muted)' }}>
+        <p className="font-ui text-sm" style={{ color: 'var(--ink-muted)' }}>
           {items.length} {items.length === 1 ? 'item' : 'items'}
         </p>
       </div>
 
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col divide-y divide-[color:var(--rule)]">
         {items.map((item) => (
           <ContentCard key={item.href} item={item} />
         ))}
