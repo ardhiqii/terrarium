@@ -360,6 +360,31 @@ Serves the production build.
 
 If you're picking up remaining work on the creature system, the task specs live in `tasks/*.md`, and `ROADMAP.md` has the full build plan, current status, and known gaps.
 
+### Keeping `node:fs` (and friends) out of client bundles
+
+Four separate times, a `'use client'` component ended up importing a Node
+built-in (`fs`, `path`, `child_process`, ...) two or three modules down and
+took the entire build down -- Turbopack fails the whole compilation on one
+bad module, not just the offending route, and `tsc --noEmit`/`npm test` both
+stay green while it happens, since neither loads the browser bundle.
+
+`src/lib/client-bundle-safety.test.ts` guards against this. It finds every
+`'use client'` file, walks its import graph (relative and `@/` imports,
+following the graph transitively, not just the file's own direct imports),
+and fails with the full chain (e.g.
+`ConnectGarden.tsx -> repo-creature.ts -> github.ts -> node:fs`) the moment
+something reachable imports `fs`, `path`, `os`, `child_process`, or
+`node:crypto` (bare `crypto` is exempt -- it's ambiguous with the real
+browser Web Crypto global).
+
+If this test trips, the fix is not to remove the import -- it's to extract a
+pure module with no `fs`/`path`/etc. at module scope and depend on that
+instead. This project already has the pattern in four places:
+`stats-from-items.ts`, `clusters-from-items.ts`, `streak.ts`, and
+`pokeapi-pure.ts` each split "compute from an in-memory value" away from
+"read this from disk/network", so the client-safe half can be imported on
+its own.
+
 ---
 
 ## Deploying to Vercel
