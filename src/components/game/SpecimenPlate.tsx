@@ -1,4 +1,5 @@
 import type { CreatureState, SpriteScale } from '@/lib/game/types'
+import { resolveVariant } from '@/lib/game/variants'
 import { CreatureSprite } from './CreatureSprite'
 import { XpBar } from './XpBar'
 
@@ -15,6 +16,10 @@ export interface SpecimenPlateProps {
 }
 
 export async function SpecimenPlate({ state, scale = 3 }: SpecimenPlateProps) {
+  // Pure and cheap: derived straight from data this component already has,
+  // no fetch, no fs. See variants.ts for thresholds and precedence.
+  const variant = resolveVariant(state.stats, state.github)
+
   return (
     <div
       className="p-6 sm:p-8"
@@ -47,6 +52,14 @@ export async function SpecimenPlate({ state, scale = 3 }: SpecimenPlateProps) {
           </p>
           <h2 className="font-ui text-2xl font-semibold tracking-tighter leading-[1.05] mb-2">
             {state.stage.name}
+            {variant && (
+              <>
+                {'  ·  '}
+                <span className="font-data text-lg" style={{ color: 'var(--accent)' }}>
+                  var. {variant}
+                </span>
+              </>
+            )}
           </h2>
           <p
             className="font-prose text-sm leading-relaxed mb-5"

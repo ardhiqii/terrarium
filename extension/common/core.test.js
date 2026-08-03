@@ -397,3 +397,61 @@ describe('assignSpeciesLine (extension copy)', () => {
     expect(seen.size).toBeGreaterThan(1)
   })
 })
+
+describe('resolveVariant (extension copy of src/lib/game/variants.ts)', () => {
+  function stats(overrides = {}) {
+    return {
+      noteCount: 0,
+      projectCount: 0,
+      totalWords: 0,
+      resolvedWikilinks: 0,
+      tagCount: 0,
+      maturityCounts: { seedling: 0, budding: 0, evergreen: 0 },
+      ...overrides,
+    }
+  }
+
+  function github(overrides = {}) {
+    return { currentStreakDays: 0, ...overrides }
+  }
+
+  it('returns null for a zeroed companion (the common case for repo/cluster stats)', () => {
+    expect(GC.resolveVariant(stats(), null)).toBeNull()
+  })
+
+  it('fires woven on a dense-but-small ratio, regardless of absolute size', () => {
+    const small = stats({ noteCount: 6, resolvedWikilinks: 18 })
+    const big = stats({ noteCount: 100, resolvedWikilinks: 300 })
+    expect(GC.resolveVariant(small, null)).toBe('woven')
+    expect(GC.resolveVariant(big, null)).toBe('woven')
+  })
+
+  it('fires steady from a companion\'s own GitHub streak alone', () => {
+    expect(GC.resolveVariant(stats(), github({ currentStreakDays: 21 }))).toBe('steady')
+    expect(GC.resolveVariant(stats(), github({ currentStreakDays: 20 }))).toBeNull()
+  })
+
+  it('fires deep on a small, wordy, mostly-evergreen garden', () => {
+    const deepGarden = stats({
+      noteCount: 3,
+      totalWords: 1800,
+      maturityCounts: { seedling: 1, budding: 0, evergreen: 2 },
+    })
+    expect(GC.resolveVariant(deepGarden, null)).toBe('deep')
+  })
+
+  it('fires broad on a wide tag vocabulary relative to entry count', () => {
+    const broadGarden = stats({ noteCount: 8, tagCount: 20 })
+    expect(GC.resolveVariant(broadGarden, null)).toBe('broad')
+  })
+
+  it('resolves deep over woven when both fire, matching variants.ts precedence', () => {
+    const both = stats({
+      noteCount: 6,
+      totalWords: 3600,
+      resolvedWikilinks: 18,
+      maturityCounts: { seedling: 3, budding: 0, evergreen: 3 },
+    })
+    expect(GC.resolveVariant(both, null)).toBe('deep')
+  })
+})

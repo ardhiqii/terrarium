@@ -1,4 +1,5 @@
 import type { CollectionEntry } from '@/lib/game/collection'
+import { resolveVariant } from '@/lib/game/variants'
 import { CreatureSprite } from './CreatureSprite'
 
 /**
@@ -45,6 +46,12 @@ export async function CollectionGrid({ entries }: CollectionGridProps) {
     )
   )
 
+  // A companion's own `stats` are always zeroed (garden-asymmetry rule,
+  // collection.ts), so only `steady` -- driven by this companion's own
+  // commit streak in `entry.state.github` -- can ever resolve here.
+  // `woven`/`deep`/`broad` need real garden stats a companion never has.
+  const variants = entries.map((entry) => resolveVariant(entry.state.stats, entry.state.github))
+
   return (
     <div
       className="grid gap-3"
@@ -75,6 +82,9 @@ export async function CollectionGrid({ entries }: CollectionGridProps) {
           </p>
           <p className="font-data text-[10px] uppercase tracking-wide" style={{ color: 'var(--ink-muted)' }}>
             {entry.state.stage.name} · L{entry.state.stage.index}
+            {variants[i] && (
+              <span style={{ color: 'var(--accent)' }}> · var. {variants[i]}</span>
+            )}
           </p>
           <p className="font-data text-[10px]" style={{ color: 'var(--ink-muted)' }}>
             {entry.kind === 'cluster'

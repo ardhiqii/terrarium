@@ -107,6 +107,81 @@
 
   const DEFAULT_SPECIES_LINE_ID = 'grass'
 
+  // ---------------------------------------------------------------------
+  // Variants (T30)
+  //
+  // Mirrors `src/lib/game/variants.ts` by hand, same reason SPECIES_LINES
+  // above is duplicated rather than imported: the extension cannot cross
+  // the `src/` boundary. `/api/creature`'s response body is `{ ...state,
+  // ... }` (see route.ts), and `state` (a `CreatureState`) already carries
+  // `stats` and `github` verbatim, so every badge here computes the exact
+  // same variant the site itself would show for that creature -- no extra
+  // fetch, just fields already on the response `getCreature()` returns.
+  //
+  // Keep every constant numerically identical to variants.ts if that file
+  // ever changes; a mismatch here means the extension badge and the site
+  // disagree about the same creature.
+  // ---------------------------------------------------------------------
+
+  const WOVEN_MIN_ENTRIES = 6
+  const WOVEN_LINKS_PER_ENTRY = 3
+  const STEADY_STREAK_DAYS = 21
+  const DEEP_MIN_ENTRIES = 3
+  const DEEP_MAX_ENTRIES = 15
+  const DEEP_WORDS_PER_ENTRY = 600
+  const DEEP_EVERGREEN_RATIO = 0.5
+  const BROAD_MIN_TAGS = 8
+  const BROAD_TAGS_PER_ENTRY = 2.5
+
+  function entryCount(stats) {
+    return (stats && stats.noteCount ? stats.noteCount : 0) +
+      (stats && stats.projectCount ? stats.projectCount : 0)
+  }
+
+  function isWoven(stats) {
+    if (!stats) return false
+    const entries = entryCount(stats)
+    if (entries < WOVEN_MIN_ENTRIES) return false
+    return (stats.resolvedWikilinks || 0) / entries >= WOVEN_LINKS_PER_ENTRY
+  }
+
+  function isSteady(github) {
+    if (!github) return false
+    return (github.currentStreakDays || 0) >= STEADY_STREAK_DAYS
+  }
+
+  function isDeep(stats) {
+    if (!stats) return false
+    const entries = entryCount(stats)
+    if (entries < DEEP_MIN_ENTRIES || entries > DEEP_MAX_ENTRIES) return false
+    if ((stats.totalWords || 0) / entries < DEEP_WORDS_PER_ENTRY) return false
+    const evergreen = (stats.maturityCounts && stats.maturityCounts.evergreen) || 0
+    return evergreen / entries >= DEEP_EVERGREEN_RATIO
+  }
+
+  function isBroad(stats) {
+    if (!stats) return false
+    const entries = entryCount(stats)
+    const tagCount = stats.tagCount || 0
+    if (entries <= 0) return false
+    if (tagCount < BROAD_MIN_TAGS) return false
+    return tagCount / entries >= BROAD_TAGS_PER_ENTRY
+  }
+
+  /**
+   * Precedence, identical to `resolveVariant` in variants.ts:
+   * deep > woven > broad > steady. See that file for the full reasoning
+   * (more simultaneous conditions = a more specific, harder-to-fake signal,
+   * so it wins over a looser one that also happens to be true).
+   */
+  function resolveVariant(stats, github) {
+    if (isDeep(stats)) return 'deep'
+    if (isWoven(stats)) return 'woven'
+    if (isBroad(stats)) return 'broad'
+    if (isSteady(github)) return 'steady'
+    return null
+  }
+
   const LANGUAGE_TO_LINE = {}
   for (const line of SPECIES_LINES) {
     for (const lang of line.languages) LANGUAGE_TO_LINE[lang.toLowerCase()] = line
@@ -396,6 +471,7 @@
     getSpeciesLine,
     assignSpeciesLine,
     spriteUrl,
+    resolveVariant,
     getSettings,
     setSettings,
     getCreature,

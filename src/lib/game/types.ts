@@ -175,6 +175,17 @@ export const STAGES: readonly Stage[] = [
 ] as const
 
 // ---------------------------------------------------------------------------
+// Variants (T30)
+// ---------------------------------------------------------------------------
+
+/**
+ * A creature's shape trait, derived from `GardenStats` (and, for `steady`,
+ * `GithubStats`) rather than from XP or stage. `null` (no variant) is the
+ * common case by design; see `variants.ts` for thresholds and precedence.
+ */
+export type Variant = 'woven' | 'steady' | 'deep' | 'broad'
+
+// ---------------------------------------------------------------------------
 // Items
 // ---------------------------------------------------------------------------
 
