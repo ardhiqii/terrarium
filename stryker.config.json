@@ -1,0 +1,34 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "packageManager": "npm",
+  "testRunner": "vitest",
+  "reporters": ["html", "clear-text", "progress"],
+  "coverageAnalysis": "perTest",
+  "concurrency": 4,
+  "ignorePatterns": [
+    ".claude",
+    ".agents",
+    ".next",
+    ".git",
+    "extension",
+    "public",
+    "node_modules/.cache",
+    "reports",
+    ".stryker-tmp"
+  ],
+  "mutate": [
+    "src/lib/game/xp.ts",
+    "src/lib/game/stages.ts",
+    "src/lib/game/items.ts",
+    "src/lib/game/github.ts",
+    "src/lib/game/stats.ts",
+    "src/lib/game/state.ts",
+    "src/lib/game/repo-creature.ts"
+  ],
+  "thresholds": {
+    "high": 85,
+    "low": 70,
+    "break": null
+  },
+  "timeoutMS": 20000
+}

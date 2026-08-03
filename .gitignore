@@ -32,6 +32,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -39,3 +40,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# mutation testing
+reports/
+.stryker-tmp/
+
+# agent tooling: installed skills (symlinked) and local session settings.
+# skills-lock.json IS committed so the skill set can be reinstalled.
+.agents/
+.claude/
