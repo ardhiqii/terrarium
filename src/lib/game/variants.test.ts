@@ -11,7 +11,6 @@ import {
   WOVEN_LINKS_PER_ENTRY,
   STEADY_STREAK_DAYS,
   DEEP_MIN_ENTRIES,
-  DEEP_MAX_ENTRIES,
   DEEP_WORDS_PER_ENTRY,
   DEEP_EVERGREEN_RATIO,
   BROAD_MIN_TAGS,
@@ -145,14 +144,18 @@ describe('isDeep', () => {
     expect(isDeep(deepGarden)).toBe(true)
   })
 
-  it('does not fire once entry count exceeds the "few notes" ceiling', () => {
-    const tooMany = stats({
-      noteCount: DEEP_MAX_ENTRIES + 1,
+  it('still fires for a large garden that stays deep per entry', () => {
+    // There is no upper bound on entries, deliberately. Sixty long, mostly
+    // evergreen notes is the deepest thing this system can describe. An
+    // earlier ceiling of 15 made `deep` the only variant you could lose by
+    // writing more, which is backwards for this product.
+    const large = stats({
+      noteCount: 60,
       projectCount: 0,
-      totalWords: (DEEP_MAX_ENTRIES + 1) * DEEP_WORDS_PER_ENTRY,
-      maturityCounts: maturityCounts({ evergreen: DEEP_MAX_ENTRIES + 1 }),
+      totalWords: 60 * DEEP_WORDS_PER_ENTRY,
+      maturityCounts: maturityCounts({ evergreen: 60 }),
     })
-    expect(isDeep(tooMany)).toBe(false)
+    expect(isDeep(large)).toBe(true)
   })
 
   it('does not fire when words per entry falls short', () => {

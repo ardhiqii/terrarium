@@ -79,8 +79,17 @@ export function isSteady(github: GithubStats | null): boolean {
 
 /** Below this, "few notes" is just "no notes yet." */
 export const DEEP_MIN_ENTRIES = 3
-/** Above this, the garden has enough entries that it reads as broad, not deep. */
-export const DEEP_MAX_ENTRIES = 15
+// There is deliberately NO upper bound on entries.
+//
+// An earlier version capped this at 15, reasoning that a larger garden "reads
+// as broad, not deep". That was wrong twice over. A garden of sixty notes
+// averaging nine hundred words each, mostly evergreen, is the deepest thing
+// this system can describe, and it would have earned nothing. And it made
+// `deep` the only variant you could LOSE by writing more, which is backwards
+// for a product whose whole premise is that tending the garden is good.
+//
+// The overlap it was guarding against is already handled: `broad` has its own
+// independent ratio test, and precedence resolves anything qualifying for both.
 /** Words per entry. The real garden sits at ~286; this asks for more than double. */
 export const DEEP_WORDS_PER_ENTRY = 600
 /** Fraction of entries that must have reached evergreen maturity. */
@@ -88,7 +97,7 @@ export const DEEP_EVERGREEN_RATIO = 0.5
 
 export function isDeep(stats: GardenStats): boolean {
   const entries = entryCount(stats)
-  if (entries < DEEP_MIN_ENTRIES || entries > DEEP_MAX_ENTRIES) return false
+  if (entries < DEEP_MIN_ENTRIES) return false
   if (stats.totalWords / entries < DEEP_WORDS_PER_ENTRY) return false
   return stats.maturityCounts.evergreen / entries >= DEEP_EVERGREEN_RATIO
 }
@@ -187,7 +196,7 @@ export const VARIANT_DEFS: readonly VariantDef[] = [
     label: 'var. deep',
     blurb:
       'Depth over breadth: a small, unhurried garden where most of what exists has been revisited to evergreen.',
-    requirement: `${DEEP_MIN_ENTRIES} to ${DEEP_MAX_ENTRIES} entries, averaging ${DEEP_WORDS_PER_ENTRY}+ words each, with at least ${Math.round(DEEP_EVERGREEN_RATIO * 100)}% reaching evergreen.`,
+    requirement: `${DEEP_MIN_ENTRIES}+ entries, averaging ${DEEP_WORDS_PER_ENTRY}+ words each, with at least ${Math.round(DEEP_EVERGREEN_RATIO * 100)}% reaching evergreen.`,
   },
   {
     id: 'broad',
