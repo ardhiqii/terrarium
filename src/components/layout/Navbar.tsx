@@ -12,6 +12,7 @@ const NAV_LINKS = [
   { href: '/notes', label: 'Notes' },
   { href: '/projects', label: 'Projects' },
   { href: '/companions', label: 'Companions' },
+  { href: '/guide', label: 'Guide' },
   { href: '/garden', label: 'Garden' },
   { href: '/graph', label: 'Graph' },
   { href: '/search', label: 'Search' },
