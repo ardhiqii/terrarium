@@ -10,23 +10,33 @@ import { parseNote, serializeNote, titleToFileName, type NoteFrontMatter } from 
 import { renameNoteEverywhere } from '@/lib/garden-fs/rewrite'
 import { extractWikilinks, slugify } from '@/lib/utils'
 import { computeGardenXp } from '@/lib/game/xp'
-import { MATURITIES, type GardenStats, type Maturity, type XpEntry } from '@/lib/game/types'
+import type { CreatureState, GardenStats, Maturity, XpEntry } from '@/lib/game/types'
+import { resolvePureSpriteWithFallback } from '@/lib/game/sprites/pokeapi-pure'
+import Sprite from '@/components/game/Sprite'
+import RemoteSprite from '@/components/game/RemoteSprite'
+import { XpBar } from '@/components/game/XpBar'
 import NoteList, { type NoteSummary } from './NoteList'
+import MaturitySegmented from './MaturitySegmented'
 import WikilinkAutocomplete from './WikilinkAutocomplete'
 import { Wikilink } from './wikilink-node'
 
 interface EditorPaneProps {
   source: GardenSource
+  /** Rendered as a compact status readout at the bottom of the sidebar
+   *  (T25 problem 1): sprite, name, stage, a thin XP bar. Optional so this
+   *  component stays usable without a computed creature (e.g. an empty
+   *  folder mid-first-read). */
+  creatureState?: CreatureState | null
 }
 
 interface DraftForm {
   title: string
-  tags: string
-  maturity: Maturity | ''
+  tags: string[]
+  maturity: Maturity
   body: string
 }
 
-const EMPTY_DRAFT: DraftForm = { title: '', tags: '', maturity: '', body: '' }
+const EMPTY_DRAFT: DraftForm = { title: '', tags: [], maturity: 'seedling', body: '' }
 
 function today(): string {
   return new Date().toISOString().slice(0, 10)
@@ -42,6 +52,9 @@ function toSummary(file: GardenFile): NoteSummary {
   }
 }
 
+/** Splits a raw tag-entry string on commas, so pasting "a, b, c" into the
+ *  inline add field adds three tags in one go, same as the old comma-list
+ *  input did. */
 function parseTagsInput(raw: string): string[] {
   return raw
     .split(',')
@@ -146,7 +159,50 @@ function findWikilinkTrigger(editor: Editor): ResolvedWikilinkTrigger | null {
   return { from: blockStart + trigger.start, to: $from.pos, query: trigger.query }
 }
 
-export default function EditorPane({ source }: EditorPaneProps) {
+/**
+ * Compact creature status readout for the bottom of the sidebar (T25
+ * problem 1): sprite, name, stage, a thin XP bar. Clicking goes to the full
+ * creature view (`/companions`). A status readout, not a dashboard, so
+ * nothing here is interactive beyond that one link.
+ *
+ * Renders through `resolvePureSpriteWithFallback` + `RemoteSprite`, the
+ * exact same client-safe resolver `ConnectGarden`'s `MiniCreature` uses,
+ * which is what guarantees this matches the home page's creature for the
+ * same stage (T25 problem 3).
+ */
+function SidebarCreature({ state }: { state: CreatureState }) {
+  const resolved = resolvePureSpriteWithFallback(state.stage.id)
+  return (
+    <a
+      href="/companions"
+      className="flex items-center gap-3 px-3 py-3 border-t transition-colors hover:opacity-80"
+      style={{ borderColor: 'var(--rule)' }}
+    >
+      <div className="shrink-0 flex items-center justify-center w-10 h-10">
+        {resolved.kind === 'remote' ? (
+          <RemoteSprite resolved={resolved} scale={2} alt={state.stage.name} stage={state.stage.id} />
+        ) : (
+          <Sprite sprite={resolved.data} scale={2} alt={state.stage.name} />
+        )}
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="font-ui text-xs font-medium truncate">
+          {state.stage.name}{' '}
+          <span className="font-data" style={{ color: 'var(--ink-muted)' }}>
+            L{state.stage.index}
+          </span>
+        </p>
+        <XpBar
+          xpIntoStage={state.xpIntoStage}
+          xpForNextStage={state.xpForNextStage}
+          progress={state.progress}
+        />
+      </div>
+    </a>
+  )
+}
+
+export default function EditorPane({ source, creatureState }: EditorPaneProps) {
   const [files, setFiles] = useState<GardenFile[]>([])
   // Starts true so the initial fetch never needs a synchronous setState call
   // inside the effect that kicks it off; `refresh` only touches state after
@@ -158,10 +214,14 @@ export default function EditorPane({ source }: EditorPaneProps) {
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null)
   const [mode, setMode] = useState<'list' | 'edit' | 'create'>('list')
   const [draft, setDraft] = useState<DraftForm>(EMPTY_DRAFT)
+  const [tagDraft, setTagDraft] = useState('')
   const [originalTitle, setOriginalTitle] = useState<string | null>(null)
   const [originalFrontMatter, setOriginalFrontMatter] = useState<NoteFrontMatter | null>(null)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [saving, setSaving] = useState(false)
+  // Below `md` the note list becomes a toggleable drawer rather than a
+  // permanent column, so the editor still fits on a narrow window.
+  const [drawerOpen, setDrawerOpen] = useState(false)
 
   const [trigger, setTrigger] = useState<ResolvedWikilinkTrigger | null>(null)
 
@@ -232,11 +292,13 @@ export default function EditorPane({ source }: EditorPaneProps) {
     setOriginalTitle(null)
     setOriginalFrontMatter(null)
     setDraft(EMPTY_DRAFT)
+    setTagDraft('')
     setMode('create')
     setStatus(null)
     setError(null)
     setConfirmingDelete(false)
     setTrigger(null)
+    setDrawerOpen(false)
     editor?.commands.setContent('')
   }
 
@@ -249,18 +311,41 @@ export default function EditorPane({ source }: EditorPaneProps) {
     setOriginalFrontMatter(frontMatter)
     setDraft({
       title: frontMatter.title,
-      tags: frontMatter.tags.join(', '),
-      maturity: frontMatter.maturity ?? '',
+      tags: frontMatter.tags,
+      maturity: frontMatter.maturity ?? 'seedling',
       body,
     })
+    setTagDraft('')
     setMode('edit')
     setStatus(null)
     setError(null)
     setConfirmingDelete(false)
     setTrigger(null)
+    setDrawerOpen(false)
     // `setContent` is patched by the Markdown extension to parse a plain
     // markdown string, same as it does for a `.md` file loaded from disk.
     editor?.commands.setContent(body)
+  }
+
+  function addTags(raw: string) {
+    const incoming = parseTagsInput(raw)
+    if (incoming.length === 0) return
+    setDraft((d) => {
+      const existing = new Set(d.tags.map((t) => t.toLowerCase()))
+      const next = [...d.tags]
+      for (const tag of incoming) {
+        if (!existing.has(tag.toLowerCase())) {
+          existing.add(tag.toLowerCase())
+          next.push(tag)
+        }
+      }
+      return { ...d, tags: next }
+    })
+    setTagDraft('')
+  }
+
+  function removeTag(tag: string) {
+    setDraft((d) => ({ ...d, tags: d.tags.filter((t) => t !== tag) }))
   }
 
   async function handleSave() {
@@ -278,8 +363,8 @@ export default function EditorPane({ source }: EditorPaneProps) {
       const frontMatter: NoteFrontMatter = {
         title: trimmedTitle,
         date: originalFrontMatter?.date || today(),
-        tags: parseTagsInput(draft.tags),
-        maturity: draft.maturity || undefined,
+        tags: draft.tags,
+        maturity: draft.maturity,
       }
 
       if (mode === 'create') {
@@ -347,6 +432,7 @@ export default function EditorPane({ source }: EditorPaneProps) {
       setSelectedFileName(null)
       setMode('list')
       setDraft(EMPTY_DRAFT)
+      setTagDraft('')
       setTrigger(null)
       editor?.commands.setContent('')
       setStatus('Note deleted.')
@@ -378,6 +464,10 @@ export default function EditorPane({ source }: EditorPaneProps) {
     setTrigger(null)
   }
 
+  function handleSelectNote(fileName: string) {
+    startEdit(fileName)
+  }
+
   if (loading) {
     return (
       <p className="font-ui text-sm p-4" style={{ color: 'var(--ink-muted)' }}>
@@ -394,167 +484,214 @@ export default function EditorPane({ source }: EditorPaneProps) {
     )
   }
 
-  return (
-    <div className="grid grid-cols-1 md:grid-cols-[280px_1fr] h-full border" style={{ borderColor: 'var(--rule)' }}>
-      <div className="border-b md:border-b-0 md:border-r" style={{ borderColor: 'var(--rule)' }}>
+  const sidebar = (
+    <div className="flex flex-col h-full min-h-0">
+      <div className="flex-1 min-h-0">
         <NoteList
           notes={summaries}
           selectedFileName={mode === 'edit' ? selectedFileName : null}
-          onSelect={startEdit}
+          onSelect={handleSelectNote}
           onCreate={startCreate}
         />
       </div>
+      {creatureState && <SidebarCreature state={creatureState} />}
+    </div>
+  )
 
-      <div className="p-4 flex flex-col gap-4">
-        {mode === 'list' && (
-          <p className="font-ui text-sm" style={{ color: 'var(--ink-muted)' }}>
-            Select a note to edit, or create a new one.
-          </p>
+  return (
+    <div className="flex flex-col h-full min-h-0 border" style={{ borderColor: 'var(--rule)' }}>
+      {/* Mobile drawer toggle: below `md` the note list collapses into a
+          toggleable drawer instead of a permanent column. */}
+      <div
+        className="md:hidden flex items-center justify-between px-3 py-2 border-b"
+        style={{ borderColor: 'var(--rule)' }}
+      >
+        <button
+          type="button"
+          onClick={() => setDrawerOpen((o) => !o)}
+          className="font-ui text-xs font-medium px-2 py-1 border transition-colors hover:opacity-70"
+          style={{ borderColor: 'var(--rule)', color: 'var(--ink)' }}
+        >
+          {drawerOpen ? 'Close notes' : `Notes (${summaries.length})`}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-[260px_1fr] flex-1 min-h-0">
+        {drawerOpen && (
+          <div
+            className="md:hidden border-b"
+            style={{ borderColor: 'var(--rule)', maxHeight: '50vh', overflowY: 'auto' }}
+          >
+            {sidebar}
+          </div>
         )}
 
-        {mode !== 'list' && (
-          <>
-            <div className="flex flex-col gap-3">
-              <label className="flex flex-col gap-1">
-                <span className="font-data text-xs uppercase tracking-wide" style={{ color: 'var(--ink-muted)' }}>
-                  Title
-                </span>
+        <div className="hidden md:block border-r min-h-0" style={{ borderColor: 'var(--rule)' }}>
+          {sidebar}
+        </div>
+
+        <div className="flex flex-col min-h-0">
+          {mode === 'list' ? (
+            <div className="flex-1 flex items-center justify-center p-8">
+              <p className="font-ui text-sm text-center" style={{ color: 'var(--ink-muted)' }}>
+                Select a note to edit, or create a new one.
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-start justify-between gap-3 px-4 sm:px-6 pt-5">
                 <input
                   type="text"
                   value={draft.title}
                   onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))}
-                  className="font-ui px-2 py-1.5 border bg-transparent outline-none text-sm"
-                  style={{ borderColor: 'var(--rule)', color: 'var(--ink)' }}
+                  className="font-ui text-2xl sm:text-3xl font-semibold tracking-tighter leading-[1.05] bg-transparent outline-none flex-1 min-w-0"
+                  style={{ color: 'var(--ink)' }}
                   placeholder="Untitled"
+                  aria-label="Note title"
                 />
-              </label>
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={saving}
+                  className="font-ui text-sm font-medium px-3 py-1.5 border transition-colors hover:opacity-80 disabled:opacity-50 shrink-0"
+                  style={{ borderColor: 'var(--accent)', color: 'var(--accent)' }}
+                >
+                  {mode === 'create' ? 'Create' : 'Save'}
+                </button>
+              </div>
 
-              <div className="flex gap-3 flex-wrap">
-                <label className="flex flex-col gap-1 flex-1 min-w-[160px]">
-                  <span className="font-data text-xs uppercase tracking-wide" style={{ color: 'var(--ink-muted)' }}>
-                    Tags (comma separated)
-                  </span>
+              <div
+                className="flex items-center gap-3 flex-wrap px-4 sm:px-6 py-3 mt-2 border-b"
+                style={{ borderColor: 'var(--rule)' }}
+              >
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {draft.tags.map((tag) => (
+                    <span
+                      key={tag}
+                      className="font-data inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full"
+                      style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+                    >
+                      #{tag}
+                      <button
+                        type="button"
+                        onClick={() => removeTag(tag)}
+                        aria-label={`Remove tag ${tag}`}
+                        className="leading-none"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
                   <input
                     type="text"
-                    value={draft.tags}
-                    onChange={(e) => setDraft((d) => ({ ...d, tags: e.target.value }))}
-                    className="font-ui px-2 py-1.5 border bg-transparent outline-none text-sm"
-                    style={{ borderColor: 'var(--rule)', color: 'var(--ink)' }}
-                    placeholder="thinking, tools"
+                    value={tagDraft}
+                    onChange={(e) => setTagDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ',') {
+                        e.preventDefault()
+                        addTags(tagDraft)
+                      } else if (e.key === 'Backspace' && tagDraft === '' && draft.tags.length > 0) {
+                        removeTag(draft.tags[draft.tags.length - 1])
+                      }
+                    }}
+                    onBlur={() => addTags(tagDraft)}
+                    placeholder="+ tag"
+                    aria-label="Add a tag"
+                    className="font-data text-xs px-1.5 py-0.5 bg-transparent outline-none w-20"
+                    style={{ color: 'var(--ink-muted)' }}
                   />
-                </label>
+                </div>
 
-                <label className="flex flex-col gap-1">
-                  <span className="font-data text-xs uppercase tracking-wide" style={{ color: 'var(--ink-muted)' }}>
-                    Maturity
-                  </span>
-                  <select
-                    value={draft.maturity}
-                    onChange={(e) => setDraft((d) => ({ ...d, maturity: e.target.value as Maturity | '' }))}
-                    className="font-ui px-2 py-1.5 border bg-transparent outline-none text-sm"
-                    style={{ borderColor: 'var(--rule)', color: 'var(--ink)' }}
-                  >
-                    <option value="">seedling (default)</option>
-                    {MATURITIES.filter((m) => m !== 'seedling').map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                <MaturitySegmented
+                  value={draft.maturity}
+                  onChange={(m) => setDraft((d) => ({ ...d, maturity: m }))}
+                  className="ml-auto"
+                />
               </div>
-            </div>
 
-            <div className="relative flex-1 flex flex-col">
-              <span className="font-data text-xs uppercase tracking-wide mb-1" style={{ color: 'var(--ink-muted)' }}>
-                Ctrl+B bold, Ctrl+I italic, type [[ to link a note.
-              </span>
+              <div className="relative flex-1 min-h-0 flex flex-col">
+                <div
+                  className="tiptap-editor font-ui flex-1 min-h-0 px-4 sm:px-6 py-3 bg-transparent text-sm leading-relaxed overflow-y-auto"
+                  style={{ color: 'var(--ink)' }}
+                >
+                  <EditorContent editor={editor} />
+                </div>
+                {trigger &&
+                  (() => {
+                    // `coordsAtPos` can throw if the position went stale between
+                    // an edit and this render; fail closed (no popup) rather
+                    // than crash the editor over an autocomplete nicety.
+                    let coords: { left: number; bottom: number } | null = null
+                    try {
+                      coords = editor?.view.coordsAtPos(trigger.from) ?? null
+                    } catch {
+                      coords = null
+                    }
+                    if (!coords) return null
+                    return (
+                      <WikilinkAutocomplete
+                        query={trigger.query}
+                        titles={otherTitles}
+                        onSelect={handleSelectSuggestion}
+                        style={{
+                          position: 'fixed',
+                          top: coords.bottom + 4,
+                          left: coords.left,
+                        }}
+                      />
+                    )
+                  })()}
+              </div>
+
               <div
-                className="tiptap-editor font-ui flex-1 min-h-[280px] px-3 py-2 border bg-transparent text-sm leading-relaxed overflow-y-auto"
-                style={{ borderColor: 'var(--rule)', color: 'var(--ink)' }}
+                className="flex items-center justify-between gap-3 flex-wrap px-4 sm:px-6 py-2 border-t"
+                style={{ borderColor: 'var(--rule)' }}
               >
-                <EditorContent editor={editor} />
+                <div className="flex items-center gap-3">
+                  {xpPreview.length > 0 && (
+                    <p className="font-data text-xs" style={{ color: 'var(--accent)' }}>
+                      {xpPreview.map((e) => `+${e.xp} ${e.label.toLowerCase()}`).join(', ')}
+                    </p>
+                  )}
+                  {error && (
+                    <p className="font-ui text-xs" style={{ color: 'var(--accent)' }}>
+                      {error}
+                    </p>
+                  )}
+                  {status && !error && (
+                    <p className="font-ui text-xs" style={{ color: 'var(--ink-muted)' }}>
+                      {status}
+                    </p>
+                  )}
+                </div>
+
+                {mode === 'edit' && (
+                  <div className="flex items-center gap-2">
+                    {confirmingDelete && (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmingDelete(false)}
+                        className="font-ui text-xs px-2 py-1 transition-colors hover:opacity-80"
+                        style={{ color: 'var(--ink-muted)' }}
+                      >
+                        Cancel
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleDelete}
+                      disabled={saving}
+                      className="font-ui text-xs px-2 py-1 border transition-colors hover:opacity-80 disabled:opacity-50"
+                      style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}
+                    >
+                      {confirmingDelete ? 'Confirm delete' : 'Delete'}
+                    </button>
+                  </div>
+                )}
               </div>
-              {trigger &&
-                (() => {
-                  // `coordsAtPos` can throw if the position went stale between
-                  // an edit and this render; fail closed (no popup) rather
-                  // than crash the editor over an autocomplete nicety.
-                  let coords: { left: number; bottom: number } | null = null
-                  try {
-                    coords = editor?.view.coordsAtPos(trigger.from) ?? null
-                  } catch {
-                    coords = null
-                  }
-                  if (!coords) return null
-                  return (
-                    <WikilinkAutocomplete
-                      query={trigger.query}
-                      titles={otherTitles}
-                      onSelect={handleSelectSuggestion}
-                      style={{
-                        position: 'fixed',
-                        top: coords.bottom + 4,
-                        left: coords.left,
-                      }}
-                    />
-                  )
-                })()}
-            </div>
-
-            {xpPreview.length > 0 && (
-              <p className="font-data text-xs" style={{ color: 'var(--accent)' }}>
-                {xpPreview.map((e) => `+${e.xp} ${e.label.toLowerCase()}`).join(', ')}
-              </p>
-            )}
-
-            {error && (
-              <p className="font-ui text-sm" style={{ color: 'var(--accent)' }}>
-                {error}
-              </p>
-            )}
-            {status && !error && (
-              <p className="font-ui text-sm" style={{ color: 'var(--ink-muted)' }}>
-                {status}
-              </p>
-            )}
-
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleSave}
-                disabled={saving}
-                className="font-ui text-sm font-medium px-3 py-1.5 border transition-colors hover:opacity-80 disabled:opacity-50"
-                style={{ borderColor: 'var(--accent)', color: 'var(--accent)' }}
-              >
-                {mode === 'create' ? 'Create note' : 'Save'}
-              </button>
-
-              {mode === 'edit' && (
-                <button
-                  type="button"
-                  onClick={handleDelete}
-                  disabled={saving}
-                  className="font-ui text-sm px-3 py-1.5 border transition-colors hover:opacity-80 disabled:opacity-50"
-                  style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}
-                >
-                  {confirmingDelete ? 'Confirm delete' : 'Delete'}
-                </button>
-              )}
-
-              {confirmingDelete && (
-                <button
-                  type="button"
-                  onClick={() => setConfirmingDelete(false)}
-                  className="font-ui text-sm px-3 py-1.5 transition-colors hover:opacity-80"
-                  style={{ color: 'var(--ink-muted)' }}
-                >
-                  Cancel
-                </button>
-              )}
-            </div>
-          </>
-        )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   )
