@@ -7,7 +7,7 @@ import ThemeToggle from './ThemeToggle'
 import GardenMark from '../GardenMark'
 import { siteConfig } from '@/lib/site-config'
 
-const NAV_LINKS = [
+const BASE_NAV_LINKS = [
   { href: '/', label: 'Home' },
   { href: '/notes', label: 'Notes' },
   { href: '/projects', label: 'Projects' },
@@ -18,9 +18,17 @@ const NAV_LINKS = [
   { href: '/search', label: 'Search' },
 ]
 
-export default function Navbar() {
+export interface NavbarProps {
+  /** Shown only when true: the leaderboard needs a signed-in viewer to mean anything. */
+  isSignedIn: boolean
+}
+
+export default function Navbar({ isSignedIn }: NavbarProps) {
   const pathname = usePathname()
   const [open, setOpen] = useState(false)
+  const NAV_LINKS = isSignedIn
+    ? [...BASE_NAV_LINKS, { href: '/leaderboard', label: 'Leaderboard' }]
+    : BASE_NAV_LINKS
 
   return (
     <header
