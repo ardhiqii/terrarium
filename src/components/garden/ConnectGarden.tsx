@@ -218,13 +218,42 @@ async function computeFromSource(
   }
 }
 
+/** Eyebrow + heading + one paragraph, shared by every non-workspace state
+ *  (checking/unsupported/disconnected/permission-denied/connecting/reading/
+ *  error). This is the "marketing" register (T25 problem 1): once
+ *  connected, this copy disappears entirely and the writing surface takes
+ *  over the whole screen. */
+function Hero({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="max-w-4xl mx-auto px-4 sm:px-6 py-16">
+      <div className="mb-10">
+        <p
+          className="font-data text-xs uppercase tracking-widest mb-2"
+          style={{ color: 'var(--ink-muted)', letterSpacing: '0.15em' }}
+        >
+          Bring your own garden
+        </p>
+        <h1 className="font-ui text-3xl font-semibold tracking-tighter leading-[1.05] mb-3">
+          Connect a folder
+        </h1>
+        <p className="font-prose text-base leading-relaxed max-w-2xl" style={{ color: 'var(--ink-muted)' }}>
+          Your notes stay on your own disk. This page reads a folder you
+          choose, computes the same creature and companion logic this site
+          runs at build time, and renders it here, in this tab, with nothing
+          sent to any server.
+        </p>
+      </div>
+      {children}
+    </div>
+  )
+}
+
 export function ConnectGarden() {
   const [phase, setPhase] = useState<Phase>({ kind: 'checking' })
   // Held so the editor can write back to the same folder we read from. T23
   // computed from a local `source` and dropped it; T24 built the editor but
   // was not allowed to touch this file, so nothing wired the two together.
   const [source, setSource] = useState<GardenSource | null>(null)
-  const [writing, setWriting] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -284,15 +313,17 @@ export function ConnectGarden() {
 
   if (phase.kind === 'checking') {
     return (
-      <p className="font-ui text-sm" style={{ color: 'var(--ink-muted)' }}>
-        Checking for a previously connected garden…
-      </p>
+      <Hero>
+        <p className="font-ui text-sm" style={{ color: 'var(--ink-muted)' }}>
+          Checking for a previously connected garden…
+        </p>
+      </Hero>
     )
   }
 
   if (phase.kind === 'unsupported') {
     return (
-      <div>
+      <Hero>
         <div className="mb-8">
           <p className="font-ui text-sm leading-relaxed max-w-xl" style={{ color: 'var(--ink-muted)' }}>
             This browser does not support the File System Access API, which
@@ -304,13 +335,13 @@ export function ConnectGarden() {
           </p>
         </div>
         <MiniCreature state={fallbackCreatureState(false)} />
-      </div>
+      </Hero>
     )
   }
 
   if (phase.kind === 'disconnected') {
     return (
-      <div>
+      <Hero>
         <p className="font-ui text-sm leading-relaxed max-w-xl mb-6" style={{ color: 'var(--ink-muted)' }}>
           Point this at a folder of Markdown on your own disk: an Obsidian
           vault, a Logseq graph, or a plain folder of <code className="font-data text-xs">.md</code> files.
@@ -324,13 +355,13 @@ export function ConnectGarden() {
         >
           Connect garden folder
         </button>
-      </div>
+      </Hero>
     )
   }
 
   if (phase.kind === 'permission-denied') {
     return (
-      <div>
+      <Hero>
         <p className="font-ui text-sm leading-relaxed max-w-xl mb-6" style={{ color: 'var(--ink-muted)' }}>
           This browser previously had access to a garden folder, but that
           permission is no longer granted -- browsers can revoke folder
@@ -344,29 +375,33 @@ export function ConnectGarden() {
         >
           Reconnect garden folder
         </button>
-      </div>
+      </Hero>
     )
   }
 
   if (phase.kind === 'connecting') {
     return (
-      <p className="font-ui text-sm" style={{ color: 'var(--ink-muted)' }}>
-        Waiting for folder selection…
-      </p>
+      <Hero>
+        <p className="font-ui text-sm" style={{ color: 'var(--ink-muted)' }}>
+          Waiting for folder selection…
+        </p>
+      </Hero>
     )
   }
 
   if (phase.kind === 'reading') {
     return (
-      <p className="font-ui text-sm" style={{ color: 'var(--ink-muted)' }}>
-        Reading “{phase.folderName}”…
-      </p>
+      <Hero>
+        <p className="font-ui text-sm" style={{ color: 'var(--ink-muted)' }}>
+          Reading “{phase.folderName}”…
+        </p>
+      </Hero>
     )
   }
 
   if (phase.kind === 'error') {
     return (
-      <div>
+      <Hero>
         <p className="font-ui text-sm leading-relaxed max-w-xl mb-4" style={{ color: 'var(--ink-muted)' }}>
           Something went wrong reading “{phase.folderName}”: {phase.message}
         </p>
@@ -377,36 +412,19 @@ export function ConnectGarden() {
         >
           Disconnect
         </button>
-      </div>
+      </Hero>
     )
   }
 
-  // phase.kind === 'ready'
-  return (
-    <div>
-      <div className="flex items-center justify-between flex-wrap gap-3 mb-8 pb-4 border-b" style={{ borderColor: 'var(--rule)' }}>
-        <div>
-          <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)', letterSpacing: '0.15em' }}>
-            Connected
-          </p>
-          <p className="font-ui text-base font-medium mt-1">
-            {phase.folderName}
-            <span className="font-data text-xs ml-2" style={{ color: 'var(--ink-muted)' }}>
-              {phase.totalFiles} markdown {phase.totalFiles === 1 ? 'file' : 'files'}
-            </span>
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setWriting((w) => !w)}
-            className="font-ui text-xs font-medium px-3 py-1.5 border transition-opacity hover:opacity-80"
-            style={{
-              borderColor: writing ? 'var(--accent)' : 'var(--rule)',
-              color: writing ? 'var(--accent)' : 'var(--ink)',
-            }}
-          >
-            {writing ? 'Close editor' : 'Write a note'}
-          </button>
+  // phase.kind === 'ready': the hero disappears entirely. This is a
+  // full-height workspace now, not a page with an editor stuck to it
+  // (T25 problem 1). `min-h-[100dvh]` minus the navbar (`h-14` = 56px),
+  // never `h-screen` per DESIGN.md 2.6 / the standing rule against it.
+  if (phase.totalFiles === 0) {
+    return (
+      <Hero>
+        <div className="flex items-center justify-between flex-wrap gap-3 mb-8 pb-4 border-b" style={{ borderColor: 'var(--rule)' }}>
+          <p className="font-ui text-base font-medium">{phase.folderName}</p>
           <button
             onClick={handleDisconnect}
             className="font-ui text-xs font-medium px-3 py-1.5 border transition-opacity hover:opacity-80"
@@ -415,15 +433,6 @@ export function ConnectGarden() {
             Disconnect
           </button>
         </div>
-      </div>
-
-      {writing && source && (
-        <div className="mb-10 pb-10 border-b" style={{ borderColor: 'var(--rule)' }}>
-          <EditorPane source={source} />
-        </div>
-      )}
-
-      {phase.totalFiles === 0 ? (
         <div className="border border-dashed p-12 text-center" style={{ borderColor: 'var(--rule)' }}>
           <p className="font-ui font-medium mb-1">No markdown here yet</p>
           <p className="font-ui text-sm" style={{ color: 'var(--ink-muted)' }}>
@@ -431,61 +440,90 @@ export function ConnectGarden() {
             <code className="font-data text-xs">.mdx</code> files. Add some and reconnect.
           </p>
         </div>
-      ) : (
-        <>
-          <MiniCreature state={phase.state} />
+      </Hero>
+    )
+  }
 
-          <div className="grid sm:grid-cols-2 gap-8 mt-8">
-            <div>
-              {sectionLabel('Observation log')}
-              <XpLedger entries={phase.state.breakdown} total={phase.state.totalXp} />
-            </div>
-            <div>
-              {sectionLabel('Folder stats')}
-              <div className="font-data text-xs flex flex-col gap-2">
-                <div className="flex items-baseline justify-between">
-                  <span style={{ color: 'var(--ink-muted)' }}>Notes read</span>
-                  <span>{phase.noteCount}</span>
-                </div>
-                <div className="flex items-baseline justify-between">
-                  <span style={{ color: 'var(--ink-muted)' }}>Words</span>
-                  <span>{phase.state.stats.totalWords.toLocaleString()}</span>
-                </div>
-                <div className="flex items-baseline justify-between">
-                  <span style={{ color: 'var(--ink-muted)' }}>Resolved links</span>
-                  <span>{phase.state.stats.resolvedWikilinks}</span>
-                </div>
-                <div className="flex items-baseline justify-between">
-                  <span style={{ color: 'var(--ink-muted)' }}>Backlinks</span>
-                  <span>{phase.state.stats.backlinksReceived}</span>
-                </div>
-                <div className="flex items-baseline justify-between">
-                  <span style={{ color: 'var(--ink-muted)' }}>Tags</span>
-                  <span>{phase.state.stats.tagCount}</span>
-                </div>
+  return (
+    <div className="flex flex-col" style={{ minHeight: 'calc(100dvh - 56px)' }}>
+      {/* Thin status strip: folder name and disconnect. Everything else
+          the old "connected" page showed (stats, companions) now lives
+          below the workspace, reachable by scrolling, so the writing
+          surface still owns the first screenful. */}
+      <div
+        className="flex items-center justify-between flex-wrap gap-2 px-4 sm:px-6 py-2 border-b"
+        style={{ borderColor: 'var(--rule)' }}
+      >
+        <p className="font-data text-xs" style={{ color: 'var(--ink-muted)' }}>
+          {phase.folderName}
+          <span className="ml-2">
+            {phase.totalFiles} markdown {phase.totalFiles === 1 ? 'file' : 'files'}
+          </span>
+        </p>
+        <button
+          onClick={handleDisconnect}
+          className="font-ui text-xs font-medium px-2 py-1 border transition-opacity hover:opacity-80"
+          style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}
+        >
+          Disconnect
+        </button>
+      </div>
+
+      <div className="flex-1 min-h-0">
+        {source && <EditorPane source={source} creatureState={phase.state} />}
+      </div>
+
+      <div className="max-w-4xl mx-auto w-full px-4 sm:px-6 py-16">
+        <div className="grid sm:grid-cols-2 gap-8">
+          <div>
+            {sectionLabel('Observation log')}
+            <XpLedger entries={phase.state.breakdown} total={phase.state.totalXp} />
+          </div>
+          <div>
+            {sectionLabel('Folder stats')}
+            <div className="font-data text-xs flex flex-col gap-2">
+              <div className="flex items-baseline justify-between">
+                <span style={{ color: 'var(--ink-muted)' }}>Notes read</span>
+                <span>{phase.noteCount}</span>
+              </div>
+              <div className="flex items-baseline justify-between">
+                <span style={{ color: 'var(--ink-muted)' }}>Words</span>
+                <span>{phase.state.stats.totalWords.toLocaleString()}</span>
+              </div>
+              <div className="flex items-baseline justify-between">
+                <span style={{ color: 'var(--ink-muted)' }}>Resolved links</span>
+                <span>{phase.state.stats.resolvedWikilinks}</span>
+              </div>
+              <div className="flex items-baseline justify-between">
+                <span style={{ color: 'var(--ink-muted)' }}>Backlinks</span>
+                <span>{phase.state.stats.backlinksReceived}</span>
+              </div>
+              <div className="flex items-baseline justify-between">
+                <span style={{ color: 'var(--ink-muted)' }}>Tags</span>
+                <span>{phase.state.stats.tagCount}</span>
               </div>
             </div>
           </div>
+        </div>
 
-          <div className="mt-12">
-            {sectionLabel('Companions')}
-            {phase.clusters.length === 0 ? (
-              <p className="font-prose text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-                No companions yet. A tag hatches one once it reaches {CLUSTER_THRESHOLD} notes.
-              </p>
-            ) : (
-              <div
-                className="grid gap-3"
-                style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))' }}
-              >
-                {phase.clusters.map((cluster) => (
-                  <ClusterTile key={cluster.tag} cluster={cluster} />
-                ))}
-              </div>
-            )}
-          </div>
-        </>
-      )}
+        <div className="mt-12">
+          {sectionLabel('Companions')}
+          {phase.clusters.length === 0 ? (
+            <p className="font-prose text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
+              No companions yet. A tag hatches one once it reaches {CLUSTER_THRESHOLD} notes.
+            </p>
+          ) : (
+            <div
+              className="grid gap-3"
+              style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))' }}
+            >
+              {phase.clusters.map((cluster) => (
+                <ClusterTile key={cluster.tag} cluster={cluster} />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
