@@ -1,5 +1,5 @@
 import type { Metadata } from 'next'
-import { getSyncStore } from '@/lib/sync/sqlite-store'
+import { getSyncStore } from '@/lib/sync/store'
 import { ProfileSpecimen } from '@/components/profile/ProfileSpecimen'
 import { NeverSyncedFunnel } from '@/components/profile/NeverSyncedFunnel'
 
