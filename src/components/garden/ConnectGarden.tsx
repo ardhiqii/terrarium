@@ -33,7 +33,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { FsaGardenConnection } from '@/lib/garden-fs/fsa-source'
+import { FsaGardenConnection, withTimeout } from '@/lib/garden-fs/fsa-source'
 import EditorPane from './EditorPane'
 import { loadHandle } from '@/lib/garden-fs/handle-store'
 import type { GardenSource } from '@/lib/garden-fs/types'
@@ -56,6 +56,11 @@ import { XpBar } from '@/components/game/XpBar'
 import { XpLedger } from '@/components/game/XpLedger'
 
 const connection = new FsaGardenConnection()
+
+/** Upper bound on reconnecting a previously granted folder. Longer than the
+ *  individual permission timeout so the specific guard reports first when it
+ *  is the one that fires. */
+const RESTORE_TIMEOUT_MS = 8000
 
 type Phase =
   | { kind: 'checking' }
@@ -268,7 +273,13 @@ export function ConnectGarden() {
         return
       }
 
-      const source = await connection.restore()
+      // Backstop. `restore()` awaits two browser-owned promises, IndexedDB
+      // and the handle's permission check, and neither is ours to guarantee.
+      // Each is individually guarded now, but `checking` is the initial state
+      // and must never be reachable as a permanent one, so the whole thing is
+      // bounded too. Timing out lands on the connect screen, which is
+      // actionable, rather than on a sentence that never changes.
+      const source = await withTimeout(connection.restore(), RESTORE_TIMEOUT_MS, null)
       if (cancelled) return
 
       if (source) {
