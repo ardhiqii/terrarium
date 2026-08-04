@@ -69,7 +69,17 @@ export class FsaGardenSource implements GardenSource {
   async write(name: string, content: string): Promise<void> {
     const fileHandle = await this.handle.getFileHandle(name, { create: true })
     const writable = await fileHandle.createWritable()
-    await writable.write(content)
+    try {
+      await writable.write(content)
+    } catch (err) {
+      // Chromium holds an exclusive lock on the file until the stream is
+      // closed or aborted, and writes go to a swap file that only becomes the
+      // real file on close. Letting a failed write escape without aborting
+      // stranded that swap file and left the note locked against every later
+      // save, so the user could not retry.
+      await writable.abort().catch(() => {})
+      throw err
+    }
     await writable.close()
   }
 

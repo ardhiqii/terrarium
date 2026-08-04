@@ -288,7 +288,16 @@ export function ConnectGarden() {
       setPhase({ kind: stored ? 'permission-denied' : 'disconnected' })
     }
 
-    init()
+    // `checking` is the INITIAL state, so without this catch it is also the
+    // silent failure state: any rejection inside init leaves the page reading
+    // "Checking for a previously connected garden..." forever, with nothing
+    // in the console and no way out but a full refresh. The root cause lived
+    // in handle-store.ts, but a floating promise here is what turned it into
+    // a permanent dead end rather than a recoverable error, so the floor
+    // stays regardless of what the storage layer does next.
+    init().catch(() => {
+      if (!cancelled) setPhase({ kind: 'disconnected' })
+    })
     return () => {
       cancelled = true
     }
