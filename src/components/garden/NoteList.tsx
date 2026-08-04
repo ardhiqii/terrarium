@@ -98,6 +98,20 @@ export function filterByTag(notes: NoteSummary[], tag: string | null): NoteSumma
 }
 
 /**
+ * The tag filter actually in force.
+ *
+ * A selected tag can stop existing while it is selected: delete the last note
+ * carrying it, or reconnect to a different folder. The rail is built from the
+ * current notes, so its chip disappears, and a raw `activeTag` would leave the
+ * list filtered by something with no visible control to undo it. Deriving the
+ * value instead means the filter clears itself.
+ */
+export function resolveActiveTag(tags: TagCount[], activeTag: string | null): string | null {
+  if (activeTag === null) return null
+  return tags.some((t) => t.tag === activeTag) ? activeTag : null
+}
+
+/**
  * Whether the maturity glyph earns its place.
  *
  * A channel with the same value on every row carries no information and is
@@ -151,13 +165,16 @@ export default function NoteList({ notes, selectedFileName, onSelect, onCreate }
   const [activeTag, setActiveTag] = useState<string | null>(null)
 
   const tags = useMemo(() => tagCounts(notes), [notes])
+  // Derived, not raw: see resolveActiveTag. A tag that no longer exists must
+  // not keep filtering the list after its chip has gone.
+  const effectiveTag = useMemo(() => resolveActiveTag(tags, activeTag), [tags, activeTag])
   const visible = useMemo(
-    () => sortNotes(filterNotes(filterByTag(notes, activeTag), query)),
-    [notes, activeTag, query]
+    () => sortNotes(filterNotes(filterByTag(notes, effectiveTag), query)),
+    [notes, effectiveTag, query]
   )
   const showMaturity = useMemo(() => shouldShowMaturity(notes), [notes])
 
-  const narrowed = activeTag !== null || query.trim().length > 0
+  const narrowed = effectiveTag !== null || query.trim().length > 0
   const countLabel = narrowed
     ? `${visible.length} of ${notes.length} notes`
     : `${notes.length} note${notes.length !== 1 ? 's' : ''}`
@@ -209,7 +226,7 @@ export default function NoteList({ notes, selectedFileName, onSelect, onCreate }
           <TagChip
             label="All"
             count={notes.length}
-            active={activeTag === null}
+            active={effectiveTag === null}
             onClick={() => setActiveTag(null)}
           />
           {tags.map(({ tag, count }) => (
@@ -217,8 +234,8 @@ export default function NoteList({ notes, selectedFileName, onSelect, onCreate }
               key={tag}
               label={tag === UNTAGGED ? UNTAGGED : `#${tag}`}
               count={count}
-              active={activeTag === tag}
-              onClick={() => setActiveTag(activeTag === tag ? null : tag)}
+              active={effectiveTag === tag}
+              onClick={() => setActiveTag(effectiveTag === tag ? null : tag)}
             />
           ))}
         </div>

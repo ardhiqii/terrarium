@@ -29,7 +29,7 @@ describe('sortNotes', () => {
 // note once per tag it carried, so a 7-note garden showed 14 rows under a
 // header reading "7 notes". These cover the replacements.
 // ---------------------------------------------------------------------------
-import { tagCounts, filterByTag, shouldShowMaturity } from './NoteList'
+import { tagCounts, filterByTag, shouldShowMaturity, resolveActiveTag } from './NoteList'
 
 function tagged(title: string, fileName: string, tags: string[]): NoteSummary {
   return { title, fileName, tags }
@@ -125,5 +125,33 @@ describe('shouldShowMaturity', () => {
 
   it('is false for an empty list', () => {
     expect(shouldShowMaturity([])).toBe(false)
+  })
+})
+
+describe('resolveActiveTag', () => {
+  const tags = [
+    { tag: 'meta', count: 3 },
+    { tag: 'pkm', count: 1 },
+  ]
+
+  it('keeps a tag that still exists', () => {
+    expect(resolveActiveTag(tags, 'meta')).toBe('meta')
+  })
+
+  it('passes null through', () => {
+    expect(resolveActiveTag(tags, null)).toBeNull()
+  })
+
+  /**
+   * The stranding case: filter by a tag, then delete the last note carrying
+   * it. Its chip leaves the rail, so a raw activeTag would keep filtering
+   * with no visible control to undo it.
+   */
+  it('clears a tag whose last note is gone', () => {
+    expect(resolveActiveTag(tags, 'writing')).toBeNull()
+  })
+
+  it('clears when the folder is swapped for one with no tags at all', () => {
+    expect(resolveActiveTag([], 'meta')).toBeNull()
   })
 })
