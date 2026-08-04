@@ -2,20 +2,15 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { isAppShellRoute } from '@/lib/app-shell-routes'
 import { siteConfig, wordmarkText } from '@/lib/site-config'
-
-/**
- * Routes that own the full viewport and must not have a page footer below
- * them. /write is an editor shell: its sidebar and prose each scroll
- * independently, and a footer underneath would give the document a second
- * scroll axis, so you could scroll the whole app away while typing. That is
- * the bug this list exists to prevent, not a styling preference.
- */
-const APP_SHELL_ROUTES = ['/write']
 
 export default function Footer() {
   const pathname = usePathname()
-  if (APP_SHELL_ROUTES.some((route) => pathname === route || pathname.startsWith(route + '/'))) {
+  // No page footer under an app shell: it would give the document a second
+  // scroll axis, so you could scroll the whole editor away while typing.
+  // The route list is shared with the Navbar, which uses it to go full bleed.
+  if (isAppShellRoute(pathname)) {
     return null
   }
 
@@ -25,7 +20,7 @@ export default function Footer() {
       style={{ borderColor: 'var(--rule)' }}
     >
       <div
-        className="font-ui max-w-4xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-sm"
+        className="font-ui max-w-5xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-sm"
         style={{ color: 'var(--ink-muted)' }}
       >
         <p>
