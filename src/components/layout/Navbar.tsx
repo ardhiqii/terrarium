@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useCallback, useEffect, useState } from 'react'
 import ThemeToggle from './ThemeToggle'
+import AccountMenu from './AccountMenu'
 import GardenMark from '../GardenMark'
 import { siteConfig } from '@/lib/site-config'
 
@@ -22,6 +23,7 @@ const BASE_NAV_LINKS = [
 interface SessionInfo {
   signedIn: boolean
   handle: string | null
+  avatarUrl: string | null
   /** False when the server has no GitHub OAuth app configured. */
   configured: boolean
 }
@@ -70,35 +72,23 @@ export default function Navbar() {
     window.location.reload()
   }, [])
 
-  const NAV_LINKS = session?.signedIn
-    ? [...BASE_NAV_LINKS, { href: '/leaderboard', label: 'Leaderboard' }]
-    : BASE_NAV_LINKS
+  // The same eight links for everyone, signed in or not. Leaderboard and the
+  // profile used to be appended here when signed in, which made the nav row
+  // reflow at sign in and pushed "Sign out" into a two-line wrap. They live in
+  // the account menu now.
+  const NAV_LINKS = BASE_NAV_LINKS
 
-  const authControl = (() => {
-    if (!session || !session.configured) return null
-    if (session.signedIn) {
-      return (
-        <button
-          onClick={signOut}
-          className="font-ui px-3 py-1.5 text-sm transition-colors"
-          style={{ color: 'var(--ink-muted)' }}
-        >
-          Sign out
-        </button>
-      )
-    }
-    return (
-      // A plain anchor, not next/link: this leaves the app for github.com via
-      // a server redirect, so client-side navigation would break the flow.
-      <a
-        href="/api/auth/login"
-        className="font-ui px-3 py-1.5 text-sm transition-colors"
-        style={{ color: 'var(--ink-muted)' }}
-      >
-        Sign in
-      </a>
-    )
-  })()
+  // Rendered only once the session has resolved, so the header never flashes
+  // a control that then changes.
+  const accountMenu =
+    session && session.configured ? (
+      <AccountMenu
+        signedIn={session.signedIn}
+        handle={session.handle}
+        avatarUrl={session.avatarUrl}
+        onSignOut={signOut}
+      />
+    ) : null
 
   return (
     <header
@@ -136,7 +126,7 @@ export default function Navbar() {
                 <Link
                   key={link.href}
                   href={link.href}
-                  className="font-ui px-3 py-1.5 text-sm transition-colors"
+                  className="font-ui px-2.5 py-1.5 text-sm whitespace-nowrap transition-colors"
                   style={{
                     color: isActive ? 'var(--ink)' : 'var(--ink-muted)',
                     background: isActive ? 'var(--paper-raised)' : 'transparent',
@@ -147,10 +137,16 @@ export default function Navbar() {
                 </Link>
               )
             })}
-            {authControl}
-            <div className="ml-2">
-              <ThemeToggle />
-            </div>
+            {/* Navigation ends here. Everything past the rule is about the
+                viewer rather than the garden, and the divider is what makes
+                that legible without a second row or a heavier treatment. */}
+            <div
+              aria-hidden="true"
+              className="mx-2 h-4 w-px shrink-0"
+              style={{ background: 'var(--rule)' }}
+            />
+            {accountMenu}
+            <ThemeToggle />
           </nav>
 
           {/* Mobile: theme + hamburger */}
@@ -204,7 +200,15 @@ export default function Navbar() {
                 </Link>
               )
             })}
-            {authControl && <div className="px-3 pt-1">{authControl}</div>}
+            {session && session.configured && (
+              <AccountMenu
+                signedIn={session.signedIn}
+                handle={session.handle}
+                avatarUrl={session.avatarUrl}
+                onSignOut={signOut}
+                variant="inline"
+              />
+            )}
           </nav>
         )}
       </div>
