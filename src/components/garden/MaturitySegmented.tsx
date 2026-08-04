@@ -12,6 +12,22 @@ const GLYPH: Record<Maturity, string> = {
   evergreen: '●',
 }
 
+/**
+ * What each stage actually means, shown on hover and focus.
+ *
+ * The three words are a digital-garden convention (DESIGN.md 1) and are not
+ * self-explanatory to anyone meeting them for the first time. `title` rather
+ * than a custom tooltip because ThemeToggle already uses `title` for the same
+ * job, so this introduces no second pattern, and because the native tooltip
+ * needs no portal, no positioning and no dismissal handling in a control that
+ * lives inside a scrolling editor pane.
+ */
+const DESCRIPTION: Record<Maturity, string> = {
+  seedling: 'Seedling. A rough first capture, still forming.',
+  budding: 'Budding. Developing, revisited at least once.',
+  evergreen: 'Evergreen. Settled enough to build on and link to.',
+}
+
 interface MaturitySegmentedProps {
   value: Maturity
   onChange: (maturity: Maturity) => void
@@ -73,13 +89,14 @@ export default function MaturitySegmented({ value, onChange, className = '' }: M
             tabIndex={selected ? 0 : -1}
             onClick={() => onChange(m)}
             onKeyDown={(e) => handleKeyDown(e, index)}
-            className="flex items-center gap-1.5 px-2.5 py-1 border transition-colors"
+            title={DESCRIPTION[m]}
+            className="ui-segment flex items-center gap-1.5 px-2.5 py-1 border"
+            data-active={selected}
             style={{
               borderColor: selected ? 'var(--accent)' : 'var(--rule)',
               color: selected ? 'var(--accent)' : 'var(--ink-muted)',
               fontWeight: selected ? 600 : 400,
               marginLeft: index === 0 ? 0 : -1,
-              background: selected ? 'var(--accent-soft)' : 'transparent',
             }}
           >
             <span aria-hidden="true">{GLYPH[m]}</span>

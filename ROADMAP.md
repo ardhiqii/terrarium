@@ -19,7 +19,7 @@ The key decision: **public data only, no accounts, no database.** A creature is 
 - **Garden creature.** The main one, aggregating the garden's notes plus all repo activity.
 
 **Three surfaces:**
-1. **The garden site.** The specimen plate, ledger, and bestiary. Yours.
+1. **The garden site.** The specimen plate, ledger, and companions page. Yours.
 2. **The browser extension.** Injects creatures into github.com repo lists so other developers see them. This is the engagement engine.
 3. **The README badge.** A static SVG for anyone without the extension.
 
@@ -83,7 +83,7 @@ strongly preferred.
 
 ### Resume here
 
-The site is built: retheme, animated creature on the home page, `/bestiary`, real commit XP, a
+The site is built: retheme, animated creature on the home page, `/companions`, real commit XP, a
 public API, and 31 tests. Verified state: `npx tsc --noEmit` zero errors, `npm test` 31 passing,
 `npm run build` passes with `/api/creature` dynamic and every other route static.
 
@@ -120,16 +120,27 @@ Work on a branch, merge to `dev`. Nothing is deployed.
 
 Site (retheme, notes, projects, tags, search, graph), the creature system (XP engine,
 4 stages, companions from repos and tag clusters, 9 species lines, items, variants),
-`/guide`, `/garden` (connect a local markdown folder, TipTap editor, all client-side),
+`/guide`, `/write` (connect a local markdown folder, TipTap editor, all client-side),
 `/api/creature` + `/api/creature.svg`, the browser extension, and opt-in sync with
 profiles and a friends leaderboard.
 
 ### What is left, in the order I would do it
 
-1. **Register a GitHub OAuth app** and replace the session stub.
-   Only you can do this. Callback `http://localhost:3000/api/auth/callback`, put the
-   id and secret in `.env.local`. Until then production resolves to always-signed-out,
-   so sync, profiles, and the leaderboard exist but nobody can sign in.
+1. ~~**Register a GitHub OAuth app** and replace the session stub.~~ **Done.**
+   The flow is built: `/api/auth/{login,callback,logout,session}`, a signed session
+   cookie (`src/lib/sync/session-cookie.ts`), and `GithubSessionProvider` selected by
+   `getSessionProvider()` whenever `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and
+   `SESSION_SECRET` are all set. Unconfigured, production still resolves to
+   signed-out and the sign in control hides itself. See README for setup.
+
+   Registered as a **GitHub App** rather than an OAuth App: same login protocol,
+   but it accepts several callback URLs, so localhost and the deployed origin
+   coexist. It requests **no scopes and no permissions**.
+
+   Note for whoever reads this next: the root layout no longer reads the session.
+   It used to, and a cookie read in a root layout opts every route in the site into
+   dynamic rendering, which would have cost all 38 prerendered pages to decide
+   whether one nav link is visible. The Navbar fetches `/api/auth/session` instead.
 
 2. **Deploy.** The extension points at `localhost:3000` and the README badge cannot be
    used in a real README until there is a public origin. Note `node:sqlite` writes to
@@ -208,7 +219,7 @@ rather than one for the owner and another for everyone else.
 
 **Run these together:** group A is T1, T3, T5 at once. Then group B/C, then D.
 
-Ordering follows the stated priorities: creature visible first, then commit XP, then bestiary, then distribution.
+Ordering follows the stated priorities: creature visible first, then commit XP, then companions, then distribution.
 
 ---
 

@@ -27,7 +27,7 @@ export default async function TagPage({ params }: Props) {
   const items = getContentByTag(tag)
 
   return (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 py-16">
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-16">
       <nav className="font-ui mb-8 text-sm" style={{ color: 'var(--ink-muted)' }}>
         <Link href="/tags" className="hover:opacity-70 transition-opacity">Tags</Link>
       </nav>

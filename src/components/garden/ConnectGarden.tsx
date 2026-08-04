@@ -33,7 +33,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { FsaGardenConnection } from '@/lib/garden-fs/fsa-source'
+import { FsaGardenConnection, withTimeout } from '@/lib/garden-fs/fsa-source'
 import EditorPane from './EditorPane'
 import { loadHandle } from '@/lib/garden-fs/handle-store'
 import type { GardenSource } from '@/lib/garden-fs/types'
@@ -56,6 +56,11 @@ import { XpBar } from '@/components/game/XpBar'
 import { XpLedger } from '@/components/game/XpLedger'
 
 const connection = new FsaGardenConnection()
+
+/** Upper bound on reconnecting a previously granted folder. Longer than the
+ *  individual permission timeout so the specific guard reports first when it
+ *  is the one that fires. */
+const RESTORE_TIMEOUT_MS = 8000
 
 type Phase =
   | { kind: 'checking' }
@@ -225,7 +230,7 @@ async function computeFromSource(
  *  over the whole screen. */
 function Hero({ children }: { children: React.ReactNode }) {
   return (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 py-16">
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-16">
       <div className="mb-10">
         <p
           className="font-data text-xs uppercase tracking-widest mb-2"
@@ -254,6 +259,10 @@ export function ConnectGarden() {
   // computed from a local `source` and dropped it; T24 built the editor but
   // was not allowed to touch this file, so nothing wired the two together.
   const [source, setSource] = useState<GardenSource | null>(null)
+  // Closed by default: this is a writing surface, and the ledger is a thing
+  // you check occasionally rather than something that should be competing
+  // with the note for vertical space.
+  const [statsOpen, setStatsOpen] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -264,7 +273,13 @@ export function ConnectGarden() {
         return
       }
 
-      const source = await connection.restore()
+      // Backstop. `restore()` awaits two browser-owned promises, IndexedDB
+      // and the handle's permission check, and neither is ours to guarantee.
+      // Each is individually guarded now, but `checking` is the initial state
+      // and must never be reachable as a permanent one, so the whole thing is
+      // bounded too. Timing out lands on the connect screen, which is
+      // actionable, rather than on a sentence that never changes.
+      const source = await withTimeout(connection.restore(), RESTORE_TIMEOUT_MS, null)
       if (cancelled) return
 
       if (source) {
@@ -284,7 +299,16 @@ export function ConnectGarden() {
       setPhase({ kind: stored ? 'permission-denied' : 'disconnected' })
     }
 
-    init()
+    // `checking` is the INITIAL state, so without this catch it is also the
+    // silent failure state: any rejection inside init leaves the page reading
+    // "Checking for a previously connected garden..." forever, with nothing
+    // in the console and no way out but a full refresh. The root cause lived
+    // in handle-store.ts, but a floating promise here is what turned it into
+    // a permanent dead end rather than a recoverable error, so the floor
+    // stays regardless of what the storage layer does next.
+    init().catch(() => {
+      if (!cancelled) setPhase({ kind: 'disconnected' })
+    })
     return () => {
       cancelled = true
     }
@@ -445,13 +469,32 @@ export function ConnectGarden() {
   }
 
   return (
-    <div className="flex flex-col" style={{ minHeight: 'calc(100dvh - 56px)' }}>
-      {/* Thin status strip: folder name and disconnect. Everything else
-          the old "connected" page showed (stats, companions) now lives
-          below the workspace, reachable by scrolling, so the writing
-          surface still owns the first screenful. */}
+    // A FIXED shell, not a minimum, and centered in the same 1024px column
+    // the rest of the site uses. It was briefly full bleed, which made /write
+    // the only page that changed the layout's shape. `border-x` matters more
+    // than it looks: a fixed-height slab centered with page background either
+    // side reads as a modal that lost its backdrop, and the hairlines
+    // continue the header's bottom rule so it reads as a framed column.
+    // This used to be `minHeight`, which let the
+    // column grow past the viewport, so the document itself scrolled: typing
+    // near the bottom of a note scrolled the entire app, and you could scroll
+    // the editor away to reveal the stats and the site footer underneath.
+    //
+    // With a definite height plus overflow-hidden, the sidebar and the prose
+    // each become their own scroll region. Both already carried overflow-y-auto
+    // and neither could ever activate, because nothing above them had a height
+    // to divide.
+    //
+    // The navbar offset is a token (globals.css) rather than a literal, because
+    // the old literal said 56px and the header is 57px with its bottom border.
+    <div
+      className="max-w-5xl mx-auto w-full flex flex-col overflow-hidden border-x"
+      style={{ height: 'calc(100dvh - var(--nav-h))', borderColor: 'var(--rule)' }}
+    >
+      {/* Thin status strip: folder name, stats toggle, disconnect. `shrink-0`
+          so it keeps its height when the editor below wants room. */}
       <div
-        className="flex items-center justify-between flex-wrap gap-2 px-4 sm:px-6 py-2 border-b"
+        className="shrink-0 flex items-center justify-between flex-wrap gap-2 px-4 sm:px-6 py-2 border-b"
         style={{ borderColor: 'var(--rule)' }}
       >
         <p className="font-data text-xs" style={{ color: 'var(--ink-muted)' }}>
@@ -460,20 +503,43 @@ export function ConnectGarden() {
             {phase.totalFiles} markdown {phase.totalFiles === 1 ? 'file' : 'files'}
           </span>
         </p>
-        <button
-          onClick={handleDisconnect}
-          className="font-ui text-xs font-medium px-2 py-1 border transition-opacity hover:opacity-80"
-          style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}
-        >
-          Disconnect
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setStatsOpen((open) => !open)}
+            aria-expanded={statsOpen}
+            aria-controls="gc-stats-panel"
+            className="font-ui text-xs font-medium px-2 py-1 border transition-opacity hover:opacity-80"
+            style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}
+          >
+            {statsOpen ? 'Hide stats' : 'Stats'}
+          </button>
+          <button
+            onClick={handleDisconnect}
+            className="font-ui text-xs font-medium px-2 py-1 border transition-opacity hover:opacity-80"
+            style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}
+          >
+            Disconnect
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 min-h-0">
         {source && <EditorPane source={source} creatureState={phase.state} />}
       </div>
 
-      <div className="max-w-4xl mx-auto w-full px-4 sm:px-6 py-16">
+      {/* The observation log, folder stats and companions used to sit here as
+          a plain sibling, which is what guaranteed the column overflowed the
+          viewport. They are the same content, now a collapsed-by-default
+          panel with its own scroll, capped so it can never take more than
+          half the shell. Closed, it costs nothing; open, the editor keeps
+          the rest. */}
+      {statsOpen && (
+        <div
+          id="gc-stats-panel"
+          className="shrink-0 border-t overflow-y-auto"
+          style={{ borderColor: 'var(--rule)', maxHeight: '45%' }}
+        >
+          <div className="w-full px-4 sm:px-6 py-8">
         <div className="grid sm:grid-cols-2 gap-8">
           <div>
             {sectionLabel('Observation log')}
@@ -522,8 +588,10 @@ export function ConnectGarden() {
               ))}
             </div>
           )}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }

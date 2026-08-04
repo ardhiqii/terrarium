@@ -1,6 +1,17 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  async redirects() {
+    return [
+      {
+        // The local editor moved from /garden to /write when the nav label
+        // changed. Permanent, so any bookmark or existing link survives.
+        source: '/garden',
+        destination: '/write',
+        permanent: true,
+      },
+    ]
+  },
   images: {
     // CreatureSprite renders PokeAPI's animated Generation-V sprites via a
     // plain <img>, not next/image, specifically because next/image would

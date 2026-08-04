@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { FsaGardenSource, FsaGardenConnection, isFsaSupported } from './fsa-source'
+import { FsaGardenSource, FsaGardenConnection, isFsaSupported, withTimeout } from './fsa-source'
 
 /**
  * The test environment (vitest.config.mts: `environment: 'node'`) has no
@@ -174,5 +174,42 @@ describe('FsaGardenConnection: connect() failure paths', () => {
     const connection = new FsaGardenConnection()
     await expect(connection.connect()).resolves.toBeNull()
     vi.unstubAllGlobals()
+  })
+})
+
+/**
+ * The /write hang, second half.
+ *
+ * `restore()` awaits two browser-owned promises: IndexedDB (fixed separately
+ * in handle-store) and `handle.queryPermission()`. The permission call is
+ * wrapped in try/catch, which looks safe and is not: a catch cannot rescue a
+ * promise that never settles, and Chromium can stall that call rather than
+ * reject it when a persisted handle points at a folder that has moved or a
+ * drive that is no longer mounted. A stall stranded /write on "Checking for a
+ * previously connected garden..." with no exit but a refresh.
+ *
+ * These use vitest's timeout as the assertion: a hang fails the test.
+ */
+describe('withTimeout', () => {
+  it('passes through a value that settles in time', async () => {
+    await expect(withTimeout(Promise.resolve('ok'), 1000, 'fallback')).resolves.toBe('ok')
+  })
+
+  it('falls back rather than hanging when the promise never settles', async () => {
+    const never = new Promise<string>(() => {})
+    await expect(withTimeout(never, 20, 'fallback')).resolves.toBe('fallback')
+  })
+
+  it('still rejects for a genuine failure, which is recoverable', async () => {
+    await expect(withTimeout(Promise.reject(new Error('boom')), 1000, 'fallback')).rejects.toThrow(
+      'boom'
+    )
+  })
+
+  it('does not leave a pending timer that keeps the process alive', async () => {
+    const spy = vi.spyOn(globalThis, 'clearTimeout')
+    await withTimeout(Promise.resolve(1), 50_000, 0)
+    expect(spy).toHaveBeenCalled()
+    spy.mockRestore()
   })
 })

@@ -4,7 +4,6 @@ import { Geist, Geist_Mono, EB_Garamond } from 'next/font/google'
 import { ThemeProvider } from 'next-themes'
 import Navbar from '@/components/layout/Navbar'
 import Footer from '@/components/layout/Footer'
-import { getSessionProvider } from '@/lib/sync/session'
 import './globals.css'
 
 const geistSans = Geist({
@@ -30,16 +29,18 @@ export const metadata: Metadata = {
   description: siteConfig.description,
 }
 
-export default async function RootLayout({
+export default function RootLayout({
   children,
 }: {
   children: React.ReactNode
 }) {
-  // Read here, once, at the root, so the Navbar (a client component) never
-  // has to reach the session layer itself: it just gets a plain boolean
-  // prop. `getSessionProvider().current()` never throws (see session.ts).
-  const session = await getSessionProvider().current()
-
+  // THE SESSION IS DELIBERATELY NOT READ HERE. It used to be, and the Navbar
+  // took a boolean prop. But reading a session means reading a cookie, and
+  // per the Next 16 docs `cookies()` "will opt a route into dynamic
+  // rendering" when used in a layout or page. In the root layout that
+  // applies to the entire site, so every prerendered note, project, and tag
+  // page would have become server-rendered just to decide whether one nav
+  // link is visible. The Navbar now fetches `/api/auth/session` itself.
   return (
     <html
       lang="en"
@@ -49,8 +50,12 @@ export default async function RootLayout({
       <body>
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
           <div className="min-h-[100dvh] flex flex-col">
-            <Navbar isSignedIn={session !== null} />
-            <main className="flex-1">
+            <Navbar />
+            {/* `min-h-0` matters: without it a flex child refuses to shrink
+                below its content, so a route that wants to bound its own
+                height (the /write editor shell) can never clip, and its
+                children's overflow-y never activates. */}
+            <main className="flex-1 min-h-0">
               {children}
             </main>
             <Footer />

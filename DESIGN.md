@@ -21,14 +21,14 @@ This reframe is what keeps the site from being "a blog with a distracting sprite
 
 ### The specimen-archive frame
 
-Notes are **observations**. Projects are **field studies**. The creature is a **documented species** with a specimen plate, a stage, and an observation count. The bestiary is the archive. This frame lets a pixel sprite sit inside a serious reading site without tonal whiplash, because an archive is exactly the kind of place a specimen plate belongs.
+Notes are **observations**. Projects are **field studies**. The creature is a **documented species** with a specimen plate, a stage, and an observation count. The companions page is the archive. This frame lets a pixel sprite sit inside a serious reading site without tonal whiplash, because an archive is exactly the kind of place a specimen plate belongs.
 
 ### Surface separation (the rule that protects readability)
 
 | Surface | Register |
 |---|---|
 | Note and project pages | Pure reading. Serif body, generous measure, no game chrome beyond a single quiet footer strip. |
-| Home, `/bestiary`, `/archive` | Archive register. Specimen plates, stats, sprites, mono data. |
+| Home, `/companions` | Archive register. Specimen plates, stats, sprites, mono data. |
 | GitHub embed | Game register. It is a badge, it can be louder. |
 
 Game UI never intrudes on a reading surface. This is not negotiable; it is the thing that makes the concept work.
@@ -189,7 +189,7 @@ Therefore:
 
 1. **Foundation.** Replace the palette and type per section 2. Move fonts to `next/font`. Remove the Google Fonts `@import`. Retheme existing pages. No creature yet.
 2. **XP engine.** `src/lib/xp.ts` computing garden XP from existing content, backlink, and graph libs. Surface the specimen plate on the home page.
-3. **Bestiary and items.** `/bestiary` route, item drawer, unlock logic.
+3. **Companions and items.** `/companions` route, item drawer, unlock logic.
 4. **GitHub layer.** Build-time commit fetch, cached JSON, combined XP.
 5. **Embed.** `/api/creature.svg`, then GIF if animation is wanted.
 6. **Variants.** Trait system driven by graph shape.

@@ -32,34 +32,56 @@
     return sharedSheet
   }
 
+  /**
+   * Styled to sit inside GitHub rather than on top of it.
+   *
+   * The colours come from GitHub's own Primer custom properties, with the
+   * older Primer names and then a literal as fallbacks. This works despite
+   * `all: initial` on the host because the `all` shorthand resets every
+   * property EXCEPT direction, unicode-bidi, and custom properties, so the
+   * page's variables still inherit into this shadow tree. The payoff is that
+   * the badge tracks GitHub's light, dark, dimmed, and high-contrast themes
+   * for free, instead of guessing with two hardcoded palettes.
+   *
+   * Sizing deliberately mirrors GitHub's own Label component (12px text,
+   * 2em radius, ~20px box) so it reads as a sibling of the "Public" pill it
+   * sits next to, not as a foreign object.
+   */
   const BADGE_CSS = `
-    :host { all: initial; }
+    :host {
+      all: initial;
+      /* The host must not be a block, or it would break the line box of the
+         heading it is appended to and push the row taller. */
+      display: inline-flex;
+      vertical-align: middle;
+    }
     .${CLASS_PREFIX}badge {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      margin-left: 8px;
-      padding: 1px 6px 1px 2px;
-      border-radius: 999px;
-      border: 1px solid rgba(140,140,150,0.35);
-      background: rgba(140,140,150,0.08);
+      gap: 5px;
+      margin-left: 6px;
+      padding: 0 7px 0 3px;
+      height: 20px;
+      box-sizing: border-box;
+      border-radius: 2em;
+      border: 1px solid var(--borderColor-default, var(--color-border-default, rgba(140,140,150,0.35)));
+      background: var(--bgColor-muted, var(--color-canvas-subtle, rgba(140,140,150,0.08)));
       font-family: ui-monospace, "Geist Mono", SFMono-Regular, Menlo, monospace;
       font-size: 11px;
       line-height: 18px;
       vertical-align: middle;
       white-space: nowrap;
-      color: var(--gcx-fg, #24292f);
+      color: var(--fgColor-muted, var(--color-fg-muted, #656d76));
     }
-    .${CLASS_PREFIX}badge.gcx-dark { color: #c9d1d9; }
     .${CLASS_PREFIX}sprite {
-      width: 18px;
-      height: 18px;
+      /* Fixed box, always. The sprite loads asynchronously, so without
+         reserved space every badge would resize when its GIF arrives and
+         nudge the row. This is the layout-shift guard. */
+      width: 16px;
+      height: 16px;
       image-rendering: pixelated;
       display: block;
       flex: 0 0 auto;
-    }
-    .${CLASS_PREFIX}stage {
-      opacity: 0.85;
     }
     .${CLASS_PREFIX}variant {
       /* Same accent lock as DESIGN.md 2.1 (--accent). No glow, no sprite
@@ -102,20 +124,60 @@
   }
 
   /**
-   * Finds repo-row anchors without depending on GitHub's current class
-   * names. A repo row anchor is any link whose href is exactly
-   * `/<user>/<repo>` (one path segment past the profile), which is stable
-   * regardless of how GitHub wraps it in markup this month. This is
-   * deliberately more resilient than hardcoded selectors: a full redesign
-   * of the row markup does not break this, only a change to the URL shape
-   * would, and that would break GitHub navigation generally.
+   * The only regions we are willing to touch.
+   *
+   * Within a region, a repo row is still identified by URL shape rather than
+   * class names: any link whose href is exactly `/<user>/<repo>`, one segment
+   * past the profile. That part is unchanged and is deliberately resilient,
+   * since a redesign of the row markup does not break it.
+   *
+   * The container list is the new part.
+   *
+   * This used to scan the whole document, which was the bug behind badges
+   * appearing in the contribution activity feed: every `/<user>/<repo>` link
+   * on the page qualified, including the ones inside "Created 7 commits in 3
+   * repositories". Those live in a narrative list where a badge has no row to
+   * belong to, so it floated in whitespace.
+   *
+   * Scoping to the two containers that actually hold repo rows fixes that by
+   * construction rather than by blacklisting the feed, which would need
+   * updating every time GitHub adds another place a repo link can appear.
+   * If none of these exist, we inject nothing, per this file's standing rule.
    */
+  const LIST_CONTAINER_SELECTORS = [
+    '#user-repositories-list', // /<user>?tab=repositories
+    '.js-pinned-items-reorder-list', // pinned grid on the profile overview
+    '[data-testid="pinned-items"]', // newer pinned markup
+  ]
+
+  function findListContainers() {
+    const containers = []
+    for (const selector of LIST_CONTAINER_SELECTORS) {
+      try {
+        containers.push(...document.querySelectorAll(selector))
+      } catch {
+        // A selector this browser cannot parse must not kill the others.
+      }
+    }
+    return containers
+  }
+
   function findRepoAnchors(user) {
-    const anchors = Array.from(document.querySelectorAll('a[href]'))
+    const containers = findListContainers()
+    if (containers.length === 0) return []
+    // Each anchor is kept with the container it came from, because the
+    // ancestor climb in findBadgeTarget needs a hard stop and the container
+    // is the natural one.
+    const anchors = []
+    for (const container of containers) {
+      for (const el of container.querySelectorAll('a[href]')) {
+        anchors.push({ el, container })
+      }
+    }
     const seen = new Set()
     const found = []
     const prefix = `/${user}/`
-    for (const a of anchors) {
+    for (const { el: a, container } of anchors) {
       let href
       try {
         href = new URL(a.getAttribute('href'), location.origin)
@@ -130,18 +192,82 @@
       const repo = rest
       if (seen.has(repo)) continue
       seen.add(repo)
-      found.push({ repo, anchor: a })
+      found.push({ repo, anchor: a, container })
     }
     return found
   }
 
-  /** Picks a stable row/card element to attach the badge to. */
-  function findRowFor(anchor) {
-    return (
-      anchor.closest('li') ||
-      anchor.closest('[data-testid]') ||
-      anchor.parentElement
-    )
+  /**
+   * Where the badge goes, and this is the fix for the layout shift.
+   *
+   * The previous version attached to `anchor.closest('li')` and appended.
+   * On a repo row that `li` is the whole flex/grid container holding the
+   * name, description, topic tags, language, star button and activity graph,
+   * so appending added a NEW grid item at the end of the row: the badge
+   * landed way out beside the Star button, and the row reflowed to make room
+   * for it. On the pinned grid the same append put it outside the card.
+   *
+   * The badge belongs beside the repo NAME, in the same inline run as the
+   * "Public" pill. So:
+   *
+   *   - If the name sits in a heading (the repo list uses one), append to the
+   *     heading. That lands after the visibility pill, reading
+   *     "notenext Public [Sporeling L1]", and cannot introduce a new grid or
+   *     flex item into the row, because the heading is a single item already.
+   *   - Otherwise (pinned cards, which have no heading) insert directly after
+   *     the anchor, so it joins the same inline flow as the name.
+   *
+   * Either way the badge is inline content inside an existing box, which is
+   * why it no longer moves anything around it.
+   */
+  /**
+   * Climbs to the widest ancestor that is still a single line of text.
+   *
+   * This is what makes pinned cards work. There the repo name link lives in a
+   * span shrink-wrapped to the name itself (measured: 64px), so inserting a
+   * ~90px badge beside it immediately wraps and grows the card. Its parent
+   * name row is the full card width (measured: 399px) holding only an icon,
+   * the name, and the "Public" pill, so there is ample room there.
+   *
+   * Height is the test rather than a class name: an ancestor that is still
+   * roughly one line tall is still an inline row, and the first ancestor that
+   * is meaningfully taller is the block that stacks the name over the
+   * description. Stopping just before that is exactly the boundary we want,
+   * and it does not depend on GitHub's utility classes surviving a redesign.
+   */
+  function widestSingleLineAncestor(anchor, container) {
+    let best = null
+    let node = anchor
+    const lineHeight = anchor.getBoundingClientRect().height
+    if (!lineHeight) return null
+
+    while (node && node.parentElement && node.parentElement !== container) {
+      const parent = node.parentElement
+      const rect = parent.getBoundingClientRect()
+      // A few px of slack: padding and the pill's own border make the row
+      // marginally taller than the text it contains.
+      if (rect.height > lineHeight + 6) break
+      best = parent
+      node = parent
+    }
+    return best
+  }
+
+  function findBadgeTarget(anchor, container) {
+    // Repo list rows put the name in a heading. Appending there lands the
+    // badge after the visibility pill and cannot add a new flex or grid item
+    // to the row, because the heading is already one item.
+    const heading = anchor.closest('h1, h2, h3, h4')
+    if (heading) return { element: heading, position: 'append' }
+
+    try {
+      const line = widestSingleLineAncestor(anchor, container)
+      if (line) return { element: line, position: 'append' }
+    } catch {
+      // Measurement can fail on a detached or display:none node. Fall through.
+    }
+
+    return { element: anchor, position: 'after' }
   }
 
   // ---------------------------------------------------------------------
@@ -248,11 +374,23 @@
     return host
   }
 
-  function injectBadge(row, state, reducedMotion, theme) {
-    if (!row || row.hasAttribute(MARK_ATTR) || row.querySelector(`[${MARK_ATTR}]`)) return
+  function injectBadge(anchor, container, state, reducedMotion, theme) {
+    if (!anchor) return
+    // Dedup on the anchor rather than the row. The scan re-runs on every DOM
+    // mutation and GitHub mutates constantly, so without this a row would
+    // collect a fresh badge every few hundred milliseconds.
+    if (anchor.hasAttribute(MARK_ATTR)) return
+
+    const target = findBadgeTarget(anchor, container)
+    if (!target.element) return
+
     const badge = buildBadge(state, reducedMotion, theme)
-    row.appendChild(badge)
-    row.setAttribute(MARK_ATTR, '1')
+    if (target.position === 'append') {
+      target.element.appendChild(badge)
+    } else {
+      target.element.insertAdjacentElement('afterend', badge)
+    }
+    anchor.setAttribute(MARK_ATTR, '1')
   }
 
   // ---------------------------------------------------------------------
@@ -289,9 +427,8 @@
     for (let i = 0; i < matches.length; i++) {
       const result = results[i]
       if (!result || !result.data || result.error) continue
-      const row = findRowFor(matches[i].anchor)
       try {
-        injectBadge(row, result.data, reducedMotion, theme)
+        injectBadge(matches[i].anchor, matches[i].container, result.data, reducedMotion, theme)
       } catch (err) {
         // A single row failing must never stop the rest or reach the page.
         GC.log('row injection failed', err)

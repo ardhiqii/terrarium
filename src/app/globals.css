@@ -9,6 +9,16 @@
   --rule:       #d9d9d4;  /* hairlines, specimen frames */
   --accent:     #2f4bd4;  /* archival ink blue - the single accent */
   --accent-soft:#e6e9fb;
+  /* Hover tints. Translucent rather than opaque so one pair works on every
+     surface (paper, paper-raised, and the editor panes) without a variant
+     per background. */
+  --hover-surface: rgba(20, 20, 22, 0.055);
+  --hover-surface-strong: rgba(20, 20, 22, 0.09);
+  /* Navbar height: the h-14 row (56px) plus its 1px bottom border.
+     Stated once so app-shell routes can subtract it from the viewport
+     without hardcoding a number that silently drifts when the header
+     changes. /write's editor shell is sized from this. */
+  --nav-h: 57px;
   /* Sprite pixel-art outline. Single token, not a warm/cool pair: the old
      split (#20301f botanical on creatures, #3a4550 / #3a2f1a on items) was a
      material cue riding on a 1px edge, too subtle to read as glass-vs-brass
@@ -34,6 +44,10 @@
   --rule:       #2b2b31;
   --accent:     #8298ff;
   --accent-soft:#1c2140;
+  /* Lighter tint and slightly stronger, because a dark surface needs more
+     delta than a light one for the same perceived change. */
+  --hover-surface: rgba(232, 232, 228, 0.07);
+  --hover-surface-strong: rgba(232, 232, 228, 0.11);
   /* Light neutral so outlines stay crisp against --paper-raised (~11:1) and
      --paper (~13:1) instead of melting into either. */
   --sprite-outline: #d6d6cc;
@@ -41,6 +55,17 @@
      doesn't melt into --paper-raised (#1b1b1f), the same problem T13 fixed
      for local sprites via --sprite-outline. See CreatureSprite.tsx. */
   --sprite-halo: rgba(214, 214, 204, 0.65);
+}
+
+/* Reserve the scrollbar gutter on every page, always.
+   Without this, a page that scrolls is ~15px narrower than one that does not,
+   and because the whole site is a centered column every centered thing jumps
+   sideways by half that on navigation. /write is the obvious case, since its
+   shell is overflow-hidden and never scrolls, but it happens between any long
+   and short page. `stable` keeps the gutter present either way, so nothing
+   moves. */
+html {
+  scrollbar-gutter: stable;
 }
 
 body {
@@ -63,6 +88,76 @@ body {
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* Pointer affordance.
+   Tailwind v4's Preflight deliberately dropped the `button { cursor: pointer }`
+   that v3 shipped, on the reasoning that `cursor: default` is the real UA
+   default for buttons. The practical effect here was that every one of the
+   twenty buttons in this app, including the account menu and every control in
+   the garden editor, gave no cursor feedback at all: nothing read as clickable
+   until you clicked it. Restored on purpose, and stated here rather than as a
+   utility on each button so a new button cannot forget it.
+   Unlayered, per the note above, so it beats Tailwind's utility layer. */
+button:not(:disabled),
+[role='button']:not([aria-disabled='true']),
+[role='radio']:not([aria-disabled='true']),
+[role='menuitem'],
+summary,
+label[for] {
+  cursor: pointer;
+}
+
+button:disabled,
+[aria-disabled='true'] {
+  cursor: not-allowed;
+}
+
+/* Hover surfaces for row-shaped controls: nav links, menu items, list rows.
+   WHY THE STATE LIVES HERE and not in an inline `style` prop, which is what
+   these controls used before: an inline style always beats a class selector,
+   so a `:hover` rule could never win against it, and every one of these
+   controls was silently un-hoverable as a result. Driven by `data-active`
+   so both states are ordinary CSS and hover composes with selection. */
+.ui-row {
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.ui-row:hover {
+  background-color: var(--hover-surface);
+}
+.ui-row[data-active='true'] {
+  background-color: var(--paper-raised);
+}
+.ui-row[data-active='true']:hover {
+  background-color: var(--hover-surface-strong);
+}
+
+/* Reduced motion. The hover transitions above are the immediate reason this
+   is here, but there was no global guard at all before, and `body` has
+   carried an unconditional colour transition since the retheme. Sprite idle
+   animation is already gated separately at its source, and animated creature
+   GIFs are swapped for stills via <picture>, so neither depends on this. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Segmented controls (maturity). Same reasoning, but the selected state is
+   accent-tinted rather than raised paper, so it gets its own class. */
+.ui-segment {
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.ui-segment[data-active='false']:hover {
+  background-color: var(--hover-surface);
+}
+.ui-segment[data-active='true'] {
+  background-color: var(--accent-soft);
 }
 
 /* Type-role utilities. Geist for UI, EB Garamond for prose, Geist Mono for data. */

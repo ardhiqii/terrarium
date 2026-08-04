@@ -15,12 +15,48 @@ export function isFsaSupported(): boolean {
   return typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function'
 }
 
+/**
+ * Resolves to `fallback` if `promise` has not settled within `ms`.
+ *
+ * Exists because `try/catch` cannot rescue a promise that never settles, and
+ * every await on a browser-provided handle is a promise this code does not
+ * control. A rejection is recoverable; a hang is a dead end.
+ */
+export async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(fallback), ms)
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/** How long any single handle permission check may take before we treat the
+ *  folder as unavailable. Generous: this is a local call that normally
+ *  returns in single-digit milliseconds. */
+const PERMISSION_TIMEOUT_MS = 5000
+
 async function hasPermission(
   handle: FileSystemDirectoryHandle,
   mode: 'read' | 'readwrite'
 ): Promise<boolean> {
   try {
-    const state = await handle.queryPermission({ mode })
+    // THE TIMEOUT IS THE POINT, not the try/catch. `queryPermission` is a
+    // browser call on a handle persisted across sessions, and it can stall
+    // rather than reject when the folder it refers to has moved or its drive
+    // is no longer mounted. A stall here used to strand /write on "Checking
+    // for a previously connected garden..." with no way out but a refresh,
+    // because a pending promise is invisible to the catch below.
+    const state = await withTimeout(
+      handle.queryPermission({ mode }),
+      PERMISSION_TIMEOUT_MS,
+      'denied' as PermissionState
+    )
     return state === 'granted'
   } catch {
     return false
@@ -69,7 +105,17 @@ export class FsaGardenSource implements GardenSource {
   async write(name: string, content: string): Promise<void> {
     const fileHandle = await this.handle.getFileHandle(name, { create: true })
     const writable = await fileHandle.createWritable()
-    await writable.write(content)
+    try {
+      await writable.write(content)
+    } catch (err) {
+      // Chromium holds an exclusive lock on the file until the stream is
+      // closed or aborted, and writes go to a swap file that only becomes the
+      // real file on close. Letting a failed write escape without aborting
+      // stranded that swap file and left the note locked against every later
+      // save, so the user could not retry.
+      await writable.abort().catch(() => {})
+      throw err
+    }
     await writable.close()
   }
 

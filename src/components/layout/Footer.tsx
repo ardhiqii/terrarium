@@ -1,14 +1,26 @@
+'use client'
+
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
+import { ownsViewportHeight } from '@/lib/app-shell-routes'
 import { siteConfig, wordmarkText } from '@/lib/site-config'
 
 export default function Footer() {
+  const pathname = usePathname()
+  // No page footer under a route that owns the viewport height: it would
+  // give the document a second scroll axis, so you could scroll the editor
+  // away mid-sentence.
+  if (ownsViewportHeight(pathname)) {
+    return null
+  }
+
   return (
     <footer
       className="border-t mt-20 py-10"
       style={{ borderColor: 'var(--rule)' }}
     >
       <div
-        className="font-ui max-w-4xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-sm"
+        className="font-ui max-w-5xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-sm"
         style={{ color: 'var(--ink-muted)' }}
       >
         <p>

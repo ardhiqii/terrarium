@@ -112,7 +112,19 @@ GITHUB_TOKEN=your_personal_access_token
 GITHUB_LOGIN=your-github-handle
 ```
 
-Both are optional, but without `GITHUB_TOKEN` the build falls back to GitHub's unauthenticated public events feed, which as of this writing **undercounts real commit activity by roughly 10x**. This isn't a guess: GitHub's `PushEvent` payloads no longer reliably carry a `commits` array or even a `size` field, so the fallback path has to floor every push to "1 commit" when nothing richer is available, and a 12-commit push scores the same as a 1-commit push. A token unlocks the GraphQL contributions path instead, which returns real per-day commit counts. No scopes are required since only public data is read. `GITHUB_LOGIN` tells the site and the API which handle is "you" - it's what makes your own garden stats show up instead of a zeroed stranger's view (see "The API" below).
+To enable "Sign in with GitHub" (which gates sync, profiles, and the leaderboard), add:
+
+```bash
+GITHUB_CLIENT_ID=your_github_app_client_id
+GITHUB_CLIENT_SECRET=your_github_app_client_secret
+SESSION_SECRET=at_least_32_random_characters
+```
+
+All three are required together; with any of them missing the site runs signed out and the sign in control is hidden rather than offering a button that cannot work. Generate the secret with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
+
+These come from a **GitHub App** (Settings, Developer settings, GitHub Apps), not an OAuth App. Either protocol works for login, but a GitHub App accepts several callback URLs, so `http://localhost:3000/api/auth/callback` and the deployed callback can coexist without re-registering. The app needs **no repository, organization, or account permissions**: identity comes back from `GET /user` on a bare user token, and everything else the product reads is public. Set "Where can this GitHub App be installed" to **Any account**, or nobody but you can ever sign in. Behind a proxy that rewrites the origin, set `AUTH_BASE_URL` to the public origin so the callback URL matches what is registered.
+
+`GITHUB_TOKEN` and `GITHUB_LOGIN` are optional, but without `GITHUB_TOKEN` the build falls back to GitHub's unauthenticated public events feed, which as of this writing **undercounts real commit activity by roughly 10x**. This isn't a guess: GitHub's `PushEvent` payloads no longer reliably carry a `commits` array or even a `size` field, so the fallback path has to floor every push to "1 commit" when nothing richer is available, and a 12-commit push scores the same as a 1-commit push. A token unlocks the GraphQL contributions path instead, which returns real per-day commit counts. No scopes are required since only public data is read. `GITHUB_LOGIN` tells the site and the API which handle is "you" - it's what makes your own garden stats show up instead of a zeroed stranger's view (see "The API" below).
 
 Then:
 

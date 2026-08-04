@@ -26,7 +26,7 @@ export default function HomePage() {
   const creatureState = getCreatureState(null)
 
   return (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6">
+    <div className="max-w-5xl mx-auto px-4 sm:px-6">
 
       {/* Hero */}
       <section className="flex flex-col items-center text-center pt-20 pb-16">
