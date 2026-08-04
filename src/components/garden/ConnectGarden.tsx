@@ -225,7 +225,7 @@ async function computeFromSource(
  *  over the whole screen. */
 function Hero({ children }: { children: React.ReactNode }) {
   return (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 py-16">
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-16">
       <div className="mb-10">
         <p
           className="font-data text-xs uppercase tracking-widest mb-2"
@@ -449,7 +449,13 @@ export function ConnectGarden() {
   }
 
   return (
-    // A FIXED shell, not a minimum. This used to be `minHeight`, which let the
+    // A FIXED shell, not a minimum, and centered in the same 1024px column
+    // the rest of the site uses. It was briefly full bleed, which made /write
+    // the only page that changed the layout's shape. `border-x` matters more
+    // than it looks: a fixed-height slab centered with page background either
+    // side reads as a modal that lost its backdrop, and the hairlines
+    // continue the header's bottom rule so it reads as a framed column.
+    // This used to be `minHeight`, which let the
     // column grow past the viewport, so the document itself scrolled: typing
     // near the bottom of a note scrolled the entire app, and you could scroll
     // the editor away to reveal the stats and the site footer underneath.
@@ -462,8 +468,8 @@ export function ConnectGarden() {
     // The navbar offset is a token (globals.css) rather than a literal, because
     // the old literal said 56px and the header is 57px with its bottom border.
     <div
-      className="flex flex-col overflow-hidden"
-      style={{ height: 'calc(100dvh - var(--nav-h))' }}
+      className="max-w-5xl mx-auto w-full flex flex-col overflow-hidden border-x"
+      style={{ height: 'calc(100dvh - var(--nav-h))', borderColor: 'var(--rule)' }}
     >
       {/* Thin status strip: folder name, stats toggle, disconnect. `shrink-0`
           so it keeps its height when the editor below wants room. */}
@@ -513,7 +519,7 @@ export function ConnectGarden() {
           className="shrink-0 border-t overflow-y-auto"
           style={{ borderColor: 'var(--rule)', maxHeight: '45%' }}
         >
-          <div className="max-w-4xl mx-auto w-full px-4 sm:px-6 py-8">
+          <div className="w-full px-4 sm:px-6 py-8">
         <div className="grid sm:grid-cols-2 gap-8">
           <div>
             {sectionLabel('Observation log')}

@@ -5,7 +5,6 @@ import { usePathname } from 'next/navigation'
 import { useCallback, useEffect, useState } from 'react'
 import ThemeToggle from './ThemeToggle'
 import AccountMenu from './AccountMenu'
-import { isAppShellRoute } from '@/lib/app-shell-routes'
 import GardenMark from '../GardenMark'
 import { siteConfig } from '@/lib/site-config'
 
@@ -132,9 +131,6 @@ export default function Navbar() {
     window.location.reload()
   }, [])
 
-  // Full-bleed chrome on routes that own the viewport. See the container below.
-  const appShell = isAppShellRoute(pathname)
-
   // The same six links for everyone, signed in or not. Leaderboard and the
   // profile used to be appended here when signed in, which made the nav row
   // reflow at sign in and pushed "Sign out" into a two-line wrap. They live in
@@ -158,21 +154,11 @@ export default function Navbar() {
       className="sticky top-0 z-50 border-b"
       style={{ background: 'var(--paper)', borderColor: 'var(--rule)' }}
     >
-      {/* The chrome aligns with the widest thing on the page, which is the
-          rule every app-plus-content product follows (Linear, Notion, Vercel
-          docs). Content wider than its chrome reads as a bug; chrome slightly
-          wider than content reads as deliberate.
-
-          On an app-shell route that widest thing is the viewport, so the bar
-          goes edge to edge and its gutter matches the editor's own
-          `px-4 sm:px-6`, putting the wordmark, the folder name in the status
-          strip, and the sidebar on one shared left edge.
-
-          Elsewhere it is a centered column. `max-w-5xl` rather than the old
-          `max-w-4xl` because /graph and /companions are 1024px wide and were
-          overhanging the header by 64px per side, which is the failure
-          direction that actually looks broken. */}
-      <div className={appShell ? 'px-4 sm:px-6' : 'max-w-5xl mx-auto px-4 sm:px-6'}>
+      {/* One column, every route. The width used to be conditional so the bar
+          could go full bleed over the /write editor, but a layout that changes
+          shape as you navigate is worse than chrome that is merely wider than
+          its content. The whole site is 1024px now, including /write. */}
+      <div className="max-w-5xl mx-auto px-4 sm:px-6">
         <div className="flex items-center justify-between h-14">
           {/* Logo */}
           <Link
@@ -211,11 +197,12 @@ export default function Navbar() {
                   aria-current={isActive ? 'page' : undefined}
                   style={{
                     color: isActive ? 'var(--ink)' : 'var(--ink-muted)',
+                    // Weight plus the raised surface carry the active state.
+                    // An accent underline was tried here and read as a
+                    // button rather than a selected nav item, so it is gone.
+                    // Neither remaining signal is hue alone, and aria-current
+                    // covers assistive tech regardless.
                     fontWeight: isActive ? 500 : 400,
-                    // A non-colour active affordance, so the current page is
-                    // not signalled by hue alone. Inset rather than a border
-                    // so it cannot shift the row by a pixel.
-                    boxShadow: isActive ? 'inset 0 -2px 0 var(--accent)' : undefined,
                   }}
                 >
                   {link.label}
@@ -288,7 +275,6 @@ export default function Navbar() {
                   style={{
                     color: isActive ? 'var(--ink)' : 'var(--ink-muted)',
                     fontWeight: isActive ? 500 : 400,
-                    boxShadow: isActive ? 'inset 2px 0 0 var(--accent)' : undefined,
                   }}
                 >
                   {link.label}

@@ -2,15 +2,15 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { isAppShellRoute } from '@/lib/app-shell-routes'
+import { ownsViewportHeight } from '@/lib/app-shell-routes'
 import { siteConfig, wordmarkText } from '@/lib/site-config'
 
 export default function Footer() {
   const pathname = usePathname()
-  // No page footer under an app shell: it would give the document a second
-  // scroll axis, so you could scroll the whole editor away while typing.
-  // The route list is shared with the Navbar, which uses it to go full bleed.
-  if (isAppShellRoute(pathname)) {
+  // No page footer under a route that owns the viewport height: it would
+  // give the document a second scroll axis, so you could scroll the editor
+  // away mid-sentence.
+  if (ownsViewportHeight(pathname)) {
     return null
   }
 

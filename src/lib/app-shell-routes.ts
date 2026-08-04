@@ -1,20 +1,20 @@
 /**
- * Routes that own the full viewport instead of sitting in a centered column.
+ * Routes that manage their own scrolling and own the full viewport height.
  *
- * An app-shell route has its own internal scroll regions and fills the width
- * edge to edge, so the site chrome has to match it: a centered 1024px header
- * above a full-bleed editor aligns with nothing and reads as a mistake, and a
- * page footer underneath would give the document a second scroll axis.
+ * This used to also drive the header's width, making the chrome go full bleed
+ * on /write and stay centered everywhere else. That was reverted: a layout
+ * that changes shape as you move between pages is worse than one that is
+ * merely wider than its content, so the whole site now sits in one column.
  *
- * Shared rather than duplicated because both the Navbar and the Footer need
- * the same answer, and two copies would drift the moment a second shell route
- * lands. Plain module, no 'use client': it is just data plus a predicate, and
- * both callers are already client components.
+ * What remains is unrelated to width. The /write shell has a definite height
+ * and `overflow-hidden`, so a page footer rendered beneath it would give the
+ * document a second scroll axis and you could scroll the editor away
+ * mid-sentence. The Footer checks this to render nothing there.
  */
-export const APP_SHELL_ROUTES = ['/write'] as const
+export const FULL_HEIGHT_ROUTES = ['/write'] as const
 
-export function isAppShellRoute(pathname: string): boolean {
-  return APP_SHELL_ROUTES.some(
+export function ownsViewportHeight(pathname: string): boolean {
+  return FULL_HEIGHT_ROUTES.some(
     (route) => pathname === route || pathname.startsWith(route + '/')
   )
 }

@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import MaturityMark from '@/components/MaturityMark'
 import type { Maturity } from '@/lib/game/types'
 
@@ -125,6 +125,21 @@ export function shouldShowMaturity(notes: NoteSummary[]): boolean {
   return distinct.size > 1
 }
 
+/**
+ * A row in a picker, not a heading.
+ *
+ * The previous version stacked six signals onto a control with two states.
+ * Title at `text-sm` in full `--ink` made the rows the largest, darkest text
+ * in the panel, so they outranked the panel's own header and read as
+ * headings. Selection jumped 400 to 600, which is the editor h1 weight. A
+ * `divide-y` hairline under every row said "separate cells" the way a table
+ * does. And symmetric `py-2` around one short string is button padding.
+ *
+ * Now: 13px so it cannot be confused with body copy, muted until selected,
+ * one weight step, an accent rule on the selected row, and no separators at
+ * all. Selection is still carried by weight and colour as well as the accent,
+ * so it survives greyscale.
+ */
 function NoteRow({
   note,
   selected,
@@ -141,17 +156,29 @@ function NoteRow({
       <button
         type="button"
         onClick={() => onSelect(note.fileName)}
-        className="ui-row flex w-full items-center gap-2 text-left px-3 py-2"
+        className="ui-row flex w-full items-center gap-2 text-left px-3 py-1.5"
         data-active={selected}
-        aria-current={selected}
+        aria-current={selected ? 'true' : undefined}
+        style={{
+          // Inset, so marking the selected row cannot shift it by a pixel the
+          // way a real left border would.
+          boxShadow: selected ? 'inset 2px 0 0 var(--accent)' : undefined,
+        }}
       >
-        {/* Leading, so the glyphs form a column the eye can read downward.
-            A trailing chip's position moves with title truncation and never
-            lines up. */}
-        {showMaturity && <MaturityMark maturity={note.maturity} glyphOnly />}
+        {/* Fixed-width box: the three glyphs are not guaranteed equal width in
+            the mono fallback chain, and without this the titles fail to align
+            down the column. */}
+        {showMaturity && (
+          <span className="w-3 shrink-0 flex justify-center">
+            <MaturityMark maturity={note.maturity} glyphOnly />
+          </span>
+        )}
         <span
-          className="font-ui text-sm truncate"
-          style={{ color: 'var(--ink)', fontWeight: selected ? 600 : 400 }}
+          className="font-ui text-[13px] leading-5 truncate"
+          style={{
+            color: selected ? 'var(--ink)' : 'var(--ink-muted)',
+            fontWeight: selected ? 500 : 400,
+          }}
         >
           {note.title || note.fileName}
         </span>
@@ -217,28 +244,12 @@ export default function NoteList({ notes, selectedFileName, onSelect, onCreate }
       </div>
 
       {tags.length > 0 && (
-        <div
-          className="shrink-0 flex gap-1 overflow-x-auto px-2 py-1.5 border-b"
-          style={{ borderColor: 'var(--rule)' }}
-          role="group"
-          aria-label="Filter by tag"
-        >
-          <TagChip
-            label="All"
-            count={notes.length}
-            active={effectiveTag === null}
-            onClick={() => setActiveTag(null)}
-          />
-          {tags.map(({ tag, count }) => (
-            <TagChip
-              key={tag}
-              label={tag === UNTAGGED ? UNTAGGED : `#${tag}`}
-              count={count}
-              active={effectiveTag === tag}
-              onClick={() => setActiveTag(effectiveTag === tag ? null : tag)}
-            />
-          ))}
-        </div>
+        <TagFilter
+          tags={tags}
+          totalCount={notes.length}
+          active={effectiveTag}
+          onChange={setActiveTag}
+        />
       )}
 
       {notes.length === 0 ? (
@@ -251,7 +262,11 @@ export default function NoteList({ notes, selectedFileName, onSelect, onCreate }
         </p>
       ) : (
         <div className="flex-1 overflow-y-auto">
-          <ul className="divide-y" style={{ borderColor: 'var(--rule)' }}>
+          {/* No divider between rows. A hairline under every row is table
+              styling: it says "separate cells" when this is one continuous
+              list, and at a 32px pitch it draws a stripe every 32px down a
+              212px column. Hover and the selected rule carry the structure. */}
+          <ul>
             {visible.map((note) => (
               <NoteRow
                 key={note.fileName}
@@ -268,33 +283,162 @@ export default function NoteList({ notes, selectedFileName, onSelect, onCreate }
   )
 }
 
-function TagChip({
-  label,
-  count,
+/**
+ * Tag filter as a disclosure, not a scrolling rail.
+ *
+ * The rail was a single row of chips with `overflow-x-auto`. The sidebar is
+ * 260px, roughly 212px of content, and a chip is 70 to 90px, so exactly two
+ * were ever visible and the rest sat behind a horizontal scrollbar styled
+ * down to a 6px thumb. The control was hiding most of its own options.
+ *
+ * A trigger plus a vertical panel fixes the axis: overflow becomes vertical
+ * scroll inside a bounded box, which is the right direction in a narrow
+ * column. It also costs one tab stop instead of one per tag, and the trigger
+ * states the active filter even when closed.
+ *
+ * Single select, so it is a radiogroup with a roving tabindex, mirroring the
+ * pattern MaturitySegmented already uses rather than introducing a second
+ * keyboard idiom.
+ */
+function TagFilter({
+  tags,
+  totalCount,
   active,
-  onClick,
+  onChange,
 }: {
-  label: string
-  count: number
-  active: boolean
-  onClick: () => void
+  tags: TagCount[]
+  totalCount: number
+  active: string | null
+  onChange: (tag: string | null) => void
 }) {
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const optionRefs = useRef<(HTMLButtonElement | null)[]>([])
+
+  const options: { tag: string | null; count: number }[] = [
+    { tag: null, count: totalCount },
+    ...tags.map(({ tag, count }) => ({ tag: tag as string | null, count })),
+  ]
+  const activeIndex = Math.max(0, options.findIndex((o) => o.tag === active))
+
+  const close = useCallback((returnFocus: boolean) => {
+    setOpen(false)
+    if (returnFocus) triggerRef.current?.focus()
+  }, [])
+
+  useEffect(() => {
+    if (!open) return
+    function onPointerDown(event: MouseEvent | TouchEvent) {
+      if (!containerRef.current?.contains(event.target as Node)) close(false)
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') close(true)
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('touchstart', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('touchstart', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open, close])
+
+  function focusOption(index: number) {
+    const wrapped = (index + options.length) % options.length
+    optionRefs.current[wrapped]?.focus()
+  }
+
+  function onOptionKeyDown(event: React.KeyboardEvent, index: number) {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      focusOption(index + 1)
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      focusOption(index - 1)
+    } else if (event.key === 'Home') {
+      event.preventDefault()
+      focusOption(0)
+    } else if (event.key === 'End') {
+      event.preventDefault()
+      focusOption(options.length - 1)
+    }
+  }
+
+  const label = (tag: string | null) =>
+    tag === null ? 'All notes' : tag === UNTAGGED ? UNTAGGED : `#${tag}`
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      className="ui-row font-data shrink-0 flex items-center gap-1 px-2 py-1 text-xs rounded whitespace-nowrap"
-      data-active={active}
-      style={{
-        color: active ? 'var(--ink)' : 'var(--ink-muted)',
-        // The single accent, spent on the active filter only. Maturity never
-        // uses it, so the two encodings cannot be confused.
-        boxShadow: active ? 'inset 0 -2px 0 var(--accent)' : undefined,
-      }}
+    <div
+      ref={containerRef}
+      className="shrink-0 relative border-b"
+      style={{ borderColor: 'var(--rule)' }}
     >
-      <span>{label}</span>
-      <span style={{ opacity: 0.6 }}>{count}</span>
-    </button>
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-expanded={open}
+        aria-controls="gc-tag-panel"
+        onClick={() => setOpen((prev) => !prev)}
+        className="ui-row font-ui w-full flex items-center justify-between gap-2 px-3 py-2 text-[13px]"
+        data-active={active !== null}
+        style={{ color: active !== null ? 'var(--ink)' : 'var(--ink-muted)' }}
+      >
+        <span className="truncate">Tags: {active === null ? 'All' : label(active)}</span>
+        <span aria-hidden="true" style={{ color: 'var(--ink-muted)' }}>
+          {open ? '▴' : '▾'}
+        </span>
+      </button>
+
+      {open && (
+        <div
+          id="gc-tag-panel"
+          role="radiogroup"
+          aria-label={`Filter by tag, ${tags.length} tags`}
+          className="absolute left-0 right-0 top-full z-20 border-b overflow-y-auto"
+          style={{
+            borderColor: 'var(--rule)',
+            background: 'var(--paper-raised)',
+            maxHeight: 'min(260px, 45vh)',
+          }}
+        >
+          {options.map((option, index) => {
+            const isActive = option.tag === active
+            return (
+              <button
+                key={option.tag ?? '__all'}
+                ref={(el) => {
+                  optionRefs.current[index] = el
+                }}
+                type="button"
+                role="radio"
+                aria-checked={isActive}
+                tabIndex={index === activeIndex ? 0 : -1}
+                onKeyDown={(event) => onOptionKeyDown(event, index)}
+                onClick={() => {
+                  onChange(option.tag)
+                  close(true)
+                }}
+                className="ui-row font-ui w-full flex items-center justify-between gap-2 px-3 py-1.5 text-[13px] text-left"
+                data-active={isActive}
+                style={{
+                  color: isActive ? 'var(--ink)' : 'var(--ink-muted)',
+                  boxShadow: isActive ? 'inset 2px 0 0 var(--accent)' : undefined,
+                }}
+              >
+                <span className="truncate">{label(option.tag)}</span>
+                <span
+                  className="font-data text-xs shrink-0"
+                  style={{ color: 'var(--ink-muted)' }}
+                >
+                  {option.count}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
   )
 }

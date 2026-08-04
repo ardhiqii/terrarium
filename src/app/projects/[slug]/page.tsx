@@ -41,7 +41,7 @@ export default async function ProjectPage({ params }: Props) {
   ])
 
   return (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 py-12">
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-12">
       {/* Breadcrumb */}
       <nav className="font-ui mb-8 text-sm" style={{ color: 'var(--ink-muted)' }}>
         <Link href="/" className="hover:opacity-70 transition-opacity">Home</Link>
@@ -49,7 +49,7 @@ export default async function ProjectPage({ params }: Props) {
         <Link href="/projects" className="hover:opacity-70 transition-opacity">Projects</Link>
       </nav>
 
-      <div className="lg:grid lg:grid-cols-[1fr_200px] lg:gap-12">
+      <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_260px] lg:gap-16">
         {/* Main content */}
         <article>
           {/* Cover image */}
