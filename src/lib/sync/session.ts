@@ -2,12 +2,16 @@
  * Session providers (see `SessionProvider` in `./types.ts`, frozen) plus the
  * selection logic every caller should go through: `getSessionProvider()`.
  *
- * No GitHub OAuth app exists yet (see `tasks/PHASE3.md`), so
- * `StubSessionProvider` reads the signed-in handle from an environment
- * variable instead of a real login flow. It exists purely so the sync
- * layer, profiles, and leaderboard are all testable before OAuth is wired
- * up; a real `GithubSessionProvider` will implement the same interface and
- * drop in without touching a single caller.
+ * Three providers now exist, and `getSessionProvider()` at the bottom picks
+ * between them:
+ *
+ *   `GithubSessionProvider`   real login, whenever OAuth is configured
+ *   `SignedOutSessionProvider` production without OAuth: always signed out
+ *   `StubSessionProvider`     development only, handle from an env var
+ *
+ * The stub predates the real flow and is kept because it makes the sync
+ * layer, profiles, and the leaderboard testable with no network and no app
+ * registration. It is not a fallback for production; see the refusal below.
  *
  * THIS IS NOT AUTHENTICATION. Anyone who can set an environment variable on
  * the server can "sign in" as anyone. That is fine for local dev and CI, and
@@ -21,6 +25,8 @@
  * in a production process.
  */
 
+import { getOAuthConfig } from './github-oauth'
+import { SESSION_COOKIE_NAME, decodeSessionCookie, getSessionSecret } from './session-cookie'
 import type { Session, SessionProvider } from './types'
 
 /**
@@ -99,7 +105,59 @@ class SignedOutSessionProvider implements SessionProvider {
   }
 }
 
+/**
+ * The real one. Reads the signed cookie written by `/api/auth/callback`.
+ *
+ * There is no network call here and that is the point: the OAuth round trip
+ * happens once, at login, and every request afterwards is a local HMAC
+ * verification. Calling GitHub on every request would put an upstream
+ * dependency (and its rate limit) in front of every page render.
+ *
+ * `next/headers` is imported dynamically rather than at module scope so that
+ * merely importing this module stays free of a Next.js request-context
+ * dependency. `session.test.ts` imports it directly under plain Node, and a
+ * top-level import would make that a resolution problem rather than a
+ * runtime one.
+ *
+ * Never throws, per the `SessionProvider` contract. `cookies()` rejects when
+ * called outside a request scope, which is exactly what happens if something
+ * reaches for a session during static prerendering, and the honest answer
+ * there is signed out rather than a crashed build.
+ */
+export class GithubSessionProvider implements SessionProvider {
+  readonly id = 'github' as const
+
+  async current(): Promise<Session | null> {
+    const secret = getSessionSecret()
+    if (!secret) return null
+    try {
+      const { cookies } = await import('next/headers')
+      const store = await cookies()
+      return decodeSessionCookie(store.get(SESSION_COOKIE_NAME)?.value, secret)
+    } catch {
+      return null
+    }
+  }
+}
+
+/**
+ * Whether a real login flow can run: an app registration *and* a signing key
+ * for the cookie it produces. Both, because either one alone is useless.
+ *
+ * The auth routes check this too, so a half-configured deployment answers
+ * "not configured" consistently instead of starting a flow it cannot finish.
+ */
+export function isOAuthConfigured(): boolean {
+  return getOAuthConfig() !== null && getSessionSecret() !== null
+}
+
 export function getSessionProvider(): SessionProvider {
+  // Configured wins everywhere, including development, so the real flow can
+  // be exercised locally against a localhost callback rather than only ever
+  // being tested for the first time in production.
+  if (isOAuthConfigured()) {
+    return new GithubSessionProvider()
+  }
   if (process.env.NODE_ENV === 'production') {
     return new SignedOutSessionProvider()
   }

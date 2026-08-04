@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import ThemeToggle from './ThemeToggle'
 import GardenMark from '../GardenMark'
 import { siteConfig } from '@/lib/site-config'
@@ -18,17 +18,87 @@ const BASE_NAV_LINKS = [
   { href: '/search', label: 'Search' },
 ]
 
-export interface NavbarProps {
-  /** Shown only when true: the leaderboard needs a signed-in viewer to mean anything. */
-  isSignedIn: boolean
+/** The shape `/api/auth/session` answers with. */
+interface SessionInfo {
+  signedIn: boolean
+  handle: string | null
+  /** False when the server has no GitHub OAuth app configured. */
+  configured: boolean
 }
 
-export default function Navbar({ isSignedIn }: NavbarProps) {
+export default function Navbar() {
   const pathname = usePathname()
   const [open, setOpen] = useState(false)
-  const NAV_LINKS = isSignedIn
+
+  // Null means "not resolved yet", which is different from "signed out" and
+  // is why this is not just a boolean: until the fetch lands, neither the
+  // Leaderboard link nor a sign in control is rendered, so the nav never
+  // flickers a control that then disappears.
+  //
+  // The session is fetched here rather than passed down from the root layout
+  // on purpose. Reading a cookie server-side in a layout opts every route in
+  // the site into dynamic rendering (see the comment in app/layout.tsx), and
+  // one nav link is not worth un-prerendering the whole garden for.
+  const [session, setSession] = useState<SessionInfo | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/auth/session', { credentials: 'same-origin' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: SessionInfo | null) => {
+        if (!cancelled && data) setSession(data)
+      })
+      .catch(() => {
+        // Signed out is the right answer when the endpoint is unreachable.
+        // A nav bar must never be the thing that breaks a page.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const signOut = useCallback(async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
+    } catch {
+      // Fall through to the reload regardless: if the request failed the
+      // cookie is still there, and the reload makes that visible rather than
+      // leaving the nav claiming a sign out that did not happen.
+    }
+    // A full reload, not a router refresh, because server-rendered pages such
+    // as /leaderboard read the session at request time.
+    window.location.reload()
+  }, [])
+
+  const NAV_LINKS = session?.signedIn
     ? [...BASE_NAV_LINKS, { href: '/leaderboard', label: 'Leaderboard' }]
     : BASE_NAV_LINKS
+
+  const authControl = (() => {
+    if (!session || !session.configured) return null
+    if (session.signedIn) {
+      return (
+        <button
+          onClick={signOut}
+          className="font-ui px-3 py-1.5 text-sm transition-colors"
+          style={{ color: 'var(--ink-muted)' }}
+        >
+          Sign out
+        </button>
+      )
+    }
+    return (
+      // A plain anchor, not next/link: this leaves the app for github.com via
+      // a server redirect, so client-side navigation would break the flow.
+      <a
+        href="/api/auth/login"
+        className="font-ui px-3 py-1.5 text-sm transition-colors"
+        style={{ color: 'var(--ink-muted)' }}
+      >
+        Sign in
+      </a>
+    )
+  })()
 
   return (
     <header
@@ -77,6 +147,7 @@ export default function Navbar({ isSignedIn }: NavbarProps) {
                 </Link>
               )
             })}
+            {authControl}
             <div className="ml-2">
               <ThemeToggle />
             </div>
@@ -133,6 +204,7 @@ export default function Navbar({ isSignedIn }: NavbarProps) {
                 </Link>
               )
             })}
+            {authControl && <div className="px-3 pt-1">{authControl}</div>}
           </nav>
         )}
       </div>
