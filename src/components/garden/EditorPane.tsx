@@ -526,7 +526,14 @@ export default function EditorPane({ source, creatureState }: EditorPaneProps) {
           </div>
         )}
 
-        <div className="hidden md:block border-r min-h-0" style={{ borderColor: 'var(--rule)' }}>
+        {/* `h-full overflow-hidden` is what makes the sidebar its own scroll
+            region. Without them this column stretched to the grid row's
+            height instead of clipping, so NoteList's own overflow-y-auto had
+            nothing to scroll within and the whole page scrolled instead. */}
+        <div
+          className="hidden md:block border-r min-h-0 h-full overflow-hidden"
+          style={{ borderColor: 'var(--rule)' }}
+        >
           {sidebar}
         </div>
 

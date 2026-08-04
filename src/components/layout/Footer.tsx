@@ -1,7 +1,24 @@
+'use client'
+
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 import { siteConfig, wordmarkText } from '@/lib/site-config'
 
+/**
+ * Routes that own the full viewport and must not have a page footer below
+ * them. /write is an editor shell: its sidebar and prose each scroll
+ * independently, and a footer underneath would give the document a second
+ * scroll axis, so you could scroll the whole app away while typing. That is
+ * the bug this list exists to prevent, not a styling preference.
+ */
+const APP_SHELL_ROUTES = ['/write']
+
 export default function Footer() {
+  const pathname = usePathname()
+  if (APP_SHELL_ROUTES.some((route) => pathname === route || pathname.startsWith(route + '/'))) {
+    return null
+  }
+
   return (
     <footer
       className="border-t mt-20 py-10"

@@ -51,7 +51,11 @@ export default function RootLayout({
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
           <div className="min-h-[100dvh] flex flex-col">
             <Navbar />
-            <main className="flex-1">
+            {/* `min-h-0` matters: without it a flex child refuses to shrink
+                below its content, so a route that wants to bound its own
+                height (the /write editor shell) can never clip, and its
+                children's overflow-y never activates. */}
+            <main className="flex-1 min-h-0">
               {children}
             </main>
             <Footer />

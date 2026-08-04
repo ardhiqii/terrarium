@@ -14,6 +14,11 @@
      per background. */
   --hover-surface: rgba(20, 20, 22, 0.055);
   --hover-surface-strong: rgba(20, 20, 22, 0.09);
+  /* Navbar height: the h-14 row (56px) plus its 1px bottom border.
+     Stated once so app-shell routes can subtract it from the viewport
+     without hardcoding a number that silently drifts when the header
+     changes. /write's editor shell is sized from this. */
+  --nav-h: 57px;
   /* Sprite pixel-art outline. Single token, not a warm/cool pair: the old
      split (#20301f botanical on creatures, #3a4550 / #3a2f1a on items) was a
      material cue riding on a 1px edge, too subtle to read as glass-vs-brass

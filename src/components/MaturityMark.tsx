@@ -25,9 +25,24 @@ const COLOR: Record<Maturity, string> = {
 interface MaturityMarkProps {
   maturity?: Maturity
   className?: string
+  /**
+   * Glyph without the word, for dense list rows.
+   *
+   * In a sidebar the word is repeated on every line and, in a young garden
+   * where everything is a seedling, it is the same word every time. Three
+   * glyphs are an ordinal ramp (empty, half, full) that reads at a glance
+   * and forms a scannable column; the word is kept for the editor header,
+   * where there is exactly one note and it costs nothing. The label is still
+   * announced to assistive tech either way.
+   */
+  glyphOnly?: boolean
 }
 
-export default function MaturityMark({ maturity, className = '' }: MaturityMarkProps) {
+export default function MaturityMark({
+  maturity,
+  className = '',
+  glyphOnly = false,
+}: MaturityMarkProps) {
   const m = maturity ?? 'seedling'
 
   return (
@@ -36,7 +51,7 @@ export default function MaturityMark({ maturity, className = '' }: MaturityMarkP
       style={{ color: COLOR[m], fontWeight: WEIGHT[m] }}
     >
       <span aria-hidden="true">{GLYPH[m]}</span>
-      {m}
+      {glyphOnly ? <span className="sr-only">{m}</span> : m}
     </span>
   )
 }

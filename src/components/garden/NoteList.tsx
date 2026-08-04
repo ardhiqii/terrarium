@@ -33,39 +33,50 @@ export function sortNotes(notes: NoteSummary[]): NoteSummary[] {
   })
 }
 
-export interface NoteGroup {
+export interface TagCount {
   tag: string
-  notes: NoteSummary[]
+  count: number
 }
 
 /**
- * Groups notes by tag, Obsidian-style: a note with several tags appears
- * under each of them, which is correct, not a duplicate bug. Untagged notes
- * get their own group, sorted last regardless of where "untagged" would
- * otherwise alphabetise. Groups are sorted alphabetically (case-insensitive)
- * and each group's notes go through `sortNotes`.
+ * Tag counts for the filter rail, most-used first, ties alphabetical.
+ *
+ * THIS REPLACES THE OLD TAG GROUPING, which rendered a note once per tag it
+ * carried. That was defensible (it matches Obsidian's tag pane) but it made
+ * the sidebar contradict itself: a header reading "7 notes" sat directly
+ * above 14 rows, and a note had no single home to remember it by. Worse, on
+ * a small garden most groups held exactly one note, so grouping added a
+ * header per note without organising anything.
+ *
+ * Tags are a filter here instead, which is what they actually are in a flat
+ * folder. The list stays a set: one note, one row, always.
  */
-export function groupNotesByTag(notes: NoteSummary[]): NoteGroup[] {
-  const byTag = new Map<string, NoteSummary[]>()
+export function tagCounts(notes: NoteSummary[]): TagCount[] {
+  const counts = new Map<string, number>()
+  let untagged = 0
 
   for (const note of notes) {
-    const tags = note.tags.length > 0 ? note.tags : [UNTAGGED]
-    for (const tag of tags) {
-      const bucket = byTag.get(tag)
-      if (bucket) bucket.push(note)
-      else byTag.set(tag, [note])
+    if (note.tags.length === 0) {
+      untagged++
+      continue
+    }
+    for (const tag of note.tags) {
+      counts.set(tag, (counts.get(tag) ?? 0) + 1)
     }
   }
 
-  const groups = Array.from(byTag.entries())
-    .filter(([tag]) => tag !== UNTAGGED)
-    .sort(([a], [b]) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
-    .map(([tag, groupNotes]) => ({ tag, notes: sortNotes(groupNotes) }))
+  const tags = Array.from(counts.entries())
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((a, b) =>
+      b.count !== a.count
+        ? b.count - a.count
+        : a.tag.localeCompare(b.tag, undefined, { sensitivity: 'base' })
+    )
 
-  const untagged = byTag.get(UNTAGGED)
-  if (untagged) groups.push({ tag: UNTAGGED, notes: sortNotes(untagged) })
-
-  return groups
+  // Untagged always sorts last, however many there are: it is a residual
+  // bucket, not a subject.
+  if (untagged > 0) tags.push({ tag: UNTAGGED, count: untagged })
+  return tags
 }
 
 /** Matches a filter query against a note's title or any of its tags,
@@ -79,13 +90,36 @@ export function filterNotes(notes: NoteSummary[], query: string): NoteSummary[] 
   )
 }
 
+/** Narrows to one tag. `UNTAGGED` selects notes carrying no tags at all. */
+export function filterByTag(notes: NoteSummary[], tag: string | null): NoteSummary[] {
+  if (!tag) return notes
+  if (tag === UNTAGGED) return notes.filter((note) => note.tags.length === 0)
+  return notes.filter((note) => note.tags.includes(tag))
+}
+
+/**
+ * Whether the maturity glyph earns its place.
+ *
+ * A channel with the same value on every row carries no information and is
+ * pure noise, and a fresh garden is all seedlings. So the glyph and its
+ * gutter are omitted entirely rather than dimmed: dimming still spends the
+ * space and still draws a repeating column down the sidebar. It reappears on
+ * its own the first time a note is promoted.
+ */
+export function shouldShowMaturity(notes: NoteSummary[]): boolean {
+  const distinct = new Set(notes.map((note) => note.maturity ?? 'seedling'))
+  return distinct.size > 1
+}
+
 function NoteRow({
   note,
   selected,
+  showMaturity,
   onSelect,
 }: {
   note: NoteSummary
   selected: boolean
+  showMaturity: boolean
   onSelect: (fileName: string) => void
 }) {
   return (
@@ -93,19 +127,20 @@ function NoteRow({
       <button
         type="button"
         onClick={() => onSelect(note.fileName)}
-        className="ui-row block w-full text-left px-3 py-2"
+        className="ui-row flex w-full items-center gap-2 text-left px-3 py-2"
         data-active={selected}
         aria-current={selected}
       >
-        <div className="flex items-center justify-between gap-2">
-          <span
-            className="font-ui text-sm truncate"
-            style={{ color: 'var(--ink)', fontWeight: selected ? 600 : 400 }}
-          >
-            {note.title || note.fileName}
-          </span>
-          <MaturityMark maturity={note.maturity} />
-        </div>
+        {/* Leading, so the glyphs form a column the eye can read downward.
+            A trailing chip's position moves with title truncation and never
+            lines up. */}
+        {showMaturity && <MaturityMark maturity={note.maturity} glyphOnly />}
+        <span
+          className="font-ui text-sm truncate"
+          style={{ color: 'var(--ink)', fontWeight: selected ? 600 : 400 }}
+        >
+          {note.title || note.fileName}
+        </span>
       </button>
     </li>
   )
@@ -113,25 +148,34 @@ function NoteRow({
 
 export default function NoteList({ notes, selectedFileName, onSelect, onCreate }: NoteListProps) {
   const [query, setQuery] = useState('')
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [activeTag, setActiveTag] = useState<string | null>(null)
 
-  const filtered = useMemo(() => filterNotes(notes, query), [notes, query])
-  const groups = useMemo(() => groupNotesByTag(filtered), [filtered])
+  const tags = useMemo(() => tagCounts(notes), [notes])
+  const visible = useMemo(
+    () => sortNotes(filterNotes(filterByTag(notes, activeTag), query)),
+    [notes, activeTag, query]
+  )
+  const showMaturity = useMemo(() => shouldShowMaturity(notes), [notes])
 
-  function toggleGroup(tag: string) {
-    setCollapsed((prev) => {
-      const next = new Set(prev)
-      if (next.has(tag)) next.delete(tag)
-      else next.add(tag)
-      return next
-    })
-  }
+  const narrowed = activeTag !== null || query.trim().length > 0
+  const countLabel = narrowed
+    ? `${visible.length} of ${notes.length} notes`
+    : `${notes.length} note${notes.length !== 1 ? 's' : ''}`
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div className="flex items-center justify-between gap-2 px-3 py-2.5 border-b" style={{ borderColor: 'var(--rule)' }}>
-        <span className="font-data text-xs uppercase tracking-wide" style={{ color: 'var(--ink-muted)' }}>
-          {notes.length} note{notes.length !== 1 ? 's' : ''}
+      {/* Everything above the scroller is pinned, so the count, the search
+          box and the active filter stay reachable in a long list. */}
+      <div
+        className="shrink-0 flex items-center justify-between gap-2 px-3 py-2.5 border-b"
+        style={{ borderColor: 'var(--rule)' }}
+      >
+        <span
+          className="font-data text-xs uppercase tracking-wide"
+          aria-live="polite"
+          style={{ color: 'var(--ink-muted)' }}
+        >
+          {countLabel}
         </span>
         <button
           type="button"
@@ -143,62 +187,97 @@ export default function NoteList({ notes, selectedFileName, onSelect, onCreate }
         </button>
       </div>
 
-      <div className="px-3 py-2 border-b" style={{ borderColor: 'var(--rule)' }}>
+      <div className="shrink-0 px-3 py-2 border-b" style={{ borderColor: 'var(--rule)' }}>
         <input
           type="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Filter by title or tag..."
-          aria-label="Filter notes"
+          placeholder="Search notes and tags"
+          aria-label="Search notes and tags"
           className="font-ui w-full px-2 py-1.5 border bg-transparent outline-none text-sm"
           style={{ borderColor: 'var(--rule)', color: 'var(--ink)' }}
         />
       </div>
 
+      {tags.length > 0 && (
+        <div
+          className="shrink-0 flex gap-1 overflow-x-auto px-2 py-1.5 border-b"
+          style={{ borderColor: 'var(--rule)' }}
+          role="group"
+          aria-label="Filter by tag"
+        >
+          <TagChip
+            label="All"
+            count={notes.length}
+            active={activeTag === null}
+            onClick={() => setActiveTag(null)}
+          />
+          {tags.map(({ tag, count }) => (
+            <TagChip
+              key={tag}
+              label={tag === UNTAGGED ? UNTAGGED : `#${tag}`}
+              count={count}
+              active={activeTag === tag}
+              onClick={() => setActiveTag(activeTag === tag ? null : tag)}
+            />
+          ))}
+        </div>
+      )}
+
       {notes.length === 0 ? (
         <p className="font-ui text-sm p-4" style={{ color: 'var(--ink-muted)' }}>
           No notes yet. Create one to get started.
         </p>
-      ) : filtered.length === 0 ? (
+      ) : visible.length === 0 ? (
         <p className="font-ui text-sm p-4" style={{ color: 'var(--ink-muted)' }}>
-          No notes match &ldquo;{query}&rdquo;.
+          No notes match.
         </p>
       ) : (
         <div className="flex-1 overflow-y-auto">
-          {groups.map((group) => {
-            const isCollapsed = collapsed.has(group.tag)
-            return (
-              <div key={group.tag} className="border-b" style={{ borderColor: 'var(--rule)' }}>
-                <button
-                  type="button"
-                  onClick={() => toggleGroup(group.tag)}
-                  aria-expanded={!isCollapsed}
-                  className="flex w-full items-center justify-between gap-2 px-3 py-1.5 font-data text-xs uppercase tracking-wide transition-colors hover:opacity-70"
-                  style={{ color: 'var(--ink-muted)' }}
-                >
-                  <span className="flex items-center gap-1.5">
-                    <span aria-hidden="true">{isCollapsed ? '▸' : '▾'}</span>
-                    {group.tag === UNTAGGED ? UNTAGGED : `#${group.tag}`}
-                  </span>
-                  <span>{group.notes.length}</span>
-                </button>
-                {!isCollapsed && (
-                  <ul className="divide-y" style={{ borderColor: 'var(--rule)' }}>
-                    {group.notes.map((note) => (
-                      <NoteRow
-                        key={`${group.tag}:${note.fileName}`}
-                        note={note}
-                        selected={note.fileName === selectedFileName}
-                        onSelect={onSelect}
-                      />
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )
-          })}
+          <ul className="divide-y" style={{ borderColor: 'var(--rule)' }}>
+            {visible.map((note) => (
+              <NoteRow
+                key={note.fileName}
+                note={note}
+                selected={note.fileName === selectedFileName}
+                showMaturity={showMaturity}
+                onSelect={onSelect}
+              />
+            ))}
+          </ul>
         </div>
       )}
     </div>
+  )
+}
+
+function TagChip({
+  label,
+  count,
+  active,
+  onClick,
+}: {
+  label: string
+  count: number
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className="ui-row font-data shrink-0 flex items-center gap-1 px-2 py-1 text-xs rounded whitespace-nowrap"
+      data-active={active}
+      style={{
+        color: active ? 'var(--ink)' : 'var(--ink-muted)',
+        // The single accent, spent on the active filter only. Maturity never
+        // uses it, so the two encodings cannot be confused.
+        boxShadow: active ? 'inset 0 -2px 0 var(--accent)' : undefined,
+      }}
+    >
+      <span>{label}</span>
+      <span style={{ opacity: 0.6 }}>{count}</span>
+    </button>
   )
 }
