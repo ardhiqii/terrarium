@@ -139,6 +139,13 @@ export default function Navbar() {
 
   // Rendered only once the session has resolved, so the header never flashes
   // a control that then changes.
+  //
+  // The slot around it reserves width unconditionally. The session arrives
+  // from a fetch, so this used to render nothing and then something, which
+  // reflowed the whole nav row a beat after every page load. That is the
+  // "layout shifts between pages" report: the row is simply narrower until
+  // the fetch lands. 64px covers both resolved states, the avatar button and
+  // the wider "Sign in" label, so neither one moves when it appears.
   const accountMenu =
     session && session.configured ? (
       <AccountMenu
@@ -148,6 +155,8 @@ export default function Navbar() {
         onSignOut={signOut}
       />
     ) : null
+
+  const accountSlot = <div className="flex justify-end min-w-16">{accountMenu}</div>
 
   return (
     <header
@@ -218,7 +227,7 @@ export default function Navbar() {
               style={{ background: 'var(--rule)' }}
             />
             <SearchLink pathname={pathname} />
-            {accountMenu}
+            {accountSlot}
             <ThemeToggle />
           </nav>
 

@@ -57,6 +57,17 @@
   --sprite-halo: rgba(214, 214, 204, 0.65);
 }
 
+/* Reserve the scrollbar gutter on every page, always.
+   Without this, a page that scrolls is ~15px narrower than one that does not,
+   and because the whole site is a centered column every centered thing jumps
+   sideways by half that on navigation. /write is the obvious case, since its
+   shell is overflow-hidden and never scrolls, but it happens between any long
+   and short page. `stable` keeps the gutter present either way, so nothing
+   moves. */
+html {
+  scrollbar-gutter: stable;
+}
+
 body {
   background: var(--paper);
   color: var(--ink);
