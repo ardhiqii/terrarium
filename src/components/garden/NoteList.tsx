@@ -93,8 +93,8 @@ function NoteRow({
       <button
         type="button"
         onClick={() => onSelect(note.fileName)}
-        className="block w-full text-left px-3 py-2 transition-colors"
-        style={{ background: selected ? 'var(--paper-raised)' : 'transparent' }}
+        className="ui-row block w-full text-left px-3 py-2"
+        data-active={selected}
         aria-current={selected}
       >
         <div className="flex items-center justify-between gap-2">

@@ -73,13 +73,13 @@ export default function MaturitySegmented({ value, onChange, className = '' }: M
             tabIndex={selected ? 0 : -1}
             onClick={() => onChange(m)}
             onKeyDown={(e) => handleKeyDown(e, index)}
-            className="flex items-center gap-1.5 px-2.5 py-1 border transition-colors"
+            className="ui-segment flex items-center gap-1.5 px-2.5 py-1 border"
+            data-active={selected}
             style={{
               borderColor: selected ? 'var(--accent)' : 'var(--rule)',
               color: selected ? 'var(--accent)' : 'var(--ink-muted)',
               fontWeight: selected ? 600 : 400,
               marginLeft: index === 0 ? 0 : -1,
-              background: selected ? 'var(--accent-soft)' : 'transparent',
             }}
           >
             <span aria-hidden="true">{GLYPH[m]}</span>

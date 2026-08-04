@@ -26,7 +26,10 @@ export interface AccountMenuProps {
   variant?: 'menu' | 'inline'
 }
 
-const ITEM_CLASS = 'font-ui block w-full text-left px-3 py-2 text-sm whitespace-nowrap'
+// `ui-row` carries the hover tint and the pointer cursor (see globals.css).
+// Without it these read as plain text: there is no underline, no cursor
+// change, and no background, so nothing says "clickable" until you click.
+const ITEM_CLASS = 'ui-row font-ui block w-full text-left px-3 py-2 text-sm whitespace-nowrap'
 
 export default function AccountMenu({
   signedIn,

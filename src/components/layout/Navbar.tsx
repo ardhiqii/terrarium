@@ -126,10 +126,10 @@ export default function Navbar() {
                 <Link
                   key={link.href}
                   href={link.href}
-                  className="font-ui px-2.5 py-1.5 text-sm whitespace-nowrap transition-colors"
+                  className="ui-row font-ui px-2.5 py-1.5 text-sm whitespace-nowrap rounded"
+                  data-active={isActive}
                   style={{
                     color: isActive ? 'var(--ink)' : 'var(--ink-muted)',
-                    background: isActive ? 'var(--paper-raised)' : 'transparent',
                     fontWeight: isActive ? 500 : 400,
                   }}
                 >
@@ -189,10 +189,10 @@ export default function Navbar() {
                   key={link.href}
                   href={link.href}
                   onClick={() => setOpen(false)}
-                  className="font-ui px-3 py-2 text-sm"
+                  className="ui-row font-ui px-3 py-2 text-sm rounded"
+                  data-active={isActive}
                   style={{
                     color: isActive ? 'var(--ink)' : 'var(--ink-muted)',
-                    background: isActive ? 'var(--paper-raised)' : 'transparent',
                     fontWeight: isActive ? 500 : 400,
                   }}
                 >
