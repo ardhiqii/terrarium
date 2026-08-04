@@ -29,7 +29,7 @@
 
 import { NextRequest } from 'next/server'
 import { getSessionProvider } from '@/lib/sync/session'
-import { getSyncStore } from '@/lib/sync/sqlite-store'
+import { getSyncStore } from '@/lib/sync/store'
 import { validateSnapshot } from '@/lib/sync/validate-snapshot'
 import { SNAPSHOT_SCHEMA_VERSION, type SyncedUser } from '@/lib/sync/types'
 import { checkRateLimit } from '@/lib/game/api-cache'

@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import { getSessionProvider } from '@/lib/sync/session'
-import { getSyncStore } from '@/lib/sync/sqlite-store'
+import { getSyncStore } from '@/lib/sync/store'
 import { getFollowing } from '@/lib/sync/github-following'
 import { buildLeaderboardEntries } from '@/lib/sync/leaderboard'
 import { LeaderboardList } from '@/components/profile/LeaderboardList'
