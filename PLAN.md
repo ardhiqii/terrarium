@@ -76,7 +76,7 @@ Pixel art is stored as data per the `SpriteData` contract, not as image files. T
 
 ## Track D. Surfaces (after A, B, C)
 
-`src/components/game/{SpecimenPlate,XpBar,ItemDrawer,XpLedger}.tsx`, the home page plate, and `/bestiary`.
+`src/components/game/{SpecimenPlate,XpBar,ItemDrawer,XpLedger}.tsx`, the home page plate, and `/companions`.
 
 Enforces DESIGN.md section 1: game UI never appears on a reading surface. Note and project pages get at most one quiet footer strip.
 

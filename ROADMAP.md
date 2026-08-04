@@ -19,7 +19,7 @@ The key decision: **public data only, no accounts, no database.** A creature is 
 - **Garden creature.** The main one, aggregating the garden's notes plus all repo activity.
 
 **Three surfaces:**
-1. **The garden site.** The specimen plate, ledger, and bestiary. Yours.
+1. **The garden site.** The specimen plate, ledger, and companions page. Yours.
 2. **The browser extension.** Injects creatures into github.com repo lists so other developers see them. This is the engagement engine.
 3. **The README badge.** A static SVG for anyone without the extension.
 
@@ -83,7 +83,7 @@ strongly preferred.
 
 ### Resume here
 
-The site is built: retheme, animated creature on the home page, `/bestiary`, real commit XP, a
+The site is built: retheme, animated creature on the home page, `/companions`, real commit XP, a
 public API, and 31 tests. Verified state: `npx tsc --noEmit` zero errors, `npm test` 31 passing,
 `npm run build` passes with `/api/creature` dynamic and every other route static.
 
@@ -120,7 +120,7 @@ Work on a branch, merge to `dev`. Nothing is deployed.
 
 Site (retheme, notes, projects, tags, search, graph), the creature system (XP engine,
 4 stages, companions from repos and tag clusters, 9 species lines, items, variants),
-`/guide`, `/garden` (connect a local markdown folder, TipTap editor, all client-side),
+`/guide`, `/write` (connect a local markdown folder, TipTap editor, all client-side),
 `/api/creature` + `/api/creature.svg`, the browser extension, and opt-in sync with
 profiles and a friends leaderboard.
 
@@ -219,7 +219,7 @@ rather than one for the owner and another for everyone else.
 
 **Run these together:** group A is T1, T3, T5 at once. Then group B/C, then D.
 
-Ordering follows the stated priorities: creature visible first, then commit XP, then bestiary, then distribution.
+Ordering follows the stated priorities: creature visible first, then commit XP, then companions, then distribution.
 
 ---
 

@@ -45,7 +45,7 @@ Check these by eye:
 | Page | What should be true |
 |---|---|
 | `/` | Creature sprite is **animated**, stage and XP bar show real numbers, item drawer shows locked and unlocked items |
-| `/bestiary` | Four stages, unreached ones greyed with "Not yet reached", XP thresholds visible |
+| `/companions` | Four stages, unreached ones greyed with "Not yet reached", XP thresholds visible |
 | `/notes`, `/projects` | **No creature UI at all.** Reading surfaces stay clean, that separation is deliberate |
 | `/graph` | Force graph renders and is draggable |
 
@@ -53,7 +53,7 @@ Then toggle **dark mode** in the navbar and walk the same pages. Both themes are
 
 ### Reduced motion
 
-This one is easy to get wrong, so it is worth checking. In Chrome DevTools: `Ctrl+Shift+P`, run "Show Rendering", set **Emulate CSS prefers-reduced-motion** to `reduce`, then reload `/bestiary`.
+This one is easy to get wrong, so it is worth checking. In Chrome DevTools: `Ctrl+Shift+P`, run "Show Rendering", set **Emulate CSS prefers-reduced-motion** to `reduce`, then reload `/companions`.
 
 The creature should go **completely still**. A CSS media query cannot pause a GIF, so this works by swapping to a static PNG. If it still moves, that fix broke.
 

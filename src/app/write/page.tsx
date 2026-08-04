@@ -1,10 +1,13 @@
 import type { Metadata } from 'next'
 import { ConnectGarden } from '@/components/garden/ConnectGarden'
 
+// One name in all three places. This route used to call itself "Garden" in
+// the nav, "Connect your garden" in its title, and "Connect a folder" in its
+// own h1, which is three names for one destination.
 export const metadata: Metadata = {
-  title: 'Connect your garden',
+  title: 'Write',
   description:
-    'Point this site at a folder of your own markdown notes and see your creature computed entirely in your browser. Nothing uploads.',
+    'Write and edit notes in a folder of your own markdown, entirely in your browser. Nothing uploads.',
 }
 
 /**

@@ -8,16 +8,75 @@ import AccountMenu from './AccountMenu'
 import GardenMark from '../GardenMark'
 import { siteConfig } from '@/lib/site-config'
 
+/**
+ * Eight flat items became six, and the order changed. What moved and why:
+ *
+ * "Home" is gone. The wordmark beside it already links to `/`, so it was two
+ * controls for one destination burning a scarce slot.
+ *
+ * "Search" left the row for an icon in the utility cluster. Search is a
+ * utility, not a place: `/search` reads the same corpus `/notes` does, so
+ * giving it equal weight implied a content area that does not exist.
+ *
+ * "Garden" became "Write", and this was the worst label on the site. It had
+ * no information scent at all: "garden" is the product's own metaphor, so as
+ * a label it named everything and therefore nothing, and someone clicking it
+ * expecting the garden got an OS folder picker. "Write" is a verb whose
+ * outcome you can predict, and it sits next to Notes so the pair reads as
+ * read/create. It stays in the primary row rather than moving behind the
+ * account divider, deliberately: adding a note is the thing that must be
+ * discoverable, and a menu is where discoverability goes to die.
+ *
+ * Guide and Graph are no longer adjacent. With Garden also in the row these
+ * were three same-length G words in a block, and nav is scanned by word
+ * shape, so they read as one blur.
+ */
 const BASE_NAV_LINKS = [
-  { href: '/', label: 'Home' },
   { href: '/notes', label: 'Notes' },
+  { href: '/write', label: 'Write' },
   { href: '/projects', label: 'Projects' },
+  { href: '/graph', label: 'Graph' },
   { href: '/companions', label: 'Companions' },
   { href: '/guide', label: 'Guide' },
-  { href: '/garden', label: 'Garden' },
-  { href: '/graph', label: 'Graph' },
-  { href: '/search', label: 'Search' },
 ]
+
+/**
+ * Search, as an icon in the utility cluster rather than a peer of Notes.
+ *
+ * `/search` reads the same corpus `/notes` and `/projects` do, so giving it a
+ * content-level slot advertised a section that does not exist. The magnifier
+ * is one of the few genuinely universal icons, but it still carries a real
+ * `aria-label` and a `title`, so it is never icon-only to a screen reader or
+ * to someone who hovers to check.
+ */
+function SearchLink({ pathname }: { pathname: string }) {
+  const isActive = pathname.startsWith('/search')
+  return (
+    <Link
+      href="/search"
+      aria-label="Search"
+      title="Search"
+      aria-current={isActive ? 'page' : undefined}
+      data-active={isActive}
+      className="ui-row flex items-center justify-center p-1.5 rounded"
+      style={{ color: isActive ? 'var(--ink)' : 'var(--ink-muted)' }}
+    >
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        aria-hidden="true"
+      >
+        <circle cx="11" cy="11" r="7" />
+        <line x1="21" y1="21" x2="16.65" y2="16.65" />
+      </svg>
+    </Link>
+  )
+}
 
 /** The shape `/api/auth/session` answers with. */
 interface SessionInfo {
@@ -116,7 +175,7 @@ export default function Navbar() {
           </Link>
 
           {/* Desktop nav */}
-          <nav className="hidden sm:flex items-center gap-1">
+          <nav aria-label="Main" className="hidden sm:flex items-center gap-1">
             {NAV_LINKS.map((link) => {
               const isActive =
                 link.href === '/'
@@ -128,9 +187,17 @@ export default function Navbar() {
                   href={link.href}
                   className="ui-row font-ui px-2.5 py-1.5 text-sm whitespace-nowrap rounded"
                   data-active={isActive}
+                  // Announces the current page to a screen reader. Previously
+                  // the only signals were colour and font weight, neither of
+                  // which is exposed to assistive tech at all.
+                  aria-current={isActive ? 'page' : undefined}
                   style={{
                     color: isActive ? 'var(--ink)' : 'var(--ink-muted)',
                     fontWeight: isActive ? 500 : 400,
+                    // A non-colour active affordance, so the current page is
+                    // not signalled by hue alone. Inset rather than a border
+                    // so it cannot shift the row by a pixel.
+                    boxShadow: isActive ? 'inset 0 -2px 0 var(--accent)' : undefined,
                   }}
                 >
                   {link.label}
@@ -145,6 +212,7 @@ export default function Navbar() {
               className="mx-2 h-4 w-px shrink-0"
               style={{ background: 'var(--rule)' }}
             />
+            <SearchLink pathname={pathname} />
             {accountMenu}
             <ThemeToggle />
           </nav>
@@ -178,8 +246,15 @@ export default function Navbar() {
 
         {/* Mobile menu */}
         {open && (
-          <nav id="mobile-nav" className="sm:hidden pb-3 flex flex-col gap-1">
-            {NAV_LINKS.map((link) => {
+          <nav
+            id="mobile-nav"
+            aria-label="Main, mobile"
+            className="sm:hidden pb-3 flex flex-col gap-1"
+          >
+            {/* Search appears as a labelled row here rather than the icon the
+                desktop row uses. There is space for the word, and an icon
+                alone in a vertical list has no affordance to lean on. */}
+            {[...NAV_LINKS, { href: '/search', label: 'Search' }].map((link) => {
               const isActive =
                 link.href === '/'
                   ? pathname === '/'
@@ -191,9 +266,11 @@ export default function Navbar() {
                   onClick={() => setOpen(false)}
                   className="ui-row font-ui px-3 py-2 text-sm rounded"
                   data-active={isActive}
+                  aria-current={isActive ? 'page' : undefined}
                   style={{
                     color: isActive ? 'var(--ink)' : 'var(--ink-muted)',
                     fontWeight: isActive ? 500 : 400,
+                    boxShadow: isActive ? 'inset 2px 0 0 var(--accent)' : undefined,
                   }}
                 >
                   {link.label}
