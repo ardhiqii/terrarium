@@ -455,3 +455,90 @@ describe('resolveVariant (extension copy of src/lib/game/variants.ts)', () => {
     expect(GC.resolveVariant(both, null)).toBe('deep')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Drift guard against the site's own implementation.
+//
+// This file's header has always claimed the ported logic "must not silently
+// drift from the Next app's", but nothing enforced it, and it did drift: the
+// site removed the upper bound on `deep` entries (commit 088c556) and this
+// copy kept a ceiling of 15, so a garden with 16+ entries read as `deep` on
+// the site and as nothing on its badge.
+//
+// Comparing behaviour rather than constants, because the extension's
+// thresholds are module-private inside the IIFE. vitest.config.mts already
+// runs both trees in one project with the `@` alias, so importing the real
+// implementation here costs nothing.
+// ---------------------------------------------------------------------------
+import { resolveVariant as siteResolveVariant } from '@/lib/game/variants'
+
+function gardenStats(overrides) {
+  return {
+    noteCount: 0,
+    projectCount: 0,
+    totalWords: 0,
+    resolvedWikilinks: 0,
+    tagCount: 0,
+    maturityCounts: { seedling: 0, budding: 0, evergreen: 0 },
+    ...overrides,
+  }
+}
+
+describe('resolveVariant matches the site implementation', () => {
+  const cases = [
+    [
+      'deep, well past the old ceiling of 15 entries',
+      gardenStats({
+        noteCount: 60,
+        totalWords: 60 * 800,
+        maturityCounts: { seedling: 10, budding: 10, evergreen: 40 },
+      }),
+      null,
+    ],
+    [
+      'deep, just above the old ceiling',
+      gardenStats({
+        noteCount: 16,
+        totalWords: 16 * 900,
+        maturityCounts: { seedling: 2, budding: 2, evergreen: 12 },
+      }),
+      null,
+    ],
+    [
+      'deep, below the old ceiling (was already agreeing)',
+      gardenStats({
+        noteCount: 10,
+        totalWords: 10 * 900,
+        maturityCounts: { seedling: 2, budding: 1, evergreen: 7 },
+      }),
+      null,
+    ],
+    [
+      'woven',
+      gardenStats({ noteCount: 10, resolvedWikilinks: 40, totalWords: 100 }),
+      null,
+    ],
+    [
+      'broad',
+      gardenStats({ noteCount: 4, tagCount: 12, totalWords: 100 }),
+      null,
+    ],
+    ['steady, from commit data only', gardenStats({}), { currentStreakDays: 30 }],
+    ['no variant at all', gardenStats({ noteCount: 1 }), { currentStreakDays: 0 }],
+  ]
+
+  for (const [label, stats, github] of cases) {
+    it(label, () => {
+      expect(GC.resolveVariant(stats, github)).toBe(siteResolveVariant(stats, github))
+    })
+  }
+
+  it('awards deep to a large garden, the case the stale ceiling broke', () => {
+    const huge = gardenStats({
+      noteCount: 60,
+      totalWords: 60 * 800,
+      maturityCounts: { seedling: 10, budding: 10, evergreen: 40 },
+    })
+    expect(GC.resolveVariant(huge, null)).toBe('deep')
+  })
+})

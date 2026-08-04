@@ -127,7 +127,11 @@
   const WOVEN_LINKS_PER_ENTRY = 3
   const STEADY_STREAK_DAYS = 21
   const DEEP_MIN_ENTRIES = 3
-  const DEEP_MAX_ENTRIES = 15
+  // There is deliberately NO upper bound on entries, matching
+  // src/lib/game/variants.ts. A ceiling made `deep` the only variant you
+  // could LOSE by writing more, which is the wrong incentive for a garden.
+  // This copy kept the old ceiling of 15 after the site dropped it, so a
+  // garden with 16+ entries read as `deep` on the site and not on its badge.
   const DEEP_WORDS_PER_ENTRY = 600
   const DEEP_EVERGREEN_RATIO = 0.5
   const BROAD_MIN_TAGS = 8
@@ -153,7 +157,7 @@
   function isDeep(stats) {
     if (!stats) return false
     const entries = entryCount(stats)
-    if (entries < DEEP_MIN_ENTRIES || entries > DEEP_MAX_ENTRIES) return false
+    if (entries < DEEP_MIN_ENTRIES) return false
     if ((stats.totalWords || 0) / entries < DEEP_WORDS_PER_ENTRY) return false
     const evergreen = (stats.maturityCounts && stats.maturityCounts.evergreen) || 0
     return evergreen / entries >= DEEP_EVERGREEN_RATIO
