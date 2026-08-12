@@ -104,17 +104,27 @@ Read ROADMAP.md, then do T11.   # docs; README still describes the pre-creature 
 
 ## Start here in a new session
 
-**Health check, verified 2026-08-03.** Everything below passes on `dev`:
+**Health check, verified 2026-08-12.** Everything below passes on `main`:
 
 ```
 npx tsc --noEmit    clean
-npm test            448 passing, 37 files
-npm run build       succeeds, 38 pages
+npm test            545 passing, 40 files
+npm run build       succeeds
 all routes          200
 ```
 
-Branch model: `main` (stable, untouched) <- `dev` (integration) <- one branch per task.
-Work on a branch, merge to `dev`. Nothing is deployed.
+Branch model: `main` is the single long-lived branch, and it is the trunk —
+every branch is cut from it and merged back into it. There is no `dev`; the
+old integration branch was folded into `main` on 2026-08-12 and deleted,
+because one developer moving one task at a time got nothing from the extra
+hop but two places to forget to push.
+
+So: branch per unit of work, named for what it is (`feat/…`, `fix/…`,
+`chore/…`, `docs/…`), merged into `main` and deleted once merged. Keep them
+short-lived. `main` is expected to stay green — run `npx tsc --noEmit`,
+`npm test`, and `npm run build` before merging, not after. Nothing is
+deployed yet, so `main` breaking costs a confused next session rather than an
+outage, but the habit is worth more than the branch was.
 
 ### What is built
 
