@@ -134,6 +134,26 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+### Opening it from your phone, or showing someone else
+
+`next dev` prints a `Network:` URL alongside the local one. That address works
+from any device on the same network, and over a VPN like Tailscale you can use
+the tailnet IP instead.
+
+One thing to know, because the failure is silent: Next blocks cross-origin
+requests to its `/_next/*` dev assets, allowing only the host the server
+booted with. Reaching the dev server by IP without allowing that host serves
+the HTML with a `200` while every JS chunk gets a `403`. The page renders and
+then does nothing at all — no menu, no theme toggle, no search, and `/graph`
+sits on "Loading graph." forever, because nothing hydrates.
+
+Private ranges, including Tailscale's, are already allowed in
+`next.config.ts` under `allowedDevOrigins`, so this should just work. If you
+reach it from some other host, add it there and **restart** the dev server —
+the config is read at boot. The dev server logs `Blocked cross-origin request`
+naming the exact host to add, so check the terminal before assuming the page
+is broken. This is dev-only; `next build` and `next start` ignore it.
+
 ---
 
 ## Writing content
