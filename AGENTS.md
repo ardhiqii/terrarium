@@ -32,3 +32,25 @@ recreate one.
 - `main` stays green. Run `npx tsc --noEmit`, `npm test`, and `npm run build`
   **before** merging. A red `main` is the one thing this model has no safety net for.
 - Do not force-push `main` or rewrite its history.
+
+## Go through a pull request
+
+Push the branch and open a PR rather than fast-forwarding `main` locally. The
+commits are the same either way; the PR is what carries the *reasoning* — why
+this change, what was verified, what was considered and rejected. A local
+fast-forward leaves none of that anywhere GitHub can show you later.
+
+```
+git push -u origin <branch>
+gh pr create --base main --title "…" --body "…"
+gh pr merge --merge --delete-branch      # keeps the PR reference in history
+```
+
+Prefer `--merge` over `--squash` for anything with more than one meaningful
+commit, so the individual steps stay bisectable. Put the verification results
+in the PR body — that is the record's whole point.
+
+Merging your own PR unreviewed is fine on a solo repo; the record is the
+deliverable, not the approval. Do not enable auto-merge on an unverified
+branch, and do not close a PR by pushing its commits to `main` behind its
+back — that orphans the discussion.
