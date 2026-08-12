@@ -126,6 +126,13 @@ short-lived. `main` is expected to stay green — run `npx tsc --noEmit`,
 deployed yet, so `main` breaking costs a confused next session rather than an
 outage, but the habit is worth more than the branch was.
 
+Push the branch and merge it through a **pull request** (`gh pr create`, then
+`gh pr merge --merge --delete-branch`), not a local fast-forward. Same commits
+either way, but the PR is where the reasoning and the verification results
+live, and it is the only part of that a future session can actually read back.
+Put the tsc/test/build results in the PR body. See `AGENTS.md` for the exact
+commands.
+
 ### What is built
 
 Site (retheme, notes, projects, tags, search, graph), the creature system (XP engine,
