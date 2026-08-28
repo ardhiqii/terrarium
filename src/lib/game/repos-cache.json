@@ -2,27 +2,11 @@
   "login": "ardhiqii",
   "repos": [
     {
-      "name": "bagiin",
-      "language": "Python",
-      "createdAt": "2026-08-09T18:03:43Z",
-      "pushedAt": "2026-08-17T16:13:45Z",
-      "sizeKb": 1362,
-      "fork": false
-    },
-    {
-      "name": "digital-garden",
-      "language": "TypeScript",
-      "createdAt": "2026-04-23T09:11:20Z",
-      "pushedAt": "2026-08-12T15:18:36Z",
-      "sizeKb": 789,
-      "fork": false
-    },
-    {
       "name": "notenext",
       "language": "TypeScript",
       "createdAt": "2025-11-03T15:22:50Z",
-      "pushedAt": "2026-08-12T10:11:12Z",
-      "sizeKb": 832,
+      "pushedAt": "2026-08-04T06:54:11Z",
+      "sizeKb": 756,
       "fork": false
     },
     {
@@ -192,7 +176,23 @@
       "pushedAt": "2022-09-09T10:37:45Z",
       "sizeKb": 24510,
       "fork": false
+    },
+    {
+      "name": "WeatherApp",
+      "language": "JavaScript",
+      "createdAt": "2021-12-26T12:03:43Z",
+      "pushedAt": "2022-09-04T16:45:22Z",
+      "sizeKb": 1713,
+      "fork": false
+    },
+    {
+      "name": "dashboard",
+      "language": "JavaScript",
+      "createdAt": "2022-06-17T12:17:47Z",
+      "pushedAt": "2022-09-04T16:42:50Z",
+      "sizeKb": 1027,
+      "fork": false
     }
   ],
-  "fetchedAt": "2026-08-22T13:15:36.764Z"
+  "fetchedAt": "2026-08-28T05:15:38.168Z"
 }
