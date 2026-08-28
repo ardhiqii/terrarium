@@ -240,6 +240,230 @@
   }
 
   // -------------------------------------------------------------------------
+  // Public companion payload compatibility
+  //
+  // This is deliberately pure. The extension only normalizes data it has
+  // already received from the public API; it never opens a notes vault,
+  // reads local files, or turns a local event into GitHub-verified activity.
+  // The legacy branch keeps the existing `/api/creature` response useful
+  // while the product API moves to the provider-neutral companion shape.
+  // -------------------------------------------------------------------------
+
+  function isRecord(value) {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+  }
+
+  function firstString(...values) {
+    for (const value of values) {
+      if (typeof value !== 'string') continue
+      const trimmed = value.trim()
+      if (trimmed) return trimmed
+    }
+    return null
+  }
+
+  function nonNegativeInteger(value, fallback = 0) {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return fallback
+    return Math.floor(value)
+  }
+
+  function firstCount(objects, keys) {
+    for (const object of objects) {
+      if (!isRecord(object)) continue
+      for (const key of keys) {
+        if (typeof object[key] === 'number' && Number.isFinite(object[key]) && object[key] >= 0) {
+          return Math.floor(object[key])
+        }
+      }
+    }
+    return null
+  }
+
+  function provenanceKind(value) {
+    if (typeof value !== 'string') return 'unknown'
+    const normalized = value.trim().toLowerCase().replace(/[_ ]/g, '-')
+    if (normalized === 'verified' || normalized === 'github-verified') return 'verified'
+    if (normalized === 'local' || normalized === 'local-only') return 'local'
+    return 'unknown'
+  }
+
+  function eventProvenance(event) {
+    if (!isRecord(event)) return 'unknown'
+    const source = isRecord(event.source) ? event.source : null
+    return provenanceKind(
+      event.provenance || event.verification ||
+      (source && (source.provenance || source.verification))
+    )
+  }
+
+  function normalizeVerification(payload, active) {
+    const summaries = [
+      isRecord(payload.verification) ? payload.verification : null,
+      isRecord(payload.verificationSummary) ? payload.verificationSummary : null,
+      isRecord(payload.provenanceSummary) ? payload.provenanceSummary : null,
+      isRecord(active) && isRecord(active.verification) ? active.verification : null,
+    ]
+
+    let verified = firstCount(
+      summaries.concat([payload, active]),
+      ['verifiedEventCount', 'githubVerifiedEventCount', 'verifiedEvents']
+    )
+    let local = firstCount(
+      summaries.concat([payload, active]),
+      ['localEventCount', 'localEvents']
+    )
+    let unknown = firstCount(
+      summaries.concat([payload, active]),
+      ['unknownEventCount', 'unverifiedEventCount', 'unknownEvents']
+    )
+
+    const events = Array.isArray(payload.events)
+      ? payload.events
+      : (isRecord(payload.ledger) && Array.isArray(payload.ledger.events)
+          ? payload.ledger.events
+          : null)
+    if (events && verified === null && local === null && unknown === null) {
+      verified = 0
+      local = 0
+      unknown = 0
+      for (const event of events) {
+        const kind = eventProvenance(event)
+        if (kind === 'verified') verified++
+        else if (kind === 'local') local++
+        else unknown++
+      }
+    }
+
+    verified = verified === null ? 0 : verified
+    local = local === null ? 0 : local
+    unknown = unknown === null ? 0 : unknown
+
+    // Explicit local evidence always wins over an overly broad/incorrect
+    // status string. This is the important privacy boundary for the badge.
+    const explicitStatus = provenanceKind(
+      firstString(
+        ...summaries.map((summary) => summary && (summary.status || summary.provenance)),
+        payload.provenance,
+        payload.verificationStatus
+      )
+    )
+    let status = 'unknown'
+    if (verified > 0 && local === 0 && unknown === 0) status = 'verified'
+    else if (local > 0 && verified === 0 && unknown === 0) status = 'local'
+    else if (verified > 0 && (local > 0 || unknown > 0)) status = 'mixed'
+    else if (local > 0 || unknown > 0) status = 'local'
+    else if (explicitStatus === 'verified') status = 'verified'
+    else if (explicitStatus === 'local') status = 'local'
+
+    let summary = 'Verification unavailable'
+    if (status === 'verified') summary = 'GitHub-verified activity'
+    else if (status === 'local') summary = 'Local activity (not GitHub-verified)'
+    else if (status === 'mixed') summary = 'Mixed: GitHub-verified and local activity'
+
+    return {
+      status,
+      summary,
+      verifiedEventCount: verified,
+      localEventCount: local,
+      unknownEventCount: unknown,
+    }
+  }
+
+  function progressionLabel(active, legacyStage) {
+    const progression = isRecord(active) && isRecord(active.progression)
+      ? active.progression
+      : null
+    const step = progression && isRecord(progression.step) ? progression.step : null
+    return firstString(
+      active && active.progressionLabel,
+      active && active.progressionName,
+      progression && progression.label,
+      progression && progression.name,
+      step && (step.label || step.name || step.displayName),
+      active && active.stage && active.stage.name,
+      legacyStage && (legacyStage.name || legacyStage.label)
+    ) || 'Unknown'
+  }
+
+  /**
+   * Converts both the legacy CreatureState response and the future public
+   * companion response into one safe, display-ready shape. Invalid input
+   * returns an empty shape instead of throwing.
+   */
+  function normalizePublicCompanionPayload(payload) {
+    if (!isRecord(payload)) {
+      return {
+        activeCompanion: null,
+        collectionCount: 0,
+        verification: normalizeVerification({}, null),
+      }
+    }
+
+    const legacyStage = isRecord(payload.stage) ? payload.stage : null
+    const active = isRecord(payload.activeCompanion)
+      ? payload.activeCompanion
+      : (legacyStage || (payload.companionId || payload.id ? payload : null))
+    if (!active) {
+      return {
+        activeCompanion: null,
+        collectionCount: 0,
+        verification: normalizeVerification(payload, null),
+      }
+    }
+
+    const legacy = Boolean(legacyStage && !isRecord(payload.activeCompanion))
+    const id = legacy
+      ? firstString(payload.speciesLineId, active.companionId, active.id, 'legacy-creature')
+      : firstString(active.companionId, active.id, payload.activeCompanionId)
+    if (!id) {
+      return {
+        activeCompanion: null,
+        collectionCount: 0,
+        verification: normalizeVerification(payload, active),
+      }
+    }
+
+    const familyId = firstString(active.familyId, active.family, payload.familyId)
+    const name = legacy
+      ? (firstString(payload.speciesLineName, legacyStage && legacyStage.name, id) || id)
+      : (firstString(active.name, active.displayName, active.speciesName, id) || id)
+    const xp = nonNegativeInteger(
+      typeof active.xp === 'number' ? active.xp :
+        (typeof active.totalXp === 'number' ? active.totalXp :
+          (typeof payload.xp === 'number' ? payload.xp : payload.totalXp)),
+      0
+    )
+    const essence = nonNegativeInteger(
+      typeof active.essence === 'number' ? active.essence :
+        (typeof active.familyEssence === 'number' ? active.familyEssence :
+          (familyId && isRecord(payload.essenceByFamily)
+            ? payload.essenceByFamily[familyId]
+            : payload.essence)),
+      0
+    )
+    const collection = Array.isArray(payload.collection)
+      ? payload.collection
+      : (Array.isArray(payload.companions) ? payload.companions : null)
+    const collectionCount = firstCount([payload], ['collectionCount'])
+    const resolvedCollectionCount = collectionCount === null
+      ? (collection ? collection.length : 1)
+      : collectionCount
+
+    return {
+      activeCompanion: {
+        id,
+        familyId: familyId || null,
+        name,
+        progressionLabel: progressionLabel(active, legacyStage),
+        xp,
+        essence,
+      },
+      collectionCount: resolvedCollectionCount,
+      verification: normalizeVerification(payload, active),
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Debug logging, gated behind a single flag, off by default
   // -------------------------------------------------------------------------
 
@@ -475,6 +699,7 @@
     getSpeciesLine,
     assignSpeciesLine,
     spriteUrl,
+    normalizePublicCompanionPayload,
     resolveVariant,
     getSettings,
     setSettings,

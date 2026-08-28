@@ -10,23 +10,68 @@ import { FsaGardenSource, FsaGardenConnection, isFsaSupported, withTimeout } fro
  */
 
 interface FakeFile {
+  kind: 'file'
   content: string
   lastModified: number
 }
 
+interface FakeDirectory {
+  kind: 'directory'
+  name: string
+  path: string
+  children: Map<string, FakeNode>
+}
+
+type FakeNode = FakeFile | FakeDirectory
+
 /** Minimal fake of the File System Access API surface this module uses. */
-function makeFakeDirectory(initial: Record<string, string> = {}) {
-  const files = new Map<string, FakeFile>()
-  for (const [name, content] of Object.entries(initial)) {
-    files.set(name, { content, lastModified: 1000 })
+function makeFakeDirectory(initial: Record<string, string> = {}, unreadableDirectories: string[] = []) {
+  const root: FakeDirectory = {
+    kind: 'directory',
+    name: 'fake-garden',
+    path: '',
+    children: new Map(),
+  }
+  const unreadable = new Set(unreadableDirectories)
+
+  const directoryAt = (path: string, create = false): FakeDirectory => {
+    let directory = root
+    for (const segment of path.split('/').filter(Boolean)) {
+      const existing = directory.children.get(segment)
+      if (existing?.kind === 'directory') {
+        directory = existing
+      } else if (create) {
+        const created: FakeDirectory = {
+          kind: 'directory',
+          name: segment,
+          path: directory.path ? `${directory.path}/${segment}` : segment,
+          children: new Map(),
+        }
+        directory.children.set(segment, created)
+        directory = created
+      } else {
+        throw new Error('NotFoundError')
+      }
+    }
+    return directory
   }
 
-  const fileHandleFor = (name: string) => ({
+  for (const [name, content] of Object.entries(initial)) {
+    const segments = name.split('/')
+    const fileName = segments.pop()!
+    directoryAt(segments.join('/'), true).children.set(fileName, {
+      kind: 'file',
+      content,
+      lastModified: 1000,
+    })
+  }
+
+  const fileHandleFor = (directory: FakeDirectory, name: string) => ({
     kind: 'file' as const,
     name,
     async getFile() {
-      const f = files.get(name)
-      if (!f) throw new Error('NotFoundError')
+      const f = directory.children.get(name)
+      if (!f || f.kind !== 'file') throw new Error('NotFoundError')
       return {
         lastModified: f.lastModified,
         async text() {
@@ -41,38 +86,57 @@ function makeFakeDirectory(initial: Record<string, string> = {}) {
           buffer = data
         },
         async close() {
-          files.set(name, { content: buffer, lastModified: Date.now() })
+          directory.children.set(name, { kind: 'file', content: buffer, lastModified: Date.now() })
+        },
+        async abort() {
+          // Matches the method used by the production implementation on a
+          // failed write; this fake does not simulate write failures.
         },
       }
     },
   })
 
-  const handle = {
+  const directoryHandleFor = (directory: FakeDirectory) => ({
     kind: 'directory' as const,
-    name: 'fake-garden',
+    name: directory.name,
     async *entries(): AsyncIterableIterator<[string, unknown]> {
-      for (const name of files.keys()) {
-        yield [name, fileHandleFor(name)]
+      if (unreadable.has(directory.path)) throw new Error('NotAllowedError')
+      for (const [name, node] of directory.children) {
+        yield [
+          name,
+          node.kind === 'file' ? fileHandleFor(directory, name) : directoryHandleFor(node),
+        ]
       }
     },
     async getFileHandle(name: string, options?: { create?: boolean }) {
-      if (!files.has(name)) {
+      const existing = directory.children.get(name)
+      if (!existing) {
         if (options?.create) {
-          files.set(name, { content: '', lastModified: Date.now() })
+          directory.children.set(name, { kind: 'file', content: '', lastModified: Date.now() })
         } else {
           throw new Error('NotFoundError')
         }
       }
-      return fileHandleFor(name)
+      const node = directory.children.get(name)
+      if (!node || node.kind !== 'file') throw new Error('TypeMismatchError')
+      return fileHandleFor(directory, name)
+    },
+    async getDirectoryHandle(name: string, options?: { create?: boolean }) {
+      const existing = directory.children.get(name)
+      if (!existing) {
+        if (!options?.create) throw new Error('NotFoundError')
+        return directoryHandleFor(directoryAt(directory.path ? `${directory.path}/${name}` : name, true))
+      }
+      if (existing.kind !== 'directory') throw new Error('TypeMismatchError')
+      return directoryHandleFor(existing)
     },
     async removeEntry(name: string) {
-      if (!files.has(name)) throw new Error('NotFoundError')
-      files.delete(name)
+      if (!directory.children.has(name)) throw new Error('NotFoundError')
+      directory.children.delete(name)
     },
-    _files: files,
-  }
+  })
 
-  return handle as unknown as FileSystemDirectoryHandle & { _files: Map<string, FakeFile> }
+  return directoryHandleFor(root) as unknown as FileSystemDirectoryHandle
 }
 
 describe('isFsaSupported', () => {
@@ -99,6 +163,55 @@ describe('FsaGardenSource: list', () => {
     const handle = makeFakeDirectory({ 'readme.txt': 'hi' })
     const source = new FsaGardenSource(handle)
     await expect(source.list()).resolves.toEqual([])
+  })
+
+  it('recursively lists nested markdown files by relative path', async () => {
+    const handle = makeFakeDirectory({
+      'projects/alpha/readme.md': 'alpha',
+      'projects/alpha/notes/idea.mdx': 'idea',
+      'projects/alpha/notes/image.png': 'not markdown',
+      'top.md': 'top',
+    })
+    const source = new FsaGardenSource(handle)
+    const files = await source.list()
+
+    expect(files.map((file) => file.name).sort()).toEqual([
+      'projects/alpha/notes/idea.mdx',
+      'projects/alpha/readme.md',
+      'top.md',
+    ])
+  })
+
+  it('ignores Obsidian, hidden, VCS, dependency, and system directories', async () => {
+    const handle = makeFakeDirectory({
+      '.obsidian/app.md': 'ignored',
+      '.private/secret.md': 'ignored',
+      '.git/history.md': 'ignored',
+      'node_modules/package.md': 'ignored',
+      'System Volume Information/index.md': 'ignored',
+      '$RECYCLE.BIN/deleted.md': 'ignored',
+      'visible/kept.md': 'kept',
+    })
+    const source = new FsaGardenSource(handle)
+
+    await expect(source.list()).resolves.toEqual([
+      expect.objectContaining({ name: 'visible/kept.md', content: 'kept' }),
+    ])
+  })
+
+  it('continues scanning sibling directories when a nested directory is unreadable', async () => {
+    const handle = makeFakeDirectory(
+      {
+        'blocked/secret.md': 'unreadable',
+        'available/note.md': 'readable',
+      },
+      ['blocked']
+    )
+    const source = new FsaGardenSource(handle)
+
+    await expect(source.list()).resolves.toEqual([
+      expect.objectContaining({ name: 'available/note.md', content: 'readable' }),
+    ])
   })
 
   it('exposes the folder name', () => {
@@ -140,6 +253,22 @@ describe('FsaGardenSource: read/write/remove/rename', () => {
     await source.rename('old.md', 'new.md')
     await expect(source.read('old.md')).resolves.toBeNull()
     await expect(source.read('new.md')).resolves.toBe('content here')
+  })
+
+  it('creates, edits, renames, and removes files in nested directories', async () => {
+    const handle = makeFakeDirectory({})
+    const source = new FsaGardenSource(handle)
+
+    await source.write('projects/alpha/note.md', 'first')
+    await expect(source.read('projects/alpha/note.md')).resolves.toBe('first')
+
+    await source.write('projects/alpha/note.md', 'edited')
+    await source.rename('projects/alpha/note.md', 'archive/final.mdx')
+    await expect(source.read('projects/alpha/note.md')).resolves.toBeNull()
+    await expect(source.read('archive/final.mdx')).resolves.toBe('edited')
+
+    await source.remove('archive/final.mdx')
+    await expect(source.read('archive/final.mdx')).resolves.toBeNull()
   })
 })
 

@@ -42,8 +42,24 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
 - Legacy cache entries refresh once to gain the new metadata, then remain
   cache-first.
 - `npx tsc --noEmit` passes.
-- `npm test` passes: 545 tests across 40 files.
+- New product engine tests pass: 607 tests across 49 files.
 - `npm run build` succeeds.
+
+### New product loop shipped
+
+- Guest onboarding creates an immediate local starter without authentication.
+- The `/write` route now exposes starter selection, recoverability warning, and
+  a local activity panel.
+- Mounted Markdown scans are recursive, baseline-aware, and emit local,
+  idempotent events without uploading note text.
+- Per-companion XP, hidden encounter progress, deterministic draws, duplicate
+  Essence, and free active-companion switching have provider-neutral contracts.
+- The prototype catalog now references real PokeAPI Pikachu → Raichu and Ditto
+  assets; animation and static fallback are resolved at the provider boundary.
+- A derived-only product snapshot and guest/server merge adapter are ready for
+  the account API; the legacy sync endpoint remains backward compatible.
+- The extension can consume both the legacy creature payload and the future
+  public companion payload with provenance labels.
 
 ### Known prototype mismatch
 
@@ -57,48 +73,39 @@ collection is considered final.
 
 | Phase | Goal | Status |
 |---|---|---|
-| 0 | Product and data contracts | **in progress** |
-| 1 | Guest onboarding and local profile | planned |
-| 2 | Event ledger and basic XP | planned |
-| 3 | Companion catalog, forms, and encounters | planned |
+| 0 | Product and data contracts | **complete** |
+| 1 | Guest onboarding and local profile | **partial, usable on `/write`** |
+| 2 | Event ledger and basic XP | **partial, Markdown wired; GitHub pending** |
+| 3 | Companion catalog, forms, and encounters | **partial, engine and PokeAPI bridge shipped** |
 | 4 | Recursive Markdown and Obsidian mounting | partial, needs upgrade |
-| 5 | GitHub verification and guest sync merge | partial, needs new model |
-| 6 | Collection UI, profiles, extension integration | partial, needs new model |
+| 5 | GitHub verification and guest sync merge | **partial, product adapter ready; route pending** |
+| 6 | Collection UI, profiles, extension integration | **partial, extension adapter shipped; surfaces pending** |
 | 7 | Licensed marketplace providers and original art | future |
 
 The detailed acceptance criteria for each phase are in [`PLAN.md`](PLAN.md).
 
 ## Immediate next work
 
-### 1. Freeze the new contracts
+### 1. Finish persistent local source snapshots
 
-Add types for:
+Persist compact per-file scan summaries so changes made while the website is
+closed can be detected without storing a second copy of a large vault in
+ordinary localStorage. Keep the raw note boundary local.
 
-- guest and account profiles;
-- source baselines;
-- normalized source events;
-- per-companion XP ledgers;
-- encounter progress and persisted results;
-- family-specific Essence;
-- provider metadata, forms, evolution paths, asset URLs, and licenses.
-
-Do not extend the old aggregate `CreatureState` shape indefinitely. Migrate the
-consumers deliberately.
-
-### 2. Implement the event ledger
+### 2. Connect GitHub events to the product ledger
 
 Normalize note and GitHub changes into stable, replay-safe events. Establish a
 baseline when an existing source is first connected so old history can influence
 the first companion but cannot flood the user with retroactive XP.
 
-### 3. Replace fake species lines
+### 3. Add the product sync route
 
 Create a provider-neutral companion catalog. The PokeAPI provider should resolve
 species, forms, evolution chains, and the best available asset. The game engine
 should consume only the provider contract. Keep the PokeAPI provider isolated so
 it can be replaced with licensed artist assets.
 
-### 4. Build encounters and collection
+### 4. Replace legacy collection surfaces
 
 Add a quiet encounter meter, persisted weighted draws, duplicate conversion, one
 active companion, free switching, and per-companion XP. Test refreshes, repeated

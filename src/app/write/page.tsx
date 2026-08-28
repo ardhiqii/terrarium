@@ -1,5 +1,7 @@
 import type { Metadata } from 'next'
 import { ConnectGarden } from '@/components/garden/ConnectGarden'
+import { GuestCompanionOnboarding } from '@/components/game/GuestCompanionOnboarding'
+import { GuestProductRuntime } from '@/components/game/GuestProductRuntime'
 
 // One name in all three places. This route used to call itself "Garden" in
 // the nav, "Connect your garden" in its title, and "Connect a folder" in its
@@ -22,5 +24,15 @@ export const metadata: Metadata = {
  * wrapper.
  */
 export default function GardenPage() {
-  return <ConnectGarden />
+  return (
+    <>
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 pt-8">
+        <GuestCompanionOnboarding />
+        <div className="mt-6">
+          <GuestProductRuntime />
+        </div>
+      </div>
+      <ConnectGarden />
+    </>
+  )
 }
