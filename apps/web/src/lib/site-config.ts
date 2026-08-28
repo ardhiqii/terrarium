@@ -2,8 +2,8 @@
  * Every piece of site branding lives here.
  *
  * The point is that someone can clone this repo, change this one file, and
- * have their own garden. Nothing else should hardcode a name, a wordmark, or
- * a personal pronoun. If you find branding anywhere else, it belongs here.
+ * have their own Terrarium. Nothing else should hardcode a name, a wordmark,
+ * or an owner-specific pronoun. If you find branding anywhere else, it belongs here.
  */
 
 export const siteConfig = {

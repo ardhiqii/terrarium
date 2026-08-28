@@ -1,0 +1,21 @@
+---
+title: "Mount Existing Notes"
+date: "2026-08-28"
+description: "Terrarium can observe an existing Markdown folder without requiring a migration or a platform-specific plugin."
+tags: ["notes", "mounting", "privacy", "demo"]
+type: "note"
+maturity: "budding"
+---
+
+Bring the work to Terrarium instead of moving the work into Terrarium. The
+browser can mount an existing folder through the File System Access API and
+scan Markdown or MDX files while the site is open.
+
+This works for an Obsidian vault, a Logseq graph, or an ordinary folder of
+Markdown files. Note contents stay local by default. Terrarium compares file
+snapshots, records a baseline on first observation, and awards XP only for
+later meaningful deltas.
+
+The built-in editor is available for people who do not already have a preferred
+notes tool. Both paths feed the same companion system. See
+[[How Companions Grow]] for the progression loop.

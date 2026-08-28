@@ -1,6 +1,6 @@
 # terrarium
 
-Aufa's terrarium - a personal space to pour out ideas, document projects, and see how things connect. Not a blog. Notes are messy, projects are real, everything is linked.
+Terrarium is a shared companion layer for notes, projects, and developer work. It is not a blog: notes can stay messy, projects can evolve, and everything can connect.
 
 Writing notes and shipping code feed one chosen companion. The companion is a
 readout of real work, not decoration. The app starts locally as a guest, while

@@ -5,7 +5,7 @@ The visual source of truth for this site and its companion surfaces. Read
 implementation sequence, and this file before changing visual tokens or adding
 a section.
 
-Design read: **personal terrarium for developers and curious readers, with a naturalist specimen-archive language, leaning toward Tailwind v4 + Geist/EB Garamond + restrained motion, with a pixel-art creature layer quarantined into dedicated surfaces.**
+Design read: **shared terrarium for developers and curious readers, with a naturalist specimen-archive language, leaning toward Tailwind v4 + Geist/EB Garamond + restrained motion, with a pixel-art creature layer quarantined into dedicated surfaces.**
 
 Dials: `DESIGN_VARIANCE: 6` · `MOTION_INTENSITY: 5` · `VISUAL_DENSITY: 4`
 

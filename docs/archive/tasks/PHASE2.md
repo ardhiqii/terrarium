@@ -8,7 +8,7 @@ are preserved in Git history. The current product direction is in
 
 - The extension can display public creature state on GitHub.
 - The website can render local and remote sprite sources.
-- The existing XP engine can compute a personal garden snapshot.
+- The existing XP engine can compute a garden snapshot.
 - PokeAPI assets are usable for local prototyping, but the current species lines
   are visual combinations rather than canonical evolution families.
 

@@ -1,6 +1,6 @@
 # Phase 3: product foundation
 
-Phase 3 turns the personal garden prototype into an offline-first companion
+Phase 3 turns the garden prototype into an offline-first companion
 product. The authoritative rules are in [`PRODUCT.md`](../../PRODUCT.md). The
 ordered engineering work is in [`PLAN.md`](../../PLAN.md).
 
