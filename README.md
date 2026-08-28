@@ -2,7 +2,9 @@
 
 Aufa's digital garden - a personal space to pour out ideas, document projects, and see how things connect. Not a blog. Notes are messy, projects are real, everything is linked.
 
-Writing notes and shipping code both feed a pixel creature that evolves as the garden grows. The creature is a readout of real work, not decoration: it is computed at build time from your content and your public GitHub activity, nothing invented.
+Writing notes and shipping code feed one chosen companion. The companion is a
+readout of real work, not decoration. The app starts locally as a guest, while
+GitHub is an optional verification and sync source.
 
 Built with Next.js 16, MDX, and a force-directed graph. Deploys to Vercel.
 
@@ -38,7 +40,7 @@ content/
 src/
 ├── app/
 │   ├── (pages)              ← Next.js App Router pages
-│   ├── companions/             ← full evolution line, items archive
+│   ├── companions/             ← active companion, collection, and items
 │   └── api/
 │       ├── creature/         ← GET /api/creature - JSON creature state
 │       └── creature.svg/     ← GET /api/creature.svg - README badge
@@ -55,47 +57,79 @@ extension/            ← Manifest V3 browser extension, self-contained
 
 ---
 
-## The creature system
+## The companion system
 
-The creature is not a mascot bolted onto the site. It is a specimen plate showing what the garden's growth looks like: how much you've written, how densely it's linked, and how consistently you show up in commits.
+This project is an offline-first companion for developers. You can open the site
+as a guest, receive a starter companion immediately, and use the built-in editor
+or mount an existing Markdown folder. GitHub is optional.
 
-### Evolution
+The complete product rules are in [`PRODUCT.md`](PRODUCT.md). The design rules
+are in [`DESIGN.md`](DESIGN.md), the implementation sequence is in
+[`PLAN.md`](PLAN.md), and current delivery status is in [`ROADMAP.md`](ROADMAP.md).
 
-Four stages, gated by cumulative XP. Numbers below are read directly from `src/lib/game/types.ts`, the single source of truth:
+### First use
 
-| Stage | XP threshold | What it means |
-|---|---|---|
-| **Sporeling** | 0 | The garden exists. A few scattered notes. |
-| **Mossling** | 1,500 | Notes are accumulating and starting to link. |
-| **Bracken** | 5,000 | A real body of work with dense interconnection. |
-| **Heartwood** | 12,000 | An established garden. |
+The user does not authenticate before using the app and does not need a desktop
+download. On first visit, the app creates a local guest profile and shows a
+starter companion. The user can then choose:
 
-### XP sources
+- **Let my work decide:** connect notes or GitHub and use existing history to
+  choose a weighted first companion.
+- **Surprise me:** receive a fully random valid companion.
+- **Connect later:** keep the starter and personalize it later.
 
-From the garden, computed at build time from `content/`:
+Existing history chooses identity and origin. It does not create retroactive XP.
+
+### XP
+
+XP belongs to the one active companion. Switching companions is always allowed;
+each companion keeps its own XP. These are the initial playtest values:
+
+> The checked-in runtime still contains the legacy snapshot engine. The values
+> below are the target contract for the new event-ledger implementation in
+> `PLAN.md`, not a claim that the migration is already complete.
 
 | Event | XP |
-|---|---|
-| Note or project published | 100 |
-| Per 100 words of body copy | 10 |
-| Outgoing wikilink that resolves to a real note | 15 |
-| Backlink received | 10 |
-| New tag introduced | 25 |
-| Note promoted from seedling to budding | 50 |
-| Note promoted from budding to evergreen | 150 |
+|---|---:|
+| Qualifying active day | 10 |
+| Work session, maximum two per source/day | 10 |
+| New note | 25 |
+| 100 net new words | 5 |
+| New resolved wikilink | 3 |
+| Merged pull request | 25 |
+| Published release | 40 |
+| Closed linked issue | 10 |
+| Successful CI on merged pull request | 10 |
 
-From GitHub, fetched at build time and cached to JSON:
+Stable event IDs, source baselines, and daily caps prevent repeated scans,
+refreshes, empty commits, and scripted volume from farming XP. AI-assisted work
+is not detected or penalized. The app shows evidence and verification status,
+not an opaque quality score.
 
-| Event | XP |
-|---|---|
-| Commit to any public repo | 5, capped at 100/day |
-| Commit to this garden's own repo | 10, same daily cap |
+### Encounters and evolution
 
-The design intent: XP rewards *connection*, not volume. Wikilinks and backlinks score well because they're evidence the garden is actually being used, not just written into. Word count is deliberately worth very little per unit, so padding a note is a poor way to level up. The daily commit cap exists so a scripted commit loop can't farm the creature either.
+Activity fills a quiet encounter meter. At a threshold, one persisted random
+result is drawn. The draw is weighted by transparent signals such as languages,
+file types, note tags, links, and activity shape. Duplicates become
+family-specific Essence. There are no paid rolls in the prototype.
 
-### Items
+Pokémon is currently an asset prototype only. The provider configuration must
+declare real families, valid evolution paths, forms, and static fallbacks. The
+old four-stage mappings are visual prototype data and are not canonical Pokémon
+evolution lines. PokeAPI supports these records through its
+[species, forms, sprites, and evolution-chain API](https://pokeapi.co/docs/v2),
+but its sprites remain copyrighted prototype assets.
 
-Alongside the stages there's a small set of unlockable items, shown as a specimen drawer: locked ones dimmed with their requirement and progress, unlocked ones shown at full color. Each item is tied to a specific milestone in either your garden (publishing, linking, tagging, reaching evergreen) or your commit activity. The exact list lives in `src/lib/game/items.ts` and is visible in full on `/companions` - it's left out of this table deliberately since it's still being tuned and would go stale here faster than the code.
+### Notes and sync
+
+The built-in editor works locally. Users can mount an Obsidian vault, Logseq
+graph, or ordinary Markdown folder without installing a plugin. The website
+scans while open or on demand and does not upload note contents.
+
+Guest progress is stored locally and may be lost on a new device. Signing in
+with GitHub syncs derived state and merges event IDs without double-counting.
+GitHub activity can be server-verified; local note activity remains labelled
+local until a trusted sync path exists.
 
 ---
 
@@ -144,12 +178,12 @@ One thing to know, because the failure is silent: Next blocks cross-origin
 requests to its `/_next/*` dev assets, allowing only the host the server
 booted with. Reaching the dev server by IP without allowing that host serves
 the HTML with a `200` while every JS chunk gets a `403`. The page renders and
-then does nothing at all — no menu, no theme toggle, no search, and `/graph`
+then does nothing at all: no menu, no theme toggle, no search, and `/graph`
 sits on "Loading graph." forever, because nothing hydrates.
 
 Private ranges, including Tailscale's, are already allowed in
 `next.config.ts` under `allowedDevOrigins`, so this should just work. If you
-reach it from some other host, add it there and **restart** the dev server —
+reach it from some other host, add it there and **restart** the dev server:
 the config is read at boot. The dev server logs `Blocked cross-origin request`
 naming the exact host to add, so check the terminal before assuming the page
 is broken. This is dev-only; `next build` and `next start` ignore it.
@@ -313,19 +347,27 @@ These are available in any note or project file without importing:
 
 ## The API
 
-`GET /api/creature?user=<github-handle>` returns that handle's creature as JSON: stage, XP, XP breakdown, items, and (for the configured owner only) full garden stats. Any other handle gets the same shape with garden stats zeroed out and items omitted, since a stranger's note count and word count are not public data this site should be handing out.
+The current API is the public-display prototype. `GET
+/api/creature?user=<github-handle>` returns a derived creature snapshot: stage,
+XP breakdown, items, GitHub data, and public verification state. It must never
+return private note contents.
 
 ```bash
 curl "http://localhost:3000/api/creature?user=octocat"
 ```
 
-`GET /api/creature?user=<github-handle>&repo=<repo-name>` returns a creature driven only by that single repo's commit activity, rather than the handle's full account.
+The legacy `repo=<repo-name>` query still supports the prototype's per-repository
+display, but it is not the final product model. Repositories and notes are
+activity sources that influence encounters and XP for the user's chosen active
+companion, not separate permanent companions.
 
 ```bash
 curl "http://localhost:3000/api/creature?user=octocat&repo=Hello-World"
 ```
 
-Both work for **any public GitHub handle**, not just the site owner's. That's the point: it's what lets the browser extension and the README badge show a real creature for anyone.
+Both work for **any public GitHub handle**, not just the site owner's. That is
+what lets the browser extension and the README badge show public state for
+anyone.
 
 Caching: `Cache-Control: public, s-maxage=3600, stale-while-revalidate=86400` on every response, plus an in-process cache so a burst of identical requests makes at most one GitHub call an hour per handle. If GitHub itself is unreachable or rate-limited, the endpoint serves a stale cached response (or a zero-XP fallback if nothing is cached) rather than erroring - the JSON body carries `"degraded": true` in that case, but the status stays 200.
 
@@ -349,7 +391,11 @@ It's static, not animated, on purpose: GitHub proxies README images through its 
 
 ## The browser extension
 
-`extension/` is a self-contained Manifest V3 extension that injects a creature next to each repo in a GitHub user's repo list and pinned-repos grid, using the same `/api/creature` endpoint above. Its popup works as a small pokedex: your garden creature, your repo creatures, and the item drawer.
+`extension/` is a self-contained Manifest V3 extension that injects public
+companion state next to repositories in a GitHub user's repo list and pinned
+repos grid, using the same `/api/creature` endpoint above. It may display the
+source repository context, but it does not create a separate companion for every
+repository and it never reads local notes.
 
 It is not published to the Chrome Web Store. To try it:
 
@@ -390,7 +436,10 @@ npm start
 
 Serves the production build.
 
-If you're picking up remaining work on the creature system, the task specs live in `tasks/*.md`, and `ROADMAP.md` has the full build plan, current status, and known gaps.
+If you're picking up remaining work on the companion system, start with
+[`PRODUCT.md`](PRODUCT.md), then [`PLAN.md`](PLAN.md) and
+[`ROADMAP.md`](ROADMAP.md). [`tasks/README.md`](tasks/README.md) explains which
+older task notes are historical.
 
 ### Keeping `node:fs` (and friends) out of client bundles
 

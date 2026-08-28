@@ -2,58 +2,114 @@
   "grass:sporeling": {
     "id": 191,
     "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/191.gif",
+    "staticUrl": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/191.png",
+    "animated": true,
     "width": 26,
     "height": 40,
-    "fetchedAt": "2026-08-01T00:00:00.000Z"
+    "pokemonName": "sunkern",
+    "speciesName": "sunkern",
+    "formName": "sunkern",
+    "isDefaultForm": true,
+    "evolutionChainId": 94,
+    "fetchedAt": "2026-08-28T04:22:08.608Z"
   },
   "grass:mossling": {
     "id": 43,
     "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/43.gif",
+    "staticUrl": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/43.png",
+    "animated": true,
     "width": 37,
     "height": 50,
-    "fetchedAt": "2026-08-01T00:00:00.000Z"
+    "pokemonName": "oddish",
+    "speciesName": "oddish",
+    "formName": "oddish",
+    "isDefaultForm": true,
+    "evolutionChainId": 18,
+    "fetchedAt": "2026-08-28T04:22:08.633Z"
   },
   "grass:bracken": {
     "id": 2,
     "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/2.gif",
+    "staticUrl": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/2.png",
+    "animated": true,
     "width": 58,
     "height": 51,
-    "fetchedAt": "2026-08-01T00:00:00.000Z"
+    "pokemonName": "ivysaur",
+    "speciesName": "ivysaur",
+    "formName": "ivysaur",
+    "isDefaultForm": true,
+    "evolutionChainId": 1,
+    "fetchedAt": "2026-08-28T04:22:08.331Z"
   },
   "grass:heartwood": {
     "id": 389,
     "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/389.gif",
+    "staticUrl": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/389.png",
+    "animated": true,
     "width": 78,
     "height": 80,
-    "fetchedAt": "2026-08-01T00:00:00.000Z"
+    "pokemonName": "torterra",
+    "speciesName": "torterra",
+    "formName": "torterra",
+    "isDefaultForm": true,
+    "evolutionChainId": 203,
+    "fetchedAt": "2026-08-28T04:22:08.578Z"
   },
   "bloom:sporeling": {
     "id": 187,
     "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/187.gif",
+    "staticUrl": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/187.png",
+    "animated": true,
     "width": 64,
     "height": 66,
-    "fetchedAt": "2026-08-01T17:34:25.895Z"
+    "pokemonName": "hoppip",
+    "speciesName": "hoppip",
+    "formName": "hoppip",
+    "isDefaultForm": true,
+    "evolutionChainId": 92,
+    "fetchedAt": "2026-08-28T04:22:09.478Z"
   },
   "tide:sporeling": {
     "id": 258,
     "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/258.gif",
+    "staticUrl": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/258.png",
+    "animated": true,
     "width": 43,
     "height": 49,
-    "fetchedAt": "2026-08-01T17:34:26.147Z"
+    "pokemonName": "mudkip",
+    "speciesName": "mudkip",
+    "formName": "mudkip",
+    "isDefaultForm": true,
+    "evolutionChainId": 132,
+    "fetchedAt": "2026-08-28T04:22:09.523Z"
   },
   "current:sporeling": {
     "id": 172,
     "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/172.gif",
+    "staticUrl": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/172.png",
+    "animated": true,
     "width": 44,
     "height": 49,
-    "fetchedAt": "2026-08-01T17:34:26.138Z"
+    "pokemonName": "pichu",
+    "speciesName": "pichu",
+    "formName": "pichu",
+    "isDefaultForm": true,
+    "evolutionChainId": 10,
+    "fetchedAt": "2026-08-28T04:22:09.470Z"
   },
   "bedrock:sporeling": {
     "id": 74,
     "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/74.gif",
+    "staticUrl": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/74.png",
+    "animated": true,
     "width": 61,
     "height": 45,
-    "fetchedAt": "2026-08-01T17:34:25.917Z"
+    "pokemonName": "geodude",
+    "speciesName": "geodude",
+    "formName": "geodude",
+    "isDefaultForm": true,
+    "evolutionChainId": 31,
+    "fetchedAt": "2026-08-28T04:22:09.550Z"
   },
   "bloom:mossling": {
     "id": 188,
