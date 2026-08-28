@@ -23,7 +23,7 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
 
 ### Shipped prototype
 
-- Personal digital-garden site with notes, projects, tags, search, and graph.
+- Personal Terrarium site with notes, projects, tags, search, and graph.
 - Existing snapshot-based garden and GitHub XP engine.
 - Four-stage botanical creature UI and item drawer.
 - Public creature JSON API and static README badge.

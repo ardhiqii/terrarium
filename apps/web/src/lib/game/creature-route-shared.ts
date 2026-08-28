@@ -243,7 +243,7 @@ export function diskCachePathFor(user: string, repo?: string): string {
 }
 
 function diskCacheDir(): string {
-  return path.join(os.tmpdir(), 'digital-garden-creature-cache')
+  return path.join(os.tmpdir(), 'terrarium-creature-cache')
 }
 
 let diskCacheDirEnsured = false
@@ -277,5 +277,5 @@ export function readGardenRepoName(): string {
   } catch {
     // Fall through to the default below.
   }
-  return 'digital-garden'
+  return 'terrarium'
 }

@@ -173,7 +173,7 @@ export function fallbackCreatureState(includeItems = false): CreatureState {
  *
  * `gardenCommitsByDay` on the RETURNED stats is always empty: the higher
  * `commit-to-garden` XP rate is reserved for commits landing in this SITE's
- * own repo (the digital garden itself), not for an arbitrary repo creature.
+ * own repo (Terrarium itself), not for an arbitrary repo creature.
  * A repo creature's commits all score at the flat `commit` rate. See the T6
  * report for the "what does an item mean on a repo creature" question,
  * answered by `includeItems: false` at the call site.

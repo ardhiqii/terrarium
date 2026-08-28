@@ -15,7 +15,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { handle } = await params
   return {
     title: `@${handle}`,
-    description: `${handle}'s garden creature on Terrarium.`,
+    description: `${handle}'s Terrarium companion.`,
   }
 }
 

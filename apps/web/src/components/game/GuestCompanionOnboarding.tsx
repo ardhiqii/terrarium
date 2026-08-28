@@ -19,7 +19,7 @@ const starter = catalog.list()[0]
 // The first-run choice personalizes the immediate starter reference. It does
 // not award a second collection item; duplicates come from later encounters.
 const ONBOARDING_REFERENCE_SUFFIX = ':starter'
-const PROFILE_EVENT = 'digital-garden:guest-profile-updated'
+const PROFILE_EVENT = 'terrarium:guest-profile-updated'
 
 type SelectionKind = GuestCompanionAcquisition
 type ReadyState = {

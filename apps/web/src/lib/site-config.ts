@@ -11,11 +11,8 @@ export const siteConfig = {
    * The wordmark. `separator` renders in the accent colour between the two
    * halves, and is empty here on purpose.
    *
-   * The dot device came from `ardhiqi.garden`, where it read as domain-like:
-   * owner dot thing. Applying it to a single word gives `terra.rium`, which
-   * splits at a point that means nothing. "terra" is Latin for earth, "rium"
-   * is a suffix fragment with no meaning on its own. It looks clever and is
-   * not, so the wordmark is plain and the accent lives on the sprout's bud
+   * Terrarium is intentionally set as one plain word. The name already
+   * carries the naturalist meaning, so the accent lives on the sprout's bud
    * where it actually signifies something.
    */
   wordmark: {
@@ -28,7 +25,7 @@ export const siteConfig = {
   title: 'Terrarium',
 
   description:
-    'A digital garden where writing notes and shipping code grow pixel creatures.',
+    'A terrarium where writing notes and shipping code grow pixel creatures.',
 
   /**
    * Hero copy. Written in the second person so it reads correctly no matter

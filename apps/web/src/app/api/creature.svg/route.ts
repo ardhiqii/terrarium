@@ -280,11 +280,11 @@ function degradedOrFallback(
 // ---------------------------------------------------------------------------
 
 async function checkUserExists(login: string) {
-  return checkUserExistsShared(login, TOKEN, 'digital-garden-creature-svg')
+  return checkUserExistsShared(login, TOKEN, 'terrarium-creature-svg')
 }
 
 async function checkRepoExists(owner: string, repo: string) {
-  return checkRepoExistsShared(owner, repo, TOKEN, 'digital-garden-creature-svg')
+  return checkRepoExistsShared(owner, repo, TOKEN, 'terrarium-creature-svg')
 }
 
 // ---------------------------------------------------------------------------

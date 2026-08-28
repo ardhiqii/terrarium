@@ -1,5 +1,5 @@
 /**
- * Popup: the pokedex. Garden creature, item drawer, repo creatures.
+ * Popup: the pokedex. Terrarium companion, item drawer, repo creatures.
  * Loaded as a plain script after common/core.js (see popup.html), sharing
  * the `window.GardenCreatures` namespace the same way the content script
  * does. This file only ever runs inside the extension's own popup page, so

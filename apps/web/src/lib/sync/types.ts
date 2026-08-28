@@ -7,7 +7,7 @@
  * duplicates.
  *
  * THE RULE THAT DEFINES THIS WHOLE LAYER: note text never leaves the user's
- * device. Only derived state syncs. A digital garden is half-diary, and
+ * device. Only derived state syncs. A Terrarium is half-diary, and
  * uploading it by default would create a privacy problem, an unbounded
  * storage cost, and a moderation burden. See docs/archive/tasks/PHASE3.md.
  *

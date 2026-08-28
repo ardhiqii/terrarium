@@ -25,10 +25,14 @@ import {
 } from '@/lib/game/guest-profile'
 import { normalizeMarkdownEvents, type MarkdownFileSnapshot } from '@/lib/game/markdown-events'
 
-const LEDGER_KEY = 'digital-garden:guest-event-ledger'
-const ENCOUNTER_KEY = 'digital-garden:guest-encounters'
-const PROFILE_EVENT = 'digital-garden:guest-profile-updated'
-const SCAN_EVENT = 'digital-garden:markdown-scan'
+const LEDGER_KEY = 'terrarium:guest-event-ledger'
+const ENCOUNTER_KEY = 'terrarium:guest-encounters'
+const LEGACY_LEDGER_KEY = 'digital-garden:guest-event-ledger'
+const LEGACY_ENCOUNTER_KEY = 'digital-garden:guest-encounters'
+const PROFILE_EVENT = 'terrarium:guest-profile-updated'
+const SCAN_EVENT = 'terrarium:markdown-scan'
+const LEGACY_PROFILE_EVENT = 'digital-garden:guest-profile-updated'
+const LEGACY_SCAN_EVENT = 'digital-garden:markdown-scan'
 
 interface BrowserStorage {
   getItem(key: string): string | null
@@ -47,7 +51,8 @@ function storage(): BrowserStorage {
 
 function loadLedger(): EventLedger {
   try {
-    const parsed: unknown = JSON.parse(storage().getItem(LEDGER_KEY) ?? '{"events":[]}')
+    const serialized = storage().getItem(LEDGER_KEY) ?? storage().getItem(LEGACY_LEDGER_KEY)
+    const parsed: unknown = JSON.parse(serialized ?? '{"events":[]}')
     if (!parsed || typeof parsed !== 'object' || !('events' in parsed) || !Array.isArray(parsed.events)) {
       return { events: [] }
     }
@@ -63,7 +68,8 @@ function saveLedger(ledger: EventLedger): void {
 
 function loadEncounters(): EncounterState {
   try {
-    const parsed: unknown = JSON.parse(storage().getItem(ENCOUNTER_KEY) ?? 'null')
+    const serialized = storage().getItem(ENCOUNTER_KEY) ?? storage().getItem(LEGACY_ENCOUNTER_KEY)
+    const parsed: unknown = JSON.parse(serialized ?? 'null')
     if (!parsed || typeof parsed !== 'object') return createEncounterState()
     const value = parsed as Partial<EncounterState>
     if (
@@ -193,9 +199,13 @@ export function GuestProductRuntime() {
 
     window.addEventListener(PROFILE_EVENT, onProfileUpdated)
     window.addEventListener(SCAN_EVENT, onScan)
+    window.addEventListener(LEGACY_PROFILE_EVENT, onProfileUpdated)
+    window.addEventListener(LEGACY_SCAN_EVENT, onScan)
     return () => {
       window.removeEventListener(PROFILE_EVENT, onProfileUpdated)
       window.removeEventListener(SCAN_EVENT, onScan)
+      window.removeEventListener(LEGACY_PROFILE_EVENT, onProfileUpdated)
+      window.removeEventListener(LEGACY_SCAN_EVENT, onScan)
     }
   }, [])
 

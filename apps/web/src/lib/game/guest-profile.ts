@@ -8,7 +8,8 @@
  */
 
 export const GUEST_PROFILE_SCHEMA_VERSION = 1
-export const GUEST_PROFILE_STORAGE_KEY = 'digital-garden:guest-profile'
+export const GUEST_PROFILE_STORAGE_KEY = 'terrarium:guest-profile'
+const LEGACY_GUEST_PROFILE_STORAGE_KEY = 'digital-garden:guest-profile'
 
 export type GuestSourceKind = 'notes' | 'github'
 
@@ -159,7 +160,17 @@ export function loadGuestProfile(
   storage: GuestProfileStorage,
   key = GUEST_PROFILE_STORAGE_KEY
 ): GuestProfile | null {
-  return deserializeGuestProfile(storage.getItem(key))
+  const serialized = storage.getItem(key)
+  const profile = deserializeGuestProfile(
+    serialized ??
+      (key === GUEST_PROFILE_STORAGE_KEY
+        ? storage.getItem(LEGACY_GUEST_PROFILE_STORAGE_KEY)
+        : null)
+  )
+  if (serialized === null && profile !== null && key === GUEST_PROFILE_STORAGE_KEY) {
+    saveGuestProfile(storage, profile, key)
+  }
+  return profile
 }
 
 export function saveGuestProfile(
@@ -175,6 +186,9 @@ export function clearGuestProfile(
   key = GUEST_PROFILE_STORAGE_KEY
 ): void {
   storage.removeItem(key)
+  if (key === GUEST_PROFILE_STORAGE_KEY) {
+    storage.removeItem(LEGACY_GUEST_PROFILE_STORAGE_KEY)
+  }
 }
 
 function validateGuestProfile(value: unknown): void {

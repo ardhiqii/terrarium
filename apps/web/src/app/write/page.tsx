@@ -4,7 +4,7 @@ import { GuestCompanionOnboarding } from '@/components/game/GuestCompanionOnboar
 import { GuestProductRuntime } from '@/components/game/GuestProductRuntime'
 
 // One name in all three places. This route used to call itself "Garden" in
-// the nav, "Connect your garden" in its title, and "Connect a folder" in its
+// the nav, "Connect your Terrarium" in its title, and "Connect a folder" in its
 // own h1, which is three names for one destination.
 export const metadata: Metadata = {
   title: 'Write',

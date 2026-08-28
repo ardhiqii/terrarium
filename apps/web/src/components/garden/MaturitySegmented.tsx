@@ -15,7 +15,7 @@ const GLYPH: Record<Maturity, string> = {
 /**
  * What each stage actually means, shown on hover and focus.
  *
- * The three words are a digital-garden convention (DESIGN.md 1) and are not
+ * The three words are a Terrarium convention (docs/DESIGN.md 1) and are not
  * self-explanatory to anyone meeting them for the first time. `title` rather
  * than a custom tooltip because ThemeToggle already uses `title` for the same
  * job, so this introduces no second pattern, and because the native tooltip

@@ -188,7 +188,7 @@ async function computeFromSource(
     // The runtime derives XP and persists the event ledger locally; no note
     // text is sent through fetch or to the server.
     window.dispatchEvent(
-      new CustomEvent('digital-garden:markdown-scan', {
+      new CustomEvent('terrarium:markdown-scan', {
         detail: {
           sourceId: `mounted-markdown:${source.name}`,
           files: files.map((file) => ({
@@ -369,7 +369,7 @@ export function ConnectGarden() {
             This browser does not support the File System Access API, which
             today means anything outside Chromium (Chrome, Edge, Brave,
             Opera). Reading a folder of your own notes needs that API, so
-            this page cannot show your garden here. Open this page in a
+            this page cannot show your Terrarium here. Open this page in a
             Chromium browser to connect a folder, or visit the site&apos;s normal
             build for the commit-driven view of the creature.
           </p>

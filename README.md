@@ -1,6 +1,6 @@
-# ardhiqi·garden
+# terrarium
 
-Aufa's digital garden - a personal space to pour out ideas, document projects, and see how things connect. Not a blog. Notes are messy, projects are real, everything is linked.
+Aufa's terrarium - a personal space to pour out ideas, document projects, and see how things connect. Not a blog. Notes are messy, projects are real, everything is linked.
 
 Writing notes and shipping code feed one chosen companion. The companion is a
 readout of real work, not decoration. The app starts locally as a guest, while
@@ -267,14 +267,14 @@ To update the date when you revise a note, just change the `date` field in the f
 Use `[[Title]]` anywhere in your content to link to another note or project by its title:
 
 ```md
-This idea builds on [[What Is a Digital Garden?]].
+This idea builds on [[What Is a Terrarium?]].
 See also: [[Graph View]], [[My Project]].
 ```
 
 Use `[[Target|display text]]` when you want the link text to read differently from the target's title:
 
 ```md
-See [[What Is a Digital Garden?|this earlier note]] for background.
+See [[What Is a Terrarium?|this earlier note]] for background.
 ```
 
 - The target must match the `title` field in the target's frontmatter (case-insensitive)
@@ -369,7 +369,7 @@ Caching: `Cache-Control: public, s-maxage=3600, stale-while-revalidate=86400` on
 `/api/creature.svg` renders the creature as a static SVG, suitable for dropping into any Markdown that renders images, including a GitHub README:
 
 ```md
-![My garden creature](https://your-deployment.example.com/api/creature.svg?user=your-github-handle)
+![My Terrarium companion](https://your-deployment.example.com/api/creature.svg?user=your-github-handle)
 ```
 
 Add `&repo=<name>` to badge a single repo instead of the whole account, and `&theme=dark` for a variant that reads on a dark README background.
