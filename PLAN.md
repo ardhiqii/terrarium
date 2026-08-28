@@ -19,7 +19,7 @@ references, not the plan for the product model below.
 
 ## Phase 0. Documentation and contracts
 
-**Status: in progress.**
+**Status: complete.**
 
 Create the shared contracts before rewriting the old snapshot model.
 
@@ -51,6 +51,8 @@ Build the first-run flow:
 
 The app must remain useful with no source connected and no network.
 
+**Status: partial — guest onboarding and local persistence are shipped; account recovery and compact cross-session source snapshots remain.**
+
 ## Phase 2. Event ledger and basic XP
 
 **Depends on:** Phase 1.
@@ -73,6 +75,8 @@ commit bursts, and generated-only changes.
 
 Done when the same source scan can run repeatedly with no extra XP and every XP
 point can be traced to one ledger event.
+
+**Status: partial — rules engine, deterministic encounters, duplicate Essence, and PokeAPI bridge are shipped; legacy surfaces still need migration.**
 
 ## Phase 3. Companion catalog and encounters
 
@@ -100,6 +104,8 @@ Implement encounter logic:
 The PokeAPI adapter may populate the prototype catalog, but the game engine must
 not depend on PokeAPI names, numeric IDs, or URL conventions.
 
+**Status: partial — recursive FSA mounting and baseline-aware in-session scans are shipped; persistent compact scan summaries remain.**
+
 ## Phase 4. Sources: editor and mounted Markdown
 
 **Depends on:** Phase 2.
@@ -118,6 +124,8 @@ Finish the local source layer:
 The website scans while open or on demand. Monitoring a closed browser is out of
 scope for this phase.
 
+**Status: partial — verified event normalization and derived-only merge contracts are shipped; product sync API wiring and OAuth integration remain.**
+
 ## Phase 5. GitHub identity and sync
 
 **Depends on:** Phases 1 and 2.
@@ -135,6 +143,8 @@ Add optional GitHub sign-in and derived-state sync:
 
 Do not make sign-in a prerequisite for using the editor, mounting notes, or
 earning local XP.
+
+**Status: partial — `/write` onboarding/activity and extension payload compatibility are shipped; public collection/profile migration remains.**
 
 ## Phase 6. Surfaces and distribution
 

@@ -63,10 +63,51 @@ async function hasPermission(
   }
 }
 
-/** `GardenSource` over a single `FileSystemDirectoryHandle`. Flat: reads only
- * the top-level entries of the folder, matching the "unique within a folder"
- * contract on `GardenFile.name`. Treats `.md` and `.mdx` alike, per the
- * frozen contract. */
+/** Directories that are not part of a Markdown garden. `.obsidian` is the
+ * vault's own application state; the others are common VCS, dependency, and
+ * operating-system folders that should not become notes when a user mounts a
+ * broad project directory. Hidden directories are covered separately below.
+ */
+const IGNORED_DIRECTORY_NAMES = new Set([
+  '.obsidian',
+  '.git',
+  'node_modules',
+  'System Volume Information',
+  '$RECYCLE.BIN',
+].map((name) => name.toLowerCase()))
+
+function isIgnoredDirectory(name: string): boolean {
+  return name.startsWith('.') || IGNORED_DIRECTORY_NAMES.has(name.toLowerCase())
+}
+
+/**
+ * File System Access paths are one name at a time, while GardenSource names
+ * are relative paths so nested Markdown files remain addressable. Normalize
+ * the separator at this boundary and reject traversal/absolute paths before
+ * touching a browser handle.
+ */
+function pathSegments(name: string): string[] {
+  const normalized = name.replaceAll('\\', '/')
+  const segments = normalized.split('/')
+  if (
+    normalized.length === 0 ||
+    normalized.startsWith('/') ||
+    normalized.endsWith('/') ||
+    segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')
+  ) {
+    throw new Error(`Invalid garden path: ${name}`)
+  }
+  return segments
+}
+
+function hasIgnoredDirectorySegment(segments: string[]): boolean {
+  return segments.slice(0, -1).some(isIgnoredDirectory)
+}
+
+/** `GardenSource` over a single `FileSystemDirectoryHandle`. It recursively
+ * scans nested directories and exposes each Markdown file by its relative
+ * POSIX path, e.g. `projects/ideas.md`. Treats `.md` and `.mdx` alike, per
+ * the frozen contract. */
 export class FsaGardenSource implements GardenSource {
   constructor(private readonly handle: FileSystemDirectoryHandle) {}
 
@@ -76,25 +117,59 @@ export class FsaGardenSource implements GardenSource {
 
   async list(): Promise<GardenFile[]> {
     const files: GardenFile[] = []
-    for await (const [entryName, entry] of this.handle.entries()) {
-      if (entry.kind !== 'file') continue
-      if (!isMarkdownFile(entryName)) continue
-      try {
-        const fileHandle = entry as FileSystemFileHandle
-        const file = await fileHandle.getFile()
-        const content = await file.text()
-        files.push({ name: entryName, content, lastModified: file.lastModified })
-      } catch {
-        // A single unreadable file (permission race, deleted mid-scan) must
-        // not take the whole listing down.
-      }
-    }
+    await this.scanDirectory(this.handle, '', files, true)
     return files
+  }
+
+  private async scanDirectory(
+    directory: FileSystemDirectoryHandle,
+    prefix: string,
+    files: GardenFile[],
+    isRoot = false
+  ): Promise<void> {
+    try {
+      for await (const [entryName, entry] of directory.entries()) {
+        if (entry.kind === 'directory') {
+          if (isIgnoredDirectory(entryName)) continue
+          const nestedPrefix = prefix ? `${prefix}/${entryName}` : entryName
+          // A revoked/unreadable nested directory should not hide files in
+          // its siblings. The root failure is allowed to reject list(), as it
+          // did before recursion was introduced.
+          await this.scanDirectory(
+            entry as FileSystemDirectoryHandle,
+            nestedPrefix,
+            files
+          )
+          continue
+        }
+
+        if (!isMarkdownFile(entryName)) continue
+        try {
+          const fileHandle = entry as FileSystemFileHandle
+          const file = await fileHandle.getFile()
+          const content = await file.text()
+          files.push({
+            name: prefix ? `${prefix}/${entryName}` : entryName,
+            content,
+            lastModified: file.lastModified,
+          })
+        } catch {
+          // A single unreadable file (permission race, deleted mid-scan) must
+          // not take the whole listing down.
+        }
+      }
+    } catch (error) {
+      if (isRoot) throw error
+      // A single unreadable directory (permission race, deleted mid-scan)
+      // must not take the whole listing down.
+    }
   }
 
   async read(name: string): Promise<string | null> {
     try {
-      const fileHandle = await this.handle.getFileHandle(name)
+      const segments = pathSegments(name)
+      if (hasIgnoredDirectorySegment(segments)) return null
+      const fileHandle = await this.fileHandleAt(segments)
       const file = await fileHandle.getFile()
       return await file.text()
     } catch {
@@ -103,7 +178,11 @@ export class FsaGardenSource implements GardenSource {
   }
 
   async write(name: string, content: string): Promise<void> {
-    const fileHandle = await this.handle.getFileHandle(name, { create: true })
+    const segments = pathSegments(name)
+    if (hasIgnoredDirectorySegment(segments)) {
+      throw new Error(`Cannot write inside an ignored directory: ${name}`)
+    }
+    const fileHandle = await this.fileHandleAt(segments, true)
     const writable = await fileHandle.createWritable()
     try {
       await writable.write(content)
@@ -121,17 +200,45 @@ export class FsaGardenSource implements GardenSource {
 
   async remove(name: string): Promise<void> {
     try {
-      await this.handle.removeEntry(name)
+      const segments = pathSegments(name)
+      if (hasIgnoredDirectorySegment(segments)) return
+      const directory = await this.directoryAt(segments.slice(0, -1))
+      await directory.removeEntry(segments[segments.length - 1])
     } catch {
       // No-op when already absent, per the GardenSource contract.
     }
   }
 
   async rename(from: string, to: string): Promise<void> {
+    const fromSegments = pathSegments(from)
+    const toSegments = pathSegments(to)
+    if (hasIgnoredDirectorySegment(fromSegments) || hasIgnoredDirectorySegment(toSegments)) {
+      return
+    }
+    if (fromSegments.join('/') === toSegments.join('/')) return
     const content = await this.read(from)
     if (content === null) return
     await this.write(to, content)
     await this.remove(from)
+  }
+
+  private async directoryAt(
+    segments: string[],
+    create = false
+  ): Promise<FileSystemDirectoryHandle> {
+    let directory = this.handle
+    for (const segment of segments) {
+      directory = await directory.getDirectoryHandle(segment, { create })
+    }
+    return directory
+  }
+
+  private async fileHandleAt(
+    segments: string[],
+    create = false
+  ): Promise<FileSystemFileHandle> {
+    const directory = await this.directoryAt(segments.slice(0, -1), create)
+    return directory.getFileHandle(segments[segments.length - 1], { create })
   }
 }
 

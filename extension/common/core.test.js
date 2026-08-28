@@ -16,7 +16,7 @@
  * observing the second call makes no `chrome.runtime.sendMessage` call,
  * never by reaching into storage directly.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import './core.js'
 
 const GC = globalThis.GardenCreatures
@@ -73,8 +73,116 @@ describe('core.js is importable in Node', () => {
     expect(GC).toBeTypeOf('object')
     expect(GC.getCreature).toBeTypeOf('function')
     expect(GC.getCreaturesBatched).toBeTypeOf('function')
+    expect(GC.normalizePublicCompanionPayload).toBeTypeOf('function')
     expect(GC.getGithubTheme).toBeTypeOf('function')
     expect(GC.CACHE_TTL_MS).toBeTypeOf('number')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Public companion payload compatibility
+// ---------------------------------------------------------------------------
+
+describe('normalizePublicCompanionPayload', () => {
+  it('normalizes the legacy /api/creature response without changing its meaning', () => {
+    const normalized = GC.normalizePublicCompanionPayload({
+      speciesLineId: 'current',
+      speciesLineName: 'Current',
+      stage: { id: 'bracken', name: 'Bracken', index: 3 },
+      totalXp: 145,
+    })
+
+    expect(normalized).toEqual({
+      activeCompanion: {
+        id: 'current',
+        familyId: null,
+        name: 'Current',
+        progressionLabel: 'Bracken',
+        xp: 145,
+        essence: 0,
+      },
+      collectionCount: 1,
+      verification: {
+        status: 'unknown',
+        summary: 'Verification unavailable',
+        verifiedEventCount: 0,
+        localEventCount: 0,
+        unknownEventCount: 0,
+      },
+    })
+  })
+
+  it('normalizes the future companion payload and preserves mixed provenance', () => {
+    const normalized = GC.normalizePublicCompanionPayload({
+      activeCompanion: {
+        companionId: 'pikachu-family',
+        familyId: 'pikachu-family',
+        name: 'Pikachu',
+        xp: 125,
+        essence: 3,
+        progression: { step: { id: 'evolved', label: 'Pikachu' } },
+      },
+      collection: [
+        { companionId: 'pikachu-family' },
+        { companionId: 'ditto-like' },
+        { companionId: 'pikachu-family' },
+      ],
+      verification: {
+        verifiedEventCount: 8,
+        localEventCount: 2,
+        unknownEventCount: 1,
+      },
+    })
+
+    expect(normalized).toEqual({
+      activeCompanion: {
+        id: 'pikachu-family',
+        familyId: 'pikachu-family',
+        name: 'Pikachu',
+        progressionLabel: 'Pikachu',
+        xp: 125,
+        essence: 3,
+      },
+      collectionCount: 3,
+      verification: {
+        status: 'mixed',
+        summary: 'Mixed: GitHub-verified and local activity',
+        verifiedEventCount: 8,
+        localEventCount: 2,
+        unknownEventCount: 1,
+      },
+    })
+  })
+
+  it('degrades malformed payloads to a safe empty shape', () => {
+    expect(() => GC.normalizePublicCompanionPayload(null)).not.toThrow()
+    expect(GC.normalizePublicCompanionPayload(null)).toEqual({
+      activeCompanion: null,
+      collectionCount: 0,
+      verification: {
+        status: 'unknown',
+        summary: 'Verification unavailable',
+        verifiedEventCount: 0,
+        localEventCount: 0,
+        unknownEventCount: 0,
+      },
+    })
+
+    expect(GC.normalizePublicCompanionPayload({
+      activeCompanion: { companionId: 42, xp: 'not-a-number', essence: -5 },
+      collectionCount: -1,
+      verification: { status: 'verified', localEventCount: 1 },
+    })).toEqual({
+      activeCompanion: null,
+      collectionCount: 0,
+      verification: {
+        status: 'local',
+        summary: 'Local activity (not GitHub-verified)',
+        verifiedEventCount: 0,
+        localEventCount: 1,
+        unknownEventCount: 0,
+      },
+    })
   })
 })
 
@@ -99,6 +207,41 @@ describe('cache TTL', () => {
     expect(second.fromCache).toBe(true)
     expect(second.data).toEqual(first.data)
     expect(sendMessage).toHaveBeenCalledTimes(1) // no additional network call
+  })
+
+  it('normalizes a cached future payload without making another network call', async () => {
+    const sendMessage = vi.fn((message, callback) => {
+      callback({
+        ok: true,
+        data: {
+          activeCompanion: {
+            companionId: 'ditto-like',
+            progressionLabel: 'Ditto',
+            xp: 30,
+            essence: 1,
+          },
+          collectionCount: 2,
+          provenance: 'verified',
+        },
+      })
+    })
+    installChromeMock({ sendMessage })
+
+    const first = await GC.getCreature('cached-future-payload-user')
+    expect(first.fromCache).toBe(false)
+    sendMessage.mockClear()
+
+    const second = await GC.getCreature('cached-future-payload-user')
+    expect(second.fromCache).toBe(true)
+    expect(GC.normalizePublicCompanionPayload(second.data).activeCompanion).toEqual({
+      id: 'ditto-like',
+      familyId: null,
+      name: 'ditto-like',
+      progressionLabel: 'Ditto',
+      xp: 30,
+      essence: 1,
+    })
+    expect(sendMessage).not.toHaveBeenCalled()
   })
 
   it('an entry older than CACHE_TTL_MS is treated as a miss and refetches', async () => {

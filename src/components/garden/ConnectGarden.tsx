@@ -184,6 +184,22 @@ async function computeFromSource(
   try {
     const files = await source.list()
 
+    // Send only an in-process browser event to the local product runtime.
+    // The runtime derives XP and persists the event ledger locally; no note
+    // text is sent through fetch or to the server.
+    window.dispatchEvent(
+      new CustomEvent('digital-garden:markdown-scan', {
+        detail: {
+          sourceId: `mounted-markdown:${source.name}`,
+          files: files.map((file) => ({
+            path: file.name,
+            content: file.content,
+            modifiedAt: new Date(file.lastModified ?? Date.now()).toISOString(),
+          })),
+        },
+      }),
+    )
+
     if (files.length === 0) {
       onPhase({
         kind: 'ready',
@@ -354,7 +370,7 @@ export function ConnectGarden() {
             today means anything outside Chromium (Chrome, Edge, Brave,
             Opera). Reading a folder of your own notes needs that API, so
             this page cannot show your garden here. Open this page in a
-            Chromium browser to connect a folder, or visit the site's normal
+            Chromium browser to connect a folder, or visit the site&apos;s normal
             build for the commit-driven view of the creature.
           </p>
         </div>
