@@ -14,7 +14,7 @@ Built with Next.js 16, MDX, and a force-directed graph. Deploys to Vercel.
 
 | Feature | How it works |
 |---|---|
-| **Notes & Projects** | MDX files in `web/content/` - write in Markdown, use React components inline |
+| **Notes & Projects** | MDX files in `apps/web/content/` - write in Markdown, use React components inline |
 | **Wikilinks** | `[[Note Title]]` auto-links to other notes and shows up as a backlink on the target |
 | **Backlinks** | Every note shows a "Linked from" section - what else points to it |
 | **Graph view** | Force-directed graph at `/graph` - nodes are notes/projects, edges are wikilinks |
@@ -24,20 +24,24 @@ Built with Next.js 16, MDX, and a force-directed graph. Deploys to Vercel.
 | **The creature** | A pixel specimen on the homepage and `/companions` that levels up from your writing and commits |
 | **Public API** | `/api/creature` computes the same creature for any public GitHub handle |
 | **README badge** | A static SVG version of the creature, embeddable anywhere Markdown renders |
-| **Browser extension** | Injects creatures into GitHub repo lists from `extension/`, loaded unpacked |
+| **Browser extension** | Injects creatures into GitHub repo lists from `apps/extension/`, loaded unpacked |
 
 ---
 
 ## Project structure
 
 ```
-web/
-├── content/             ← notes and projects
-├── public/              ← static website assets
-├── src/                 ← App Router, components, and web libraries
-├── next.config.ts
-└── tsconfig.json
-extension/            ← Manifest V3 browser extension, self-contained
+apps/
+├── web/                    ← Next.js website and local garden
+│   ├── content/            ← notes and projects
+│   ├── public/             ← static website assets
+│   ├── src/                ← App Router, components, and web libraries
+│   ├── next.config.ts
+│   └── tsconfig.json
+└── extension/              ← Manifest V3 browser extension
+
+docs/                       ← product, design, plan, roadmap, and test docs
+└── archive/tasks/           ← historical task briefs
 ```
 
 ---
@@ -48,9 +52,9 @@ This project is an offline-first companion for developers. You can open the site
 as a guest, receive a starter companion immediately, and use the built-in editor
 or mount an existing Markdown folder. GitHub is optional.
 
-The complete product rules are in [`PRODUCT.md`](PRODUCT.md). The design rules
-are in [`DESIGN.md`](DESIGN.md), the implementation sequence is in
-[`PLAN.md`](PLAN.md), and current delivery status is in [`ROADMAP.md`](ROADMAP.md).
+The complete product rules are in [`docs/PRODUCT.md`](docs/PRODUCT.md). The design rules
+are in [`docs/DESIGN.md`](docs/DESIGN.md), the implementation sequence is in
+[`docs/PLAN.md`](docs/PLAN.md), and current delivery status is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ### First use
 
@@ -72,7 +76,7 @@ each companion keeps its own XP. These are the initial playtest values:
 
 > The checked-in runtime still contains the legacy snapshot engine. The values
 > below are the target contract for the new event-ledger implementation in
-> `PLAN.md`, not a claim that the migration is already complete.
+> `docs/PLAN.md`, not a claim that the migration is already complete.
 
 | Event | XP |
 |---|---:|
@@ -124,7 +128,7 @@ local until a trusted sync path exists.
 npm install
 ```
 
-Create `web/.env.local` (gitignored):
+Create `apps/web/.env.local` (gitignored):
 
 ```bash
 GITHUB_TOKEN=your_personal_access_token
@@ -179,10 +183,10 @@ is broken. This is dev-only; `next build` and `next start` ignore it.
 
 ### Add a note
 
-1. Create a new file in `web/content/notes/`. The filename becomes the URL slug.
+1. Create a new file in `apps/web/content/notes/`. The filename becomes the URL slug.
 
    ```
-   web/content/notes/my-new-idea.mdx   →   /notes/my-new-idea
+   apps/web/content/notes/my-new-idea.mdx   →   /notes/my-new-idea
    ```
 
 2. Paste this starter template and fill it in:
@@ -207,10 +211,10 @@ is broken. This is dev-only; `next build` and `next start` ignore it.
 
 ### Add a project
 
-Same as a note but goes in `web/content/projects/` with `type: "project"`:
+Same as a note but goes in `apps/web/content/projects/` with `type: "project"`:
 
 ```
-web/content/projects/my-project.mdx   →   /projects/my-project
+apps/web/content/projects/my-project.mdx   →   /projects/my-project
 ```
 
 ```mdx
@@ -229,7 +233,7 @@ Write about what you built, why you built it, what you learned.
 
 ### Update existing content
 
-Open any `.mdx` file in `web/content/notes/` or `web/content/projects/`, edit it, save. That's it - changes reflect immediately in dev mode, and on the next deploy in production.
+Open any `.mdx` file in `apps/web/content/notes/` or `apps/web/content/projects/`, edit it, save. That's it - changes reflect immediately in dev mode, and on the next deploy in production.
 
 To update the date when you revise a note, just change the `date` field in the frontmatter.
 
@@ -376,7 +380,7 @@ It's static, not animated, on purpose: GitHub proxies README images through its 
 
 ## The browser extension
 
-`extension/` is a self-contained Manifest V3 extension that injects public
+`apps/extension/` is a self-contained Manifest V3 extension that injects public
 companion state next to repositories in a GitHub user's repo list and pinned
 repos grid, using the same `/api/creature` endpoint above. It may display the
 source repository context, but it does not create a separate companion for every
@@ -386,7 +390,7 @@ It is not published to the Chrome Web Store. To try it:
 
 1. Open `chrome://extensions`
 2. Enable Developer mode (top right)
-3. Click "Load unpacked" and select the `extension/` folder
+3. Click "Load unpacked" and select the `apps/extension/` folder
 4. Visit a GitHub repo list page
 
 If GitHub changes its page structure and the extension's selectors stop matching, it fails silently and injects nothing - it will never break the underlying GitHub page.
@@ -422,8 +426,8 @@ npm start
 Serves the production build.
 
 If you're picking up remaining work on the companion system, start with
-[`PRODUCT.md`](PRODUCT.md), then [`PLAN.md`](PLAN.md) and
-[`ROADMAP.md`](ROADMAP.md). [`tasks/README.md`](tasks/README.md) explains which
+[`docs/PRODUCT.md`](docs/PRODUCT.md), then [`docs/PLAN.md`](docs/PLAN.md) and
+[`docs/ROADMAP.md`](docs/ROADMAP.md). [`docs/archive/tasks/README.md`](docs/archive/tasks/README.md) explains which
 older task notes are historical.
 
 ### Keeping `node:fs` (and friends) out of client bundles
@@ -434,7 +438,7 @@ took the entire build down -- Turbopack fails the whole compilation on one
 bad module, not just the offending route, and `tsc --noEmit`/`npm test` both
 stay green while it happens, since neither loads the browser bundle.
 
-`web/src/lib/client-bundle-safety.test.ts` guards against this. It finds every
+`apps/web/src/lib/client-bundle-safety.test.ts` guards against this. It finds every
 `'use client'` file, walks its import graph (relative and `@/` imports,
 following the graph transitively, not just the file's own direct imports),
 and fails with the full chain (e.g.
