@@ -1,5 +1,5 @@
 /**
- * Shared namespace for the Garden Creatures extension.
+ * Shared namespace for the Terrarium Companions extension.
  *
  * No bundler, no npm dependencies. This file and its consumers
  * (content/content.js, popup/popup.js) are loaded as plain classic scripts

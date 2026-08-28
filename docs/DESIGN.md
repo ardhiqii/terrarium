@@ -1,11 +1,11 @@
-# ardhiqi.garden - Design & System Spec
+# Terrarium - Design & System Spec
 
 The visual source of truth for this site and its companion surfaces. Read
 [`PRODUCT.md`](PRODUCT.md) for business rules, [`PLAN.md`](PLAN.md) for the
 implementation sequence, and this file before changing visual tokens or adding
 a section.
 
-Design read: **personal digital garden for developers and curious readers, with a naturalist specimen-archive language, leaning toward Tailwind v4 + Geist/EB Garamond + restrained motion, with a pixel-art creature layer quarantined into dedicated surfaces.**
+Design read: **personal terrarium for developers and curious readers, with a naturalist specimen-archive language, leaning toward Tailwind v4 + Geist/EB Garamond + restrained motion, with a pixel-art creature layer quarantined into dedicated surfaces.**
 
 Dials: `DESIGN_VARIANCE: 6` · `MOTION_INTENSITY: 5` · `VISUAL_DENSITY: 4`
 
@@ -67,7 +67,7 @@ One accent, locked across the whole page. Colour lives in the sprite art, not in
 }
 ```
 
-**Why blue, on a garden site.** Every digital garden reaches for green, and the current palette (`#fafaf9` paper, `#b55e3a` clay, `#92650a` ochre, `#1c1917` espresso) is the exact beige-and-brass family that reads as AI default. Ink blue is the colour of annotation and archival stamps, it is instantly distinguishing, and it leaves green free to mean something specific: green appears only in sprite art and living things, never in UI chrome.
+**Why blue, on a terrarium site.** Every living-world product reaches for green, and the current palette (`#fafaf9` paper, `#b55e3a` clay, `#92650a` ochre, `#1c1917` espresso) is the exact beige-and-brass family that reads as AI default. Ink blue is the colour of annotation and archival stamps, it is instantly distinguishing, and it leaves green free to mean something specific: green appears only in sprite art and living things, never in UI chrome.
 
 **Maturity is not colour-coded.** Seedling, budding, and evergreen render as a neutral weight ramp (`--ink-muted` to `--ink`) plus a glyph, not three different hues. This keeps the accent lock intact and looks more like an archive than a status dashboard.
 

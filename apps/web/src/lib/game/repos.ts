@@ -101,7 +101,7 @@ async function fetchOwnerReposInner(
 
   const headers: Record<string, string> = {
     Accept: 'application/vnd.github+json',
-    'User-Agent': 'digital-garden-creature-build',
+    'User-Agent': 'terrarium-creature-build',
     'X-GitHub-Api-Version': '2022-11-28',
   }
   if (token) headers.Authorization = `Bearer ${token}`

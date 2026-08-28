@@ -13,7 +13,7 @@ const TOKEN = process.env.GITHUB_TOKEN
 export const metadata: Metadata = {
   title: 'Companions',
   description:
-    'The full evolution line and item archive for the garden creature, including stages and items not yet reached.',
+    'The full evolution line and item archive for the primary companion, including stages and items not yet reached.',
 }
 
 export default async function CompanionsPage() {
@@ -43,7 +43,7 @@ export default async function CompanionsPage() {
   // Cluster companions (T22): one per tag with five or more notes, each
   // inheriting its cluster's own XP rather than starting at stage 1 (see
   // clusters.ts). Notes-only and synchronous, so this never depends on
-  // GitHub reachability. Listed first: they are native to this garden's own
+  // GitHub reachability. Listed first: they are native to this Terrarium's own
   // content, where repo creatures are commit-driven.
   const clusterCollection = getClusterCollection()
   const collection = [...clusterCollection, ...repoCollection]
@@ -136,7 +136,7 @@ export default async function CompanionsPage() {
 
       {/*
         The collection. A separate section, deliberately never merged into
-        the evolution line above: the garden creature (driven by notes plus
+        the evolution line above: the primary companion (driven by notes plus
         all commits) is the main one, and everything below is the collection
         that grows around it. See CollectionGrid's header comment.
       */}

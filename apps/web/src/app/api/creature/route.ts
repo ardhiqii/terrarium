@@ -250,7 +250,7 @@ async function buildRepoResponse(
   // A failed metadata fetch still yields a deterministic assignment:
   // `assignSpeciesLine` treats a null language/age/size the same as any
   // other input, never throws, and never falls back to "no species."
-  const meta = await fetchRepoMeta(user, repo, TOKEN, 'digital-garden-creature-api')
+  const meta = await fetchRepoMeta(user, repo, TOKEN, 'terrarium-creature-api')
   const speciesLine = assignSpeciesLine({
     owner: user,
     repo,
@@ -301,11 +301,11 @@ async function degradedOrFallback(
 // ---------------------------------------------------------------------------
 
 async function checkUserExists(login: string) {
-  return checkUserExistsShared(login, TOKEN, 'digital-garden-creature-api')
+  return checkUserExistsShared(login, TOKEN, 'terrarium-creature-api')
 }
 
 async function checkRepoExists(owner: string, repo: string) {
-  return checkRepoExistsShared(owner, repo, TOKEN, 'digital-garden-creature-api')
+  return checkRepoExistsShared(owner, repo, TOKEN, 'terrarium-creature-api')
 }
 
 // ---------------------------------------------------------------------------

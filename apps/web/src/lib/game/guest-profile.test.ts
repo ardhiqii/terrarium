@@ -125,6 +125,16 @@ describe('guest profile', () => {
     expect(loadGuestProfile(storage)).toBeNull()
   })
 
+  it('migrates a profile saved under the previous product name', () => {
+    const storage = new InMemoryGuestProfileStorage()
+    const original = profile()
+
+    storage.setItem('digital-garden:guest-profile', serializeGuestProfile(original))
+
+    expect(loadGuestProfile(storage)).toEqual(original)
+    expect(storage.getItem(GUEST_PROFILE_STORAGE_KEY)).toBe(serializeGuestProfile(original))
+  })
+
   it('returns null for malformed, unsupported, or unsafe persisted data', () => {
     expect(deserializeGuestProfile('{not-json')).toBeNull()
     expect(deserializeGuestProfile(JSON.stringify({ schemaVersion: 99 }))).toBeNull()

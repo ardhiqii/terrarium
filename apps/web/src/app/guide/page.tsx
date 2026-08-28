@@ -15,7 +15,7 @@ import type { TocEntry } from '@/lib/mdx'
 export const metadata: Metadata = {
   title: 'Guide',
   description:
-    'How the garden creature works: XP sources, the evolution line, companions, and items, generated from the rules in the code.',
+    'How the primary companion works: XP sources, the evolution line, companions, and items, generated from the rules in the code.',
 }
 
 // Copy only. Every number rendered next to a row here is read from XP_RATES
@@ -30,7 +30,7 @@ const XP_RATE_ROWS: { label: string; unit: string; rate: number }[] = [
   { label: 'Note promoted seedling to budding', unit: 'once', rate: XP_RATES.promotedToBudding },
   { label: 'Note promoted budding to evergreen', unit: 'once', rate: XP_RATES.promotedToEvergreen },
   { label: 'Commit to any public repo', unit: 'per commit', rate: XP_RATES.commit },
-  { label: 'Commit to this garden repo', unit: 'per commit', rate: XP_RATES.commitToGarden },
+  { label: 'Commit to this Terrarium repo', unit: 'per commit', rate: XP_RATES.commitToGarden },
 ]
 
 const TOC_ENTRIES: TocEntry[] = [

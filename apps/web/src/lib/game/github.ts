@@ -276,7 +276,7 @@ async function fetchViaEvents(
 ): Promise<GithubStats | null> {
   const headers: Record<string, string> = {
     Accept: 'application/vnd.github+json',
-    'User-Agent': 'digital-garden-creature-build',
+    'User-Agent': 'terrarium-creature-build',
     'X-GitHub-Api-Version': '2022-11-28',
   }
   if (token) {
@@ -385,7 +385,7 @@ async function fetchViaGraphQL(
   const headers: Record<string, string> = {
     Accept: 'application/vnd.github+json',
     'Content-Type': 'application/json',
-    'User-Agent': 'digital-garden-creature-build',
+    'User-Agent': 'terrarium-creature-build',
     Authorization: `Bearer ${token}`,
   }
 
