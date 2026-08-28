@@ -65,7 +65,7 @@ With the dev server running:
 
 ```bash
 # Your creature: garden XP plus commit XP
-curl "http://localhost:3000/api/creature?user=ardhiqii"
+curl "http://localhost:3000/api/creature?user=octocat"
 
 # Someone else: commit XP only, garden stats must be ZERO
 curl "http://localhost:3000/api/creature?user=torvalds"
@@ -85,7 +85,7 @@ curl -i "http://localhost:3000/api/creature?user=zzz-no-such" # 404
 ## 4. The README badge
 
 ```bash
-curl "http://localhost:3000/api/creature.svg?user=ardhiqii" -o badge.svg
+curl "http://localhost:3000/api/creature.svg?user=octocat" -o badge.svg
 ```
 
 Open `badge.svg` in a browser. You should see the sprite, name, stage, and XP bar.
@@ -95,7 +95,7 @@ It is **static by design**. GitHub proxies README images through its camo cache,
 To use it once deployed:
 
 ```markdown
-![My creature](https://YOUR-DOMAIN/api/creature.svg?user=ardhiqii)
+![My creature](https://YOUR-DOMAIN/api/creature.svg?user=octocat)
 ```
 
 ---

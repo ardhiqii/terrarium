@@ -12,7 +12,7 @@ The authoritative current documents are:
 - [`ROADMAP.md`](../../ROADMAP.md): shipped work, gaps, and next steps.
 
 The individual `T*.md` files are historical task specifications from the first
-personal-site prototype. They may explain existing code, but they must not be
+site prototype. They may explain existing code, but they must not be
 used to reopen decisions that `PRODUCT.md` has locked, especially per-repository
 companions, authentication-first onboarding, retroactive XP, or Pokémon assets
 as a commercial product.

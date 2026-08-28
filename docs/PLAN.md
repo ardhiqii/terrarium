@@ -2,7 +2,7 @@
 
 This plan implements [`PRODUCT.md`](PRODUCT.md). `DESIGN.md` governs the visual
 language, and [`ROADMAP.md`](ROADMAP.md) records the current status. The old
-T0-T30 task files describe the first personal-site prototype; they are historical
+T0-T30 task files describe the first site prototype; they are historical
 references, not the plan for the product model below.
 
 ## Non-negotiable architecture
