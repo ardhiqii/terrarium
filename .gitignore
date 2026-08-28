@@ -15,13 +15,13 @@
 
 # next.js
 /.next/
-/web/.next/
+/apps/web/.next/
 /out/
-/web/out/
+/apps/web/out/
 
 # production
 /build
-/web/build
+/apps/web/build
 
 # misc
 .DS_Store
@@ -53,5 +53,5 @@ reports/
 .agents/
 .claude/
 
-# sync layer: local SQLite database (src/lib/sync/sqlite-store.ts)
+# sync layer: local SQLite database (apps/web/src/lib/sync/sqlite-store.ts)
 /.data/

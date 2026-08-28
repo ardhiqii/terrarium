@@ -9,22 +9,22 @@
     ".claude",
     ".agents",
     ".next",
-    "web/.next",
+    "apps/web/.next",
     ".git",
-    "extension",
+    "apps/extension",
     "public",
     "node_modules/.cache",
     "reports",
     ".stryker-tmp"
   ],
   "mutate": [
-    "web/src/lib/game/xp.ts",
-    "web/src/lib/game/stages.ts",
-    "web/src/lib/game/items.ts",
-    "web/src/lib/game/github.ts",
-    "web/src/lib/game/stats.ts",
-    "web/src/lib/game/state.ts",
-    "web/src/lib/game/repo-creature.ts"
+    "apps/web/src/lib/game/xp.ts",
+    "apps/web/src/lib/game/stages.ts",
+    "apps/web/src/lib/game/items.ts",
+    "apps/web/src/lib/game/github.ts",
+    "apps/web/src/lib/game/stats.ts",
+    "apps/web/src/lib/game/state.ts",
+    "apps/web/src/lib/game/repo-creature.ts"
   ],
   "thresholds": {
     "high": 85,
