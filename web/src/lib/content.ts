@@ -3,7 +3,7 @@ import path from 'path'
 import matter from 'gray-matter'
 import { ContentMeta, ContentItem, FrontMatter } from './types'
 
-const CONTENT_ROOT = path.join(process.cwd(), 'content')
+const CONTENT_ROOT = path.join(process.cwd(), 'web', 'content')
 
 const COLLECTIONS = ['notes', 'projects'] as const
 type Collection = (typeof COLLECTIONS)[number]

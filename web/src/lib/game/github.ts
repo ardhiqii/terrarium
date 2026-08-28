@@ -162,7 +162,7 @@ export interface GithubFetchOptions {
 // project root via package.json scripts.
 const DEFAULT_CACHE_PATH = path.join(
   /*turbopackIgnore: true*/ process.cwd(),
-  'src/lib/game/github-cache.json'
+  'web/src/lib/game/github-cache.json'
 )
 const DEFAULT_MAX_AGE_MS = 6 * 60 * 60 * 1000 // 6 hours
 const DEFAULT_API_BASE = 'https://api.github.com'

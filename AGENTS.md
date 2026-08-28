@@ -29,7 +29,7 @@ recreate one.
 - Cut every branch from `main`, merge it back into `main`, delete it once merged.
 - Name it for what it is: `feat/…`, `fix/…`, `chore/…`, `docs/…`.
 - Keep it short-lived. One unit of work, then merge.
-- `main` stays green. Run `npx tsc --noEmit`, `npm test`, and `npm run build`
+- `main` stays green. Run `npm run typecheck`, `npm test`, and `npm run build`
   **before** merging. A red `main` is the one thing this model has no safety net for.
 - Do not force-push `main` or rewrite its history.
 

@@ -41,7 +41,7 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
 - Alternate forms with no animation use their static PokeAPI sprite.
 - Legacy cache entries refresh once to gain the new metadata, then remain
   cache-first.
-- `npx tsc --noEmit` passes.
+- `npm run typecheck` passes.
 - New product engine tests pass: 607 tests across 49 files.
 - `npm run build` succeeds.
 
@@ -152,7 +152,7 @@ distribution.
 merging, run:
 
 ```bash
-npx tsc --noEmit
+npm run typecheck
 npm test
 npm run build
 ```

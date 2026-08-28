@@ -104,7 +104,7 @@ describe('the sqlite-store import is confined to the seam', () => {
   }
 
   it('is imported only by store.ts and its own test', () => {
-    const srcRoot = path.join(process.cwd(), 'src')
+    const srcRoot = path.join(process.cwd(), 'web', 'src')
     const offenders = walk(srcRoot)
       .filter((file) => !allowed.has(path.basename(file)))
       .filter((file) => /from\s+['"][^'"]*sqlite-store['"]/.test(readFileSync(file, 'utf8')))

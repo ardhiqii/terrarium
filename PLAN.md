@@ -28,10 +28,10 @@ Target files:
 - `PRODUCT.md`
 - `DESIGN.md`
 - `ROADMAP.md`
-- `src/lib/game/types.ts`
-- `src/lib/game/events.ts`
-- `src/lib/game/companions.ts`
-- `src/lib/game/providers.ts`
+- `web/src/lib/game/types.ts`
+- `web/src/lib/game/events.ts`
+- `web/src/lib/game/companions.ts`
+- `web/src/lib/game/providers.ts`
 
 Done when the types can represent guest state, source baselines, normalized
 events, per-companion XP, encounters, duplicates, provider forms, and verified
@@ -185,7 +185,7 @@ provider before marketplace launch or other commercial distribution.
 Run these before merging any implementation phase:
 
 ```bash
-npx tsc --noEmit
+npm run typecheck
 npm test
 npm run build
 ```
