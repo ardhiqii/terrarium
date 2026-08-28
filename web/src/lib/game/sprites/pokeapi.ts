@@ -55,7 +55,7 @@ export const STAGE_TO_POKEMON_ID: Record<StageId, number> =
  */
 type PokeApiCache = Partial<Record<string, PokeApiCacheEntry>>
 
-const CACHE_PATH = path.join(process.cwd(), 'src/lib/game/sprites/pokeapi-cache.json')
+const CACHE_PATH = path.join(process.cwd(), 'web/src/lib/game/sprites/pokeapi-cache.json')
 
 let cacheMemo: PokeApiCache | null = null
 /** Tracks whether any entry was added this process, so we only write once. */

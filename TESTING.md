@@ -7,12 +7,12 @@ Everything below you can run yourself. Start with the automated layer, since it 
 ## 1. Automated (30 seconds)
 
 ```bash
-npm test            # 208 tests across 12 files
-npx tsc --noEmit    # type check, should print nothing
+npm test            # full web + extension suite
+npm run typecheck   # type check, should print nothing
 npm run build       # production build
 ```
 
-All three should pass with no output-worthy errors. If `npm test` drops below 208, something regressed.
+All three should pass with no output-worthy errors. If the test count drops unexpectedly, something regressed.
 
 ### Are the tests any good?
 

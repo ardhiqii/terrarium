@@ -4,7 +4,7 @@ import matter from 'gray-matter'
 import { extractWikilinks, slugify } from './utils'
 import { ContentMeta } from './types'
 
-const CONTENT_ROOT = path.join(process.cwd(), 'content')
+const CONTENT_ROOT = path.join(process.cwd(), 'web', 'content')
 const COLLECTIONS = ['notes', 'projects'] as const
 
 interface FileInfo {

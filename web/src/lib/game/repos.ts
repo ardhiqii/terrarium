@@ -28,7 +28,7 @@ interface RepoListCache {
 
 const DEFAULT_CACHE_PATH = path.join(
   /*turbopackIgnore: true*/ process.cwd(),
-  'src/lib/game/repos-cache.json'
+  'web/src/lib/game/repos-cache.json'
 )
 const DEFAULT_MAX_AGE_MS = 6 * 60 * 60 * 1000 // 6 hours, matches github.ts
 const DEFAULT_API_BASE = 'https://api.github.com'

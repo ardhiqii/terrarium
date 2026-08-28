@@ -14,7 +14,7 @@ Built with Next.js 16, MDX, and a force-directed graph. Deploys to Vercel.
 
 | Feature | How it works |
 |---|---|
-| **Notes & Projects** | MDX files in `content/` - write in Markdown, use React components inline |
+| **Notes & Projects** | MDX files in `web/content/` - write in Markdown, use React components inline |
 | **Wikilinks** | `[[Note Title]]` auto-links to other notes and shows up as a backlink on the target |
 | **Backlinks** | Every note shows a "Linked from" section - what else points to it |
 | **Graph view** | Force-directed graph at `/graph` - nodes are notes/projects, edges are wikilinks |
@@ -24,34 +24,19 @@ Built with Next.js 16, MDX, and a force-directed graph. Deploys to Vercel.
 | **The creature** | A pixel specimen on the homepage and `/companions` that levels up from your writing and commits |
 | **Public API** | `/api/creature` computes the same creature for any public GitHub handle |
 | **README badge** | A static SVG version of the creature, embeddable anywhere Markdown renders |
-| **Browser extension** | Injects creatures into GitHub repo lists, `extension/`, loads unpacked |
+| **Browser extension** | Injects creatures into GitHub repo lists from `extension/`, loaded unpacked |
 
 ---
 
 ## Project structure
 
 ```
-content/
-├── notes/           ← short ideas, observations, learnings
-│   └── *.mdx
-└── projects/        ← longer writeups about things you've built
-    └── *.mdx
-
-src/
-├── app/
-│   ├── (pages)              ← Next.js App Router pages
-│   ├── companions/             ← active companion, collection, and items
-│   └── api/
-│       ├── creature/         ← GET /api/creature - JSON creature state
-│       └── creature.svg/     ← GET /api/creature.svg - README badge
-├── components/       ← UI components (Navbar, GardenMark, graph, search, game/, etc.)
-└── lib/
-    ├── content.ts    ← reads and parses all MDX files
-    ├── backlinks.ts  ← builds the wikilink map and backlinks
-    ├── graph.ts      ← builds node/edge data for the graph
-    ├── mdx.ts        ← renders MDX, extracts table of contents
-    └── game/         ← the creature: XP engine, stages, items, GitHub fetch, sprites
-
+web/
+├── content/             ← notes and projects
+├── public/              ← static website assets
+├── src/                 ← App Router, components, and web libraries
+├── next.config.ts
+└── tsconfig.json
 extension/            ← Manifest V3 browser extension, self-contained
 ```
 
@@ -139,7 +124,7 @@ local until a trusted sync path exists.
 npm install
 ```
 
-Create `.env.local` (gitignored):
+Create `web/.env.local` (gitignored):
 
 ```bash
 GITHUB_TOKEN=your_personal_access_token
@@ -194,10 +179,10 @@ is broken. This is dev-only; `next build` and `next start` ignore it.
 
 ### Add a note
 
-1. Create a new file in `content/notes/`. The filename becomes the URL slug.
+1. Create a new file in `web/content/notes/`. The filename becomes the URL slug.
 
    ```
-   content/notes/my-new-idea.mdx   →   /notes/my-new-idea
+   web/content/notes/my-new-idea.mdx   →   /notes/my-new-idea
    ```
 
 2. Paste this starter template and fill it in:
@@ -222,10 +207,10 @@ is broken. This is dev-only; `next build` and `next start` ignore it.
 
 ### Add a project
 
-Same as a note but goes in `content/projects/` with `type: "project"`:
+Same as a note but goes in `web/content/projects/` with `type: "project"`:
 
 ```
-content/projects/my-project.mdx   →   /projects/my-project
+web/content/projects/my-project.mdx   →   /projects/my-project
 ```
 
 ```mdx
@@ -244,7 +229,7 @@ Write about what you built, why you built it, what you learned.
 
 ### Update existing content
 
-Open any `.mdx` file in `content/notes/` or `content/projects/`, edit it, save. That's it - changes reflect immediately in dev mode, and on the next deploy in production.
+Open any `.mdx` file in `web/content/notes/` or `web/content/projects/`, edit it, save. That's it - changes reflect immediately in dev mode, and on the next deploy in production.
 
 To update the date when you revise a note, just change the `date` field in the frontmatter.
 
@@ -419,7 +404,7 @@ npm test
 Runs the Vitest suite, mostly XP engine and stage/threshold logic.
 
 ```bash
-npx tsc --noEmit
+npm run typecheck
 ```
 
 Type-checks the project without emitting output.
@@ -449,7 +434,7 @@ took the entire build down -- Turbopack fails the whole compilation on one
 bad module, not just the offending route, and `tsc --noEmit`/`npm test` both
 stay green while it happens, since neither loads the browser bundle.
 
-`src/lib/client-bundle-safety.test.ts` guards against this. It finds every
+`web/src/lib/client-bundle-safety.test.ts` guards against this. It finds every
 `'use client'` file, walks its import graph (relative and `@/` imports,
 following the graph transitively, not just the file's own direct imports),
 and fails with the full chain (e.g.
