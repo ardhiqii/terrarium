@@ -1,7 +1,9 @@
 # ardhiqi.garden - Design & System Spec
 
-The single source of truth for how this site looks and how the creature system works.
-Read this before changing visual tokens, adding a section, or touching XP math.
+The visual source of truth for this site and its companion surfaces. Read
+[`PRODUCT.md`](PRODUCT.md) for business rules, [`PLAN.md`](PLAN.md) for the
+implementation sequence, and this file before changing visual tokens or adding
+a section.
 
 Design read: **personal digital garden for developers and curious readers, with a naturalist specimen-archive language, leaning toward Tailwind v4 + Geist/EB Garamond + restrained motion, with a pixel-art creature layer quarantined into dedicated surfaces.**
 
@@ -13,11 +15,13 @@ Editorial baseline (6/4/3), with motion nudged to 5 because the creature must re
 
 ## 1. The core idea
 
-The creature is not a Pokemon visiting a blog. **The creature is the garden's growth made visible.**
+The companion is a local-first feedback layer for real work. It is not a mascot
+visiting a blog and it is not a productivity score. Notes, links, commits, pull
+requests, releases, and other evidence feed one chosen companion. The companion
+turns that history into a visible collection, progression, and record.
 
-Digital gardens already use a maturity convention: seedling, budding, evergreen. That is already an evolution chain. So the creature is not decoration bolted onto writing, it is a readout of something real: how much you have written, how densely you have connected it, how consistently you show up.
-
-This reframe is what keeps the site from being "a blog with a distracting sprite in the corner."
+The user chooses a companion, not an abstract focus. The active companion receives
+new XP; every companion keeps its own history when the user switches.
 
 ### The specimen-archive frame
 
@@ -100,75 +104,72 @@ Base sprite grid: **32x32**, displayed at 3x (96px) in the specimen plate and 2x
 
 ---
 
-## 3. Creature system
+## 3. Companion system
 
-### 3.1 Original species, not Pokemon
+The complete product rules live in [`PRODUCT.md`](PRODUCT.md). The visual system
+only needs to preserve the following principles:
 
-PokeAPI serves its data freely, but Pokemon names, designs, and sprite sets are Nintendo, Game Freak, and Creatures IP. That is tolerable in a local prototype and genuinely risky on a public site under your own name, and riskier still embedded in a GitHub profile README where it functions as distribution.
+### 3.1 One active companion
 
-**Decision:** use PokeAPI as a *mechanics reference only* (EXP curve shapes, stage thresholds, type-affinity ideas). Ship original creatures on the garden theme. Nothing from PokeAPI is vendored into this repo.
+The collection can contain many companions. One is active at a time, and all new
+activity XP goes to it. Switching is always allowed and never deletes or moves
+another companion's XP. The interface should make the active choice obvious
+without turning the collection into a dashboard.
 
-### 3.2 The evolution line
+### 3.2 Encounters
 
-| Stage | Name | XP threshold | What it means |
-|---|---|---|---|
-| 1 | **Sporeling** | 0 | The garden exists. A few scattered notes. |
-| 2 | **Mossling** | 1,500 | Notes are accumulating and starting to link. |
-| 3 | **Bracken** | 5,000 | A real body of work with dense interconnection. |
-| 4 | **Heartwood** | 12,000 | An established garden. |
+Encounters are earned from a separate, quiet progress meter. Activity fills it;
+reaching a threshold produces one persisted random result. The result is weighted
+by simple work evidence such as languages, file types, note tags, links, and
+activity shape. It is not selected by an AI judge.
 
-`src/lib/game/types.ts` is the source of truth for these numbers. The table above is a
-convenience copy, so if the two ever disagree, the code wins.
+Duplicates are valid collection results. They become family-specific Essence,
+which gives duplicates a useful destination without requiring a user to complete
+the entire collection. There are no paid rolls in the prototype.
 
-Thresholds are deliberately reachable. A garden that never evolves is a garden that stops being
-fun to tend. They were raised from an initial 500 / 2,000 / 6,000 after the first real
-measurement: the existing 9 notes computed to 2,060 XP, which landed the garden at stage 3 of 4
-on day one. Starting near the top kills the progression just as surely as never evolving.
+### 3.3 XP
 
-### 3.3 XP formula
+XP is event-based and explainable. The initial playtest rates are:
 
-All computed at build time from data that already exists. No database.
-
-**From the garden** (extends `src/lib/content.ts`):
-
-| Event | XP |
-|---|---|
-| Note published | 100 |
-| Per 100 words of body copy | 10 |
-| Outgoing wikilink that resolves to a real note | 15 |
-| Backlink received | 10 |
-| New tag introduced | 25 |
-| Note promoted seedling to budding | 50 |
-| Note promoted budding to evergreen | 150 |
-
-The link rewards are the important ones. They make XP measure *connection*, not volume, which is the whole point of a garden over a blog. Word count is capped in effect by the small per-100 rate so that padding a note is a poor strategy.
-
-**From GitHub** (fetched at build, cached to JSON):
+> These are the target rates for the new event-ledger model. The checked-in
+> runtime still contains the legacy aggregate snapshot engine until the
+> migration in `PLAN.md` is complete.
 
 | Event | XP |
-|---|---|
-| Commit to any public repo | 5, capped at 100 per day |
-| Commit to this garden repo | 10, same daily cap |
+|---|---:|
+| Qualifying active day | 10 |
+| Work session, maximum two per source/day | 10 |
+| New note | 25 |
+| 100 net new words | 5 |
+| New resolved wikilink | 3 |
+| Merged pull request | 25 |
+| Published release | 40 |
+| Closed linked issue | 10 |
+| Successful CI on merged pull request | 10 |
 
-The daily cap exists so that a scripted commit loop cannot farm the creature.
+Stable event IDs, baselines, daily caps, and source verification prevent refreshes
+and scripted volume from farming XP. Empty commits and unchanged saves score zero.
+AI-assisted work is neither detected nor penalized; outcomes and public evidence
+are what matter.
 
-### 3.4 Items
+### 3.4 Evolution and forms
 
-Items are unlocked states, not inventory to manage. They render as a specimen drawer of small pixel objects.
+Application XP milestones are not automatically Pokémon evolution steps. A
+provider configuration must declare the family, valid evolution path, forms,
+asset URLs, and fallback behavior. A family with three real stages has three
+evolution steps. A final mastery form may be used only when it is explicitly a
+form or cosmetic state, not mislabeled as a canonical evolution.
 
-| Item | Unlock |
-|---|---|
-| Spore Jar | Publish 5 notes |
-| Dew Vial | 7 consecutive days with a commit or a note edit |
-| Hand Lens | A single note reaches 5 backlinks |
-| Trowel | Publish your first project |
-| Field Ledger | Reach 25 notes |
-| Brass Compass | Use 10 distinct tags |
-| Pressed Frond | A note reaches evergreen |
+The current PokeAPI adapter reads authoritative Pokémon and species metadata,
+including form names, static or animated sprite URLs, and evolution-chain IDs.
+PokeAPI is prototype-only; commercial marketplace art must be licensed original
+work. Nothing from PokeAPI is vendored into this repository.
 
-### 3.5 Variant traits (phase 3, optional)
+### 3.5 Items and variants
 
-The sprite's appearance shifts based on the *shape* of the garden, not just its size. Highly interconnected graph produces a webbed variant. One dominant tag produces a specialised variant. This makes the creature specific to how you actually write, which is the detail that would make someone else want one.
+Items remain quiet milestone rewards and are not a second economy. Variants may
+later describe the shape of a companion's history, but they must be derived from
+transparent rules and never replace the evidence ledger.
 
 ---
 
@@ -187,14 +188,19 @@ Therefore:
 
 ## 5. Build phases
 
-1. **Foundation.** Replace the palette and type per section 2. Move fonts to `next/font`. Remove the Google Fonts `@import`. Retheme existing pages. No creature yet.
-2. **XP engine.** `src/lib/xp.ts` computing garden XP from existing content, backlink, and graph libs. Surface the specimen plate on the home page.
-3. **Companions and items.** `/companions` route, item drawer, unlock logic.
-4. **GitHub layer.** Build-time commit fetch, cached JSON, combined XP.
-5. **Embed.** `/api/creature.svg`, then GIF if animation is wanted.
-6. **Variants.** Trait system driven by graph shape.
+The implementation sequence is maintained in [`PLAN.md`](PLAN.md) and the
+status in [`ROADMAP.md`](ROADMAP.md). The important order is:
 
-Sprite art is the one thing that cannot be generated from code. Four stages plus seven items plus variants is roughly 15 to 30 sprites at 32x32. That is the critical path for phases 2 and 3.
+1. Guest shell and local profile.
+2. Event ledger and basic XP.
+3. Provider-backed companion catalog, forms, and real evolution paths.
+4. Built-in editor and recursive Markdown mounting.
+5. GitHub verification, sign-in, and derived-state sync.
+6. Collection, encounters, public profiles, and extension integration.
+7. Licensed marketplace providers and original art.
+
+The game layer must remain provider-agnostic so PokeAPI can be removed without
+rewriting XP, encounters, collection, or sync.
 
 ---
 

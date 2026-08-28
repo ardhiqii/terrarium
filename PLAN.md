@@ -1,101 +1,185 @@
 # Implementation plan
 
-Companion to `DESIGN.md`. That file says what to build and why. This one says who builds what, in what order, and how we know it is done.
+This plan implements [`PRODUCT.md`](PRODUCT.md). `DESIGN.md` governs the visual
+language, and [`ROADMAP.md`](ROADMAP.md) records the current status. The old
+T0-T30 task files describe the first personal-site prototype; they are historical
+references, not the plan for the product model below.
 
-**Every agent must read, in this order:** `AGENTS.md`, `DESIGN.md`, `src/lib/game/types.ts`, then the section below for its own track.
+## Non-negotiable architecture
 
----
+- The web app starts in guest mode. Authentication is optional.
+- Local note content stays local by default.
+- GitHub is the server-verifiable source for public development activity.
+- The XP engine consumes normalized events, not raw note text or ad hoc snapshots.
+- Every event has a stable ID and is safe to replay.
+- XP belongs to the active companion. Collection membership and XP are separate.
+- Encounter results are persisted before display and cannot reroll on refresh.
+- Provider metadata is separate from game rules. PokeAPI is replaceable.
+- Public surfaces expose evidence and verification status, not an opaque quality score.
 
-## Why the work splits this way
+## Phase 0. Documentation and contracts
 
-Three tracks touch disjoint sets of files, so they run in parallel with no merge conflicts:
+**Status: in progress.**
 
-| Track | Owns | Never touches |
-|---|---|---|
-| **A. Foundation** | `globals.css`, `layout.tsx`, existing components and pages | anything under `src/lib/game` or `src/components/game` |
-| **B. XP engine** | `src/lib/game/*.ts` except `sprites/` | any `.tsx` file, `globals.css` |
-| **C. Sprites** | `src/lib/game/sprites/`, `src/components/game/Sprite.tsx` | any existing file |
+Create the shared contracts before rewriting the old snapshot model.
 
-`src/lib/game/types.ts` is the seam. It is already written and **frozen**. No track may edit it. If a track believes the contract is wrong, it stops and reports rather than editing.
+Target files:
 
-Tracks D and E depend on A, B, and C landing first, so they are sequential.
+- `PRODUCT.md`
+- `DESIGN.md`
+- `ROADMAP.md`
+- `src/lib/game/types.ts`
+- `src/lib/game/events.ts`
+- `src/lib/game/companions.ts`
+- `src/lib/game/providers.ts`
 
----
+Done when the types can represent guest state, source baselines, normalized
+events, per-companion XP, encounters, duplicates, provider forms, and verified
+versus local evidence without storing note contents.
 
-## Track A. Design foundation
+## Phase 1. Guest shell and local state
 
-Retheme the existing site to the specimen-archive system. No creature work.
+**Depends on:** Phase 0.
 
-**Files owned:** `src/app/globals.css`, `src/app/layout.tsx`, `src/app/page.tsx`, `src/app/{notes,projects,tags,search,graph}/**`, `src/components/**` except `src/components/game/`.
+Build the first-run flow:
 
-1. Replace the palette in `globals.css:5-45` with the tokens in DESIGN.md section 2.1. Keep the existing CSS-variable strategy and the `.dark` class hook, since `next-themes` already drives it.
-2. Delete the Google Fonts `@import` on `globals.css:1`. Load Geist, Geist Mono, and EB Garamond through `next/font/google` in `layout.tsx`, exposed as CSS variables. The bundled Next 16 docs at `node_modules/next/dist/docs/01-app/01-getting-started/13-fonts.md` are the reference.
-3. Apply the type roles from DESIGN.md section 2.2: Geist for UI and headings, EB Garamond for prose, Geist Mono for data and labels. Body measure caps at `65ch`.
-4. Retheme every existing component and page against the new tokens. Remove hardcoded colours; everything goes through a variable.
-5. Maturity renders as a neutral weight ramp plus a glyph, never as three hues.
+1. Create a local guest profile on first visit.
+2. Show a starter companion immediately.
+3. Offer “Let my work decide,” “Surprise me,” and “Connect later.”
+4. Store the local profile and event ledger in browser storage.
+5. Warn that guest state can be lost on a new device or cleared browser data.
 
-**Done when:** `npm run build` passes, both light and dark render correctly on every route, no hardcoded hex outside `globals.css`, no `@import` of a font, and the pre-flight checklist in section 14 of the taste skill passes.
+The app must remain useful with no source connected and no network.
 
----
+## Phase 2. Event ledger and basic XP
 
-## Track B. XP engine
+**Depends on:** Phase 1.
 
-Pure computation. No React, no JSX, no styling.
+Replace the old aggregate snapshot calculation with normalized events.
 
-**Files owned:** `src/lib/game/stats.ts`, `xp.ts`, `stages.ts`, `items.ts`, `state.ts`, plus tests.
+Implement:
 
-1. **`stats.ts`** exports `getGardenStats(): GardenStats`. Builds on `getAllContent()`, `buildBacklinksMap()`, and `buildGraphData()`. Word counts come from body copy with frontmatter excluded.
-2. **Maturity.** `FrontMatter` in `src/lib/types.ts` already carries an optional `maturity` field. Treat an absent value as `'seedling'` so all nine existing content files keep working untouched. Do not edit `src/lib/types.ts`.
-3. **`xp.ts`** exports `computeGardenXp(stats): XpEntry[]` and `computeCommitXp(github): XpEntry[]`. Use `XP_RATES` and `COMMIT_XP_DAILY_CAP` from the contract; never inline a number. The commit cap applies **per day** before summing, not to the total.
-4. **`stages.ts`** exports `resolveStage(totalXp): { stage, nextStage, xpIntoStage, xpForNextStage, progress }`. At max stage, `nextStage` is null, `xpForNextStage` is null, `progress` is exactly 1.
-5. **`items.ts`** exports `ITEMS: ItemDef[]` implementing all seven items from DESIGN.md section 3.4, each with a working `unlocked` and `progress`. Items depending on GitHub data must return false and 0 when `ctx.github` is null rather than throwing.
-6. **`state.ts`** exports `getCreatureState(github?: GithubStats | null): CreatureState`, assembling everything.
+- source-specific baseline snapshots;
+- note diff measurements using path, modification metadata, and content hash;
+- GitHub commit, PR, release, issue, and CI event normalization;
+- stable event IDs and deduplication;
+- per-source daily caps;
+- active-companion XP attribution;
+- an explainable XP ledger with local or verified provenance.
 
-**Edge cases that must not throw:** empty garden (zero notes), a note with zero words, a wikilink to a nonexistent note, `github` being null.
+Initial rates are defined in `PRODUCT.md`. Do not add AI quality scoring. Test
+empty commits, unchanged saves, repeated scans, duplicate deliveries, tiny
+commit bursts, and generated-only changes.
 
-**Done when:** `npx tsc --noEmit` passes, `getCreatureState()` returns sane values against the real nine content files, and every edge case above returns rather than throws.
+Done when the same source scan can run repeatedly with no extra XP and every XP
+point can be traced to one ledger event.
 
----
+## Phase 3. Companion catalog and encounters
 
-## Track C. Sprite system
+**Depends on:** Phase 2.
 
-**Files owned:** `src/lib/game/sprites/**`, `src/components/game/Sprite.tsx`.
+Implement a provider-neutral catalog:
 
-Pixel art is stored as data per the `SpriteData` contract, not as image files. This keeps it diffable, themeable across light and dark, and renderable to both DOM and SVG from one source, which the GitHub embed in Track E needs.
+- companion family and identity;
+- encounter tags and rarity tier;
+- progression steps;
+- form metadata;
+- animated and static asset URLs;
+- asset fallback behavior;
+- provider attribution and license state.
 
-1. **`sprites/index.ts`** exports `getSprite(id: string): SpriteData | null` and `SPRITES: Record<string, SpriteData>`.
-2. **Four creature sprites** at 32x32: `sporeling`, `mossling`, `bracken`, `heartwood`. Each needs 2 frames for a subtle idle. The line must read as a clear progression: small and simple, to leafy, to fern-like and complex, to a substantial woody form. Palette stays botanical; greens and browns live here and nowhere else in the product.
-3. **Seven item sprites** at 32x32, single frame: `spore-jar`, `dew-vial`, `hand-lens`, `trowel`, `field-ledger`, `brass-compass`, `pressed-frond`.
-4. **`Sprite.tsx`** is a server component by default. Renders via a CSS-grid or box-shadow technique, or inline SVG `<rect>` elements. Accepts `SpriteScale` only, never a percentage. Applies `image-rendering: pixelated` where a raster path is used. Idle animation is CSS-only, gated behind `@media (prefers-reduced-motion: no-preference)`.
+Implement encounter logic:
 
-**Validate every sprite:** each frame has exactly `height` strings, each exactly `width` characters, and every character indexes a real palette entry. Write a small script or test that asserts this across the registry; a malformed sprite must fail loudly at build, not render as garbage.
+- hidden encounter progress meter;
+- threshold calculation;
+- deterministic random draw from a persisted seed;
+- work-pattern weighting using rules, not AI;
+- duplicate-to-family-Essence conversion;
+- collection union and active-companion switching.
 
-**Done when:** all 11 sprites validate, `Sprite.tsx` renders at scales 1 through 4 without blur, and idle animation collapses to static under reduced motion.
+The PokeAPI adapter may populate the prototype catalog, but the game engine must
+not depend on PokeAPI names, numeric IDs, or URL conventions.
 
----
+## Phase 4. Sources: editor and mounted Markdown
 
-## Track D. Surfaces (after A, B, C)
+**Depends on:** Phase 2.
 
-`src/components/game/{SpecimenPlate,XpBar,ItemDrawer,XpLedger}.tsx`, the home page plate, and `/companions`.
+Finish the local source layer:
 
-Enforces DESIGN.md section 1: game UI never appears on a reading surface. Note and project pages get at most one quiet footer strip.
+- built-in Markdown editor for users without an existing tool;
+- recursive `.md` and `.mdx` scanning;
+- Obsidian vault support without an Obsidian plugin;
+- ignore `.obsidian` and hidden system folders;
+- permission-revocation recovery;
+- baseline-aware net word, note, and resolved-link events;
+- safe rename and delete behavior;
+- no note-content upload.
 
-## Track E. GitHub layer and embed (after D)
+The website scans while open or on demand. Monitoring a closed browser is out of
+scope for this phase.
 
-`src/lib/game/github.ts` with build-time fetch and JSON cache, then `/api/creature.svg` rendering `CreatureState` plus a sprite to static SVG. Animation, if wanted, ships as a GIF instead, per DESIGN.md section 4.
+## Phase 5. GitHub identity and sync
 
-## Track F. Variant traits (optional, last)
+**Depends on:** Phases 1 and 2.
 
-Sprite variants driven by graph shape rather than size.
+Add optional GitHub sign-in and derived-state sync:
 
----
+- GitHub OAuth identifies the user and protects recovery;
+- public GitHub events are server-verified;
+- local note events remain labelled local/unverified;
+- sync payloads reject note contents at the schema boundary;
+- first sign-in imports guest state when no server state exists;
+- existing server state merges by event ID without double-counting;
+- companion XP remains per companion after merge;
+- server state becomes authoritative after a completed merge.
 
-## Standing rules for every track
+Do not make sign-in a prerequisite for using the editor, mounting notes, or
+earning local XP.
 
-- **Next 16 is not the Next.js you may remember.** Read the relevant guide in `node_modules/next/dist/docs/` before writing code that touches a framework API.
-- `src/lib/game/types.ts` is frozen.
-- Zero em-dashes in any user-visible string.
-- One accent colour, one radius system, both themes tested.
-- `min-h-[100dvh]`, never `h-screen`.
-- No hand-rolled decorative SVG. Sprites are the product, not decoration, so they are the explicit exception.
-- Run `npx tsc --noEmit` before reporting done.
+## Phase 6. Surfaces and distribution
+
+**Depends on:** Phases 3 and 5.
+
+Update the website, extension, profile, and badge to the new state model:
+
+- active companion and collection pages;
+- encounter reveal and duplicate feedback;
+- evidence ledger and verification labels;
+- public profile with derived state only;
+- extension showing public synced state only;
+- static README badge;
+- mobile read-only fallback.
+
+The extension must never read a local vault. The README badge must not imply that
+private or local note activity was independently verified.
+
+## Phase 7. Marketplace and original art
+
+**Depends on:** Phases 3 and 6.
+
+Define the artist provider contract and moderation workflow:
+
+- original asset upload;
+- explicit license and attribution;
+- progression and form metadata;
+- tags and rarity;
+- preview and accessibility text;
+- moderation and takedown state;
+- provider versioning and asset fallback.
+
+Do not commercialize Pokémon names, designs, or sprites. Replace the prototype
+provider before marketplace launch or other commercial distribution.
+
+## Verification commands
+
+Run these before merging any implementation phase:
+
+```bash
+npx tsc --noEmit
+npm test
+npm run build
+```
+
+For source and sync work, also test with an empty garden, a large vault, many
+repositories, repeated scans, a new device, offline mode, permission loss, and
+a guest-to-account merge.

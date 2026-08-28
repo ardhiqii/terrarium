@@ -49,10 +49,10 @@ function pokeApiSourceForLine(lineId: string): SpriteSource {
         return {
           kind: 'remote',
           url: entry.url,
-          staticUrl: buildStaticSpriteUrl(entry.id),
+          staticUrl: entry.staticUrl ?? (entry.id <= 649 ? buildStaticSpriteUrl(entry.id) : null),
           width: entry.width,
           height: entry.height,
-          animated: true,
+          animated: entry.animated ?? true,
         }
       } catch {
         return null

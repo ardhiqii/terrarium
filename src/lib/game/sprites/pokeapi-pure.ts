@@ -22,8 +22,18 @@ import { getSprite } from './index'
 export interface PokeApiCacheEntry {
   id: number
   url: string
+  /** The static sprite URL returned by PokeAPI, when one exists. */
+  staticUrl?: string | null
+  /** True when `url` is an animated GIF rather than a still image. */
+  animated?: boolean
   width: number
   height: number
+  /** PokeAPI identity fields, retained so a companion can explain its origin. */
+  pokemonName?: string
+  speciesName?: string
+  formName?: string
+  isDefaultForm?: boolean
+  evolutionChainId?: number | null
   fetchedAt: string
 }
 
@@ -96,10 +106,12 @@ export function resolvePureSpriteWithFallback(
     return {
       kind: 'remote',
       url: entry.url,
-      staticUrl: buildStaticSpriteUrl(entry.id),
+      staticUrl: entry.staticUrl ?? (entry.id <= 649 ? buildStaticSpriteUrl(entry.id) : null),
       width: entry.width,
       height: entry.height,
-      animated: true,
+      // Older committed cache entries predate the metadata fields. They all
+      // point at the animated GIF path, so this default keeps them valid.
+      animated: entry.animated ?? true,
     }
   }
 
