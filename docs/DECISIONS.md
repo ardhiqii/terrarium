@@ -44,11 +44,19 @@ Terrarium supports three starting paths:
    ordinary Markdown folder.
 3. A connected GitHub account for verified development activity and recovery.
 
-The first mounted-folder version uses the browser File System Access API; it
-does not require an Obsidian plugin. The user opens Terrarium and chooses
-**Scan again** when they want to refresh local activity. The app reads Markdown
-metadata and derived change signals, ignores `.obsidian` and hidden system
-folders, and does not upload note contents by default.
+The first mounted-folder version uses the browser File System Access API where
+available; it does not require an Obsidian plugin. Browsers without a usable
+directory handle get a **Scan folder once** fallback through directory selection
+or drag and drop. That fallback reads selected files locally and stores only
+derived state, so it is not an upload, but it cannot watch the folder or detect
+later changes without another selection. The app reads Markdown metadata and
+derived change signals, ignores `.obsidian` and hidden system folders, and does
+not upload note contents by default.
+
+The product must explain this distinction in the UI: folder mounting gives the
+best experience in compatible browsers, while one-time scanning keeps the core
+note features available elsewhere. The built-in editor remains available in
+every supported browser.
 
 The website cannot observe a local folder while it is closed. GitHub can refresh
 server-side, so it is the durable sync path when a user wants progress across
@@ -118,6 +126,18 @@ shown to the user, starts with a fresh baseline, and does not award retroactive
 XP. Users may exclude it, and an exclusion remains in effect until the user
 manually enables the repository again.
 
+The connection UI must clarify one important distinction without becoming
+noisy: **Approved** means Terrarium may read a repository, while **Tracked**
+means the repository contributes to progression. Before sending the user to
+GitHub, show a short read-only permission explanation. After return, show a
+setup prompt when nothing is tracked and a persistent approved-versus-tracked
+status with a **Manage repositories** action.
+
+Only state changes trigger reminders: newly eligible repositories get one
+review notification, dismissed reminders stay quiet until the repository state
+changes, and revoked access pauses tracking with a **Reconnect or review
+access** action. Private repository details and these reminders are owner-only.
+
 Public and approved private repositories use the same normalized activity rules.
 The connected GitHub account is one XP source for daily caps, so selecting more
 repositories cannot multiply the user's daily reward. Repository selection only
@@ -136,6 +156,21 @@ follow repository visibility: public activity may be shown with its normal
 evidence, while private repository names, pull requests, issues, file paths,
 and code are never exposed publicly. Private activity affects the owner's
 companion but is not part of the public profile by default.
+
+GitHub progression is attributed to the connected user rather than to the
+repository. Commits qualify only when GitHub associates the author or
+committer with that user. Pull requests, reviews, issues, and releases qualify
+only when the user is the actor. A co-authored commit qualifies once when the
+user is a recognized author. CI qualifies only when attached to an eligible
+user-attributed commit or pull request. Activity from teammates, unrelated
+bots, or other repository members never grants the user's XP.
+
+AI assistance is allowed and counts as the user's work when it operates through
+the user's GitHub identity. A separate AI or bot identity must be explicitly
+linked by the user before it can contribute. Text in a commit message or a
+display name is not sufficient proof. Linked AI activity uses the same user
+source, caps, stable IDs, and deduplication rules; it does not receive a second
+allowance.
 
 Disconnecting GitHub, removing a repository, revoking organization access, and
 deleting synced derived data are supported user controls. The server stores
@@ -281,9 +316,12 @@ imports the current companion condition and collection. Local-note history is
 not uploaded as a detailed event ledger. If local-note sync is enabled, the
 server receives only a private condition snapshot and sync checkpoint, so the
 same local progress is not counted twice without exposing note activity details.
-A new device can restore the synced companion condition and verified GitHub
-activity, but cannot restore local note history that was never synced or
-exported.
+Users can keep sync off, run it manually, or enable a schedule while the
+website is open. The default schedule is every 15 minutes, with manual,
+5-minute, and 30-minute choices. Each scheduled cycle scans first and skips the
+cloud write when no relevant derived state changed. A new device can restore
+the synced companion condition and verified GitHub activity, but cannot restore
+local note history that was never synced or exported.
 
 Sync conflicts use a simple split rule. Irreversible progression—XP, evolution,
 Essence, collection membership, and persisted encounters—merges automatically
@@ -296,8 +334,13 @@ Destructive controls are separate and explicit. Disconnecting GitHub stops futur
 tracking but keeps earned progression. Removing a mounted source stops future
 scans but keeps earned progression. Resetting local state clears browser-held
 progress only after confirmation. Deleting cloud state removes synced companion
-data but never deletes local note files. The product should offer an export
-backup before destructive actions.
+data but never deletes local note files. Deleting a Terrarium account hides the
+public profile and stops integrations immediately, offers an export backup, and
+starts a 30-day deletion period. The user may recover during that period; after
+it ends, cloud profile, companion, sync, and GitHub-token data are permanently
+deleted. Account deletion does not modify local note files or automatically
+clear browser-held state; local reset is a separate explicit action. The
+confirmation must state these boundaries.
 
 Progression pacing should feel welcoming early and meaningful later. The first
 evolution should be reachable after a short period of genuine activity, later

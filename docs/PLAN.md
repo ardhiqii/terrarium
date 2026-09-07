@@ -145,13 +145,17 @@ Finish the local source layer:
 - vault-local graph resolution for core Wikilinks, Markdown file links, and
   aliases;
 - permission-revocation recovery;
+- progressive browser support: persistent folder mounting where available, and
+  local one-time directory selection or drag-and-drop scanning elsewhere;
 - baseline-aware net word, note, and resolved-link events;
 - safe rename and delete behavior;
 - conservative identity matching that avoids duplicate new-note rewards;
 - no note-content upload.
 
-The website scans while open or on demand. Monitoring a closed browser is out of
-scope for this phase.
+The website scans while open or on demand. A persistent folder handle is a
+progressive enhancement; one-time directory selection or drag-and-drop scanning
+must remain available where that API is unsupported. Monitoring a closed
+browser is out of scope for this phase.
 
 **Status: partial — verified event normalization and derived-only merge contracts are shipped; product sync API wiring and OAuth integration remain.**
 
@@ -163,15 +167,27 @@ Add optional GitHub sign-in and derived-state sync:
 
 - GitHub OAuth identifies the user and protects recovery;
 - selected public and private GitHub events are server-verified;
+- attribute GitHub XP to the connected user and explicitly linked AI identities,
+  excluding teammates and unrelated bots;
+- deduplicate co-authored commits and tie CI rewards to eligible
+  user-attributed commits or pull requests;
 - repository access comes from an explicit picker, with opt-in automatic
   inclusion for future personal repositories or selected organizations;
+- explain approved-versus-tracked repository state before authorization and in
+  source settings;
+- use quiet, state-change-only reminders for untracked new repositories and
+  revoked permissions, with dismissal persistence;
 - newly discovered repositories begin at a fresh baseline and never award
   retroactive XP;
 - local note events remain labelled local/unverified;
 - sync payloads reject note contents and detailed local-note telemetry at the
   schema boundary;
-- manual local-note sync uploads only a private condition snapshot and sync
-  checkpoint;
+- local-note sync is opt-in and uploads only a private condition snapshot and
+  sync checkpoint;
+- support manual sync or scheduled scan-then-sync while the website is open,
+  with a 15-minute default interval and 5-minute/30-minute alternatives;
+- skip scheduled cloud writes when a scan produces no relevant derived changes;
+- make clear that a closed browser cannot scan or sync a mounted folder;
 - first sign-in imports the current companion condition when no server state
   exists;
 - GitHub state merges by event ID, while local-note condition reconciles by
@@ -181,6 +197,9 @@ Add optional GitHub sign-in and derived-state sync:
 - companion XP remains per companion after merge;
 - separate disconnect, source removal, local reset, and cloud deletion controls
   with an export-before-delete safeguard;
+- account deletion hides public state and stops integrations immediately, then
+  permanently purges cloud profile, companion, sync, and GitHub-token data after
+  a recoverable 30-day period without touching local notes;
 - early first evolution, slower later evolution, and more frequent encounters;
 - shared XP evolution curve across companion families;
 - server state becomes authoritative after a completed merge.
