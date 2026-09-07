@@ -1,3 +1,20 @@
+# HARD RULE: always branch, always PR (owner mandate)
+
+Every change ships through a branch and a pull request. This is not a
+suggestion; it is the project owner's standing workflow. No code goes straight
+to `main`.
+
+- Before any edit, cut a new branch off `main`: `git checkout -b feat/<slug>`.
+- Work on that branch, push it, and open a PR against `main`.
+- Merge only through the PR, then delete the branch.
+- Never commit directly to `main`. Never fast-forward `main` locally and push.
+
+Full details and the verification gates live in the "Branching" and "Go
+through a pull request" sections below. If a task already landed on `main`
+without going through a PR, that was a mistake, not the pattern to copy.
+
+---
+
 <!-- BEGIN:nextjs-agent-rules -->
 # This is NOT the Next.js you know
 
