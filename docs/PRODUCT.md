@@ -71,8 +71,14 @@ is required for the first version.
 - Detect changes with file path, modification time, size, and content hash when
   needed. Count only a new post-baseline change once.
 
-The website cannot observe a local folder while it is closed. A desktop viewer
-may be added later, but it is not required for the core product.
+Folder mounting is progressive enhancement, not a requirement for using the
+website. Browsers with the File System Access API get the best experience: a
+remembered folder handle and on-demand rescans. Other browsers get a clearly
+labeled **Scan folder once** fallback using directory selection or drag and
+drop. The fallback reads the selected files locally and stores only derived
+state; it does not upload anything, but the user must select the folder again
+to detect later changes. The website cannot observe a local folder while it is
+closed. A desktop viewer may be added later for reliable background monitoring.
 
 Local note activity is private by default. The user may opt in to a vague
 aggregate public signal, such as “Local notes contributed.” Public surfaces
@@ -80,13 +86,20 @@ must never expose note titles, contents, file paths, tags, backlinks, or private
 graph structure. The aggregate signal is separate from the note XP ledger and
 does not make local note activity independently verified.
 
-Cloud sync for local notes is condition-only and manual in the first version.
-When the user chooses **Sync now**, Terrarium may upload a private companion
-condition snapshot and sync checkpoint, such as XP, evolution, collection, and
-encounter state. It does not upload note contents, titles, paths, graph edges,
-exact writing history, or detailed note events. A new device can restore the
-companion condition, then mount the folder and establish a fresh local note
-baseline.
+Cloud sync for local notes is condition-only and opt-in. The user chooses
+whether to keep cloud sync off, sync manually with **Sync now**, or sync on a
+schedule while the website is open. The default interval for scheduled sync is
+15 minutes, with manual, 5-minute, and 30-minute options. A scheduled cycle
+first scans the local folder, then syncs only if cloud sync is enabled and the
+scan produced relevant derived changes.
+
+When syncing, Terrarium may upload a private companion condition snapshot and
+sync checkpoint, such as XP, evolution, collection, and encounter state. It
+does not upload note contents, titles, paths, graph edges, exact writing
+history, or detailed note events. A new device can restore the companion
+condition, then mount the folder and establish a fresh local note baseline.
+The website cannot scan or sync a mounted folder while it is completely closed;
+reliable background syncing is reserved for a future desktop app.
 
 ### 4.3 GitHub
 
@@ -108,6 +121,21 @@ discovered repository is surfaced to the user, starts with a fresh baseline,
 and contributes no retroactive XP. Excluding it stops future tracking and stays
 in effect until the user explicitly enables it again.
 
+The connection flow must explain the difference between GitHub access and
+Terrarium tracking before authorization: **Approved** means Terrarium may read
+activity from a repository; **Tracked** means that repository contributes to the
+companion's progress. After returning from GitHub, show a setup prompt if no
+repositories are tracked and show the counts of approved versus tracked
+repositories in the source settings.
+
+Reminders are action-based and quiet. Show a one-time permission explanation
+before authorization, a persistent status with **Manage repositories**, and a
+single notification when new eligible repositories appear. A dismissed
+repository reminder stays dismissed until its access or tracking state changes.
+If permission is revoked, tracking pauses and the owner sees **Reconnect or
+review access**. Private repository names and reminder details remain visible
+only to the owner.
+
 The same activity rules apply to public and approved private repositories. The
 connected GitHub account is one source for daily XP caps, so selecting more
 repositories cannot multiply rewards. Removing a repository stops future
@@ -125,6 +153,21 @@ Public profiles follow repository visibility: public activity may show its
 normal evidence, while private repository names, pull requests, issues, file
 paths, and code never appear publicly. Private activity affects the owner's
 companion but is excluded from public profiles by default.
+
+GitHub XP belongs to the connected user, not to the repository as a whole. A
+commit counts only when GitHub attributes its author or committer to that user;
+pull requests, reviews, issues, and releases count only when created or acted
+on by that user. A co-authored commit counts once when the user is one of the
+recognized authors. CI contributes only when tied to an eligible
+user-attributed commit or pull request. Teammate activity, unrelated bot
+activity, and repository-wide activity do not grant the user's XP.
+
+AI-assisted work is treated as the user's work when the AI acts through the
+user's GitHub identity. If an AI tool uses a separate bot identity, the user
+must explicitly link that identity before its activity can count; commit
+messages or display names alone are not proof. Linked AI activity shares the
+user's normal caps and deduplication rules and does not create a second XP
+source.
 
 Users can disconnect GitHub, remove selected repositories, revoke organization
 access, and delete synced derived data. GitHub may refresh server-side while the
@@ -203,8 +246,13 @@ Destructive controls are separate and explicit. Disconnecting GitHub stops
 future tracking but keeps earned XP. Removing a mounted folder stops future
 scans but keeps earned XP. Resetting local state clears browser-held progress
 only after confirmation. Deleting cloud state removes synced companion data but
-never deletes local note files. The app should offer an export backup before
-destructive actions.
+never deletes local note files. Deleting a Terrarium account immediately hides
+the public profile and stops integrations, offers an export backup, and starts
+a 30-day deletion period. During that period the user may recover the account;
+afterward, cloud profile, companion, sync, and GitHub-token data are permanently
+deleted. Account deletion does not alter local note files or automatically
+clear browser-held state; **Reset local data** remains a separate explicit
+action. Confirmation must name these boundaries clearly.
 
 Progression pacing is welcoming early and more meaningful later. The first
 evolution should be reachable after a short period of genuine activity, later
