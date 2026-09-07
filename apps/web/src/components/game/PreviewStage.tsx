@@ -63,6 +63,7 @@ export default function PreviewStage({ lines, stages }: PreviewStageProps) {
   const searchParams = useSearchParams()
   const paramLine = searchParams.get('line')
   const paramStage = searchParams.get('stage')
+  const fromLabel = searchParams.get('from')
 
   const [activeLineId, setActiveLineId] = useState(
     paramLine && lines.some((l) => l.id === paramLine) ? paramLine : (lines[0]?.id ?? '')
@@ -78,6 +79,17 @@ export default function PreviewStage({ lines, stages }: PreviewStageProps) {
 
   return (
     <div className="flex flex-col gap-8">
+      {/* Context banner: shown only when this preview was opened from a
+          collection tile, so it is clear it is not an empty public view. */}
+      {fromLabel && (
+        <p
+          className="font-data text-[11px] uppercase tracking-widest"
+          style={{ color: 'var(--ink-muted)' }}
+        >
+          Opening from your collection · <span style={{ color: 'var(--accent)' }}>{fromLabel}</span>
+        </p>
+      )}
+
       {/* The framed specimen — the "container" the character lives in. */}
       <div
         className="flex flex-col items-center justify-center gap-6 p-8 sm:p-12"

@@ -59,7 +59,8 @@ export async function CollectionGrid({ entries }: CollectionGridProps) {
       style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))' }}
     >
       {entries.map((entry, i) => {
-        const previewHref = `/preview?line=${entry.speciesLine.id}&stage=${entry.state.stage.id}`
+        const label = entry.kind === 'cluster' ? `#${entry.repo}` : entry.repo
+        const previewHref = `/preview?line=${entry.speciesLine.id}&stage=${entry.state.stage.id}&from=${encodeURIComponent(label)}`
         return (
           <Link
             key={`${entry.kind ?? 'repo'}-${entry.repo}`}
