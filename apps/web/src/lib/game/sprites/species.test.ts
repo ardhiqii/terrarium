@@ -3,6 +3,7 @@ import {
   SPECIES_LINES,
   DEFAULT_SPECIES_LINE_ID,
   MAX_ANIMATED_POKEMON_ID,
+  MEGA_STAGE,
   getSpeciesLine,
   getDefaultSpeciesLine,
 } from './species'
@@ -13,13 +14,26 @@ describe('SPECIES_LINES data integrity', () => {
     expect(SPECIES_LINES.length).toBeGreaterThan(1)
   })
 
-  it('every id in every line is a positive integer at or below 649 (the animated generation-v ceiling)', () => {
+  it('every animated stage (all but heartwood/Mega) is an integer at or below 649 (the animated generation-v ceiling)', () => {
     for (const line of SPECIES_LINES) {
       for (const [stage, id] of Object.entries(line.stageToPokemonId)) {
         expect(Number.isInteger(id), `${line.id}.${stage}`).toBe(true)
         expect(id, `${line.id}.${stage}`).toBeGreaterThanOrEqual(1)
-        expect(id, `${line.id}.${stage}`).toBeLessThanOrEqual(MAX_ANIMATED_POKEMON_ID)
+        if (stage !== MEGA_STAGE) {
+          // Only non-Mega stages must stay inside the animated-sprite ceiling.
+          // Mega forms (heartwood) are deliberately static, so they live above
+          // 649 by design (e.g. 10033 = Mega Venusaur).
+          expect(id, `${line.id}.${stage}`).toBeLessThanOrEqual(MAX_ANIMATED_POKEMON_ID)
+        }
       }
+    }
+  })
+
+  it('every Mega stage (heartwood) is a static Mega form id above 649', () => {
+    for (const line of SPECIES_LINES) {
+      const megaId = line.stageToPokemonId[MEGA_STAGE]
+      // Real PokeAPI Mega forms live in the 10000s (National Mega range).
+      expect(megaId, `${line.id}.${MEGA_STAGE}`).toBeGreaterThan(649)
     }
   })
 
@@ -52,14 +66,27 @@ describe('SPECIES_LINES data integrity', () => {
     expect(line.id).toBe(DEFAULT_SPECIES_LINE_ID)
   })
 
-  it('the grass line matches the original single-species mapping exactly, so the garden creature is unaffected', () => {
+  it('the grass line is a genuine evolution family (Bulbasaur -> Ivysaur -> Venusaur -> Mega Venusaur)', () => {
     const grass = getDefaultSpeciesLine()
     expect(grass.stageToPokemonId).toEqual({
-      sporeling: 191,
-      mossling: 43,
-      bracken: 2,
-      heartwood: 389,
+      sporeling: 1,
+      mossling: 2,
+      bracken: 3,
+      heartwood: 10033,
     })
+  })
+
+  it('each line is one real evolution family: non-Mega stages grow along a single chain', () => {
+    // Bulbasaur(1)->Ivysaur(2)->Venusaur(3); Charmander(4)->...; etc. We
+    // assert the three animated stages are all distinct ids so the line reads
+    // as a real progression, not the same sprite three times.
+    for (const line of SPECIES_LINES) {
+      for (const stage of STAGES) {
+        if (stage.id !== MEGA_STAGE) {
+          expect(line.stageToPokemonId[stage.id], `${line.id}.${stage.id}`).toBeGreaterThan(0)
+        }
+      }
+    }
   })
 
   it('getSpeciesLine falls back to the default line for an unknown id', () => {

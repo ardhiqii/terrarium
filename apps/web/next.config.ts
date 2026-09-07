@@ -27,6 +27,7 @@ const nextConfig: NextConfig = {
     '10.*.*.*', // private range, some routers and VPNs
     '172.16.*.*', // Docker default bridge and similar
     '100.*.*.*', // Tailscale (CGNAT 100.64.0.0/10)
+    'terrarium.rakhawiratama.com', // Cloudflare tunnel (public preview via localhost:3101)
   ],
   async redirects() {
     return [
