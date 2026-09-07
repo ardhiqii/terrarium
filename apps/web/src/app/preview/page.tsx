@@ -1,4 +1,5 @@
 import type { Metadata } from 'next'
+import { Suspense } from 'react'
 import { SPECIES_LINES } from '@/lib/game/sprites/species'
 import { STAGES } from '@/lib/game/types'
 import { resolveWithFallback } from '@/lib/game/sprites/source'
@@ -87,7 +88,9 @@ export default async function PreviewPage() {
         </p>
       </div>
 
-      <PreviewStage lines={lines} stages={stageMeta} />
+      <Suspense>
+        <PreviewStage lines={lines} stages={stageMeta} />
+      </Suspense>
     </div>
   )
 }

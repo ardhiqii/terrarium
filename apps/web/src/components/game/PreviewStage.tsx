@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 
 /**
  * One serializable sprite slot for the interactive preview: either a remote
@@ -38,6 +39,13 @@ interface PreviewStageProps {
   stages: PreviewStage[]
 }
 
+const STAGE_BY_ID: Record<string, number> = {
+  sporeling: 1,
+  mossling: 2,
+  bracken: 3,
+  heartwood: 4,
+}
+
 /**
  * Interactive creature preview. One character in a framed container, with a
  * species-line picker and an evolution-stage selector (buttons 1..4, labelled
@@ -45,12 +53,23 @@ interface PreviewStageProps {
  * animation is a PokeAPI idle GIF; walk/run/sleep states do not exist in this
  * sprite set, so the only dimension of change is evolution (and line).
  *
+ * Optional `?line=<id>&stage=<id>` query params set the starting selection,
+ * so a CollectionGrid tile can deep-link "preview this creature at its stage".
+ *
  * Purely presentational: no game state, no XP, no fs. All sprite data arrives
  * via props, resolved once server-side.
  */
 export default function PreviewStage({ lines, stages }: PreviewStageProps) {
-  const [activeLineId, setActiveLineId] = useState(lines[0]?.id ?? '')
-  const [activeStageIndex, setActiveStageIndex] = useState(1)
+  const searchParams = useSearchParams()
+  const paramLine = searchParams.get('line')
+  const paramStage = searchParams.get('stage')
+
+  const [activeLineId, setActiveLineId] = useState(
+    paramLine && lines.some((l) => l.id === paramLine) ? paramLine : (lines[0]?.id ?? '')
+  )
+  const [activeStageIndex, setActiveStageIndex] = useState(
+    paramStage && STAGE_BY_ID[paramStage] ? STAGE_BY_ID[paramStage] : 1
+  )
 
   const activeLine =
     lines.find((l) => l.id === activeLineId) ?? lines[0]
