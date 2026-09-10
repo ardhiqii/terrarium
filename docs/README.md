@@ -7,6 +7,7 @@ these documents define how the product should behave and how it is delivered.
 ## Current documents
 
 - [`PRODUCT.md`](PRODUCT.md) — product rules, privacy, XP, encounters, sync, and marketplace direction.
+- [`DECISIONS.md`](DECISIONS.md) — the agreed product decisions and open playtest questions from the initial brainstorm.
 - [`DESIGN.md`](DESIGN.md) — visual language, UI boundaries, and companion presentation rules.
 - [`PLAN.md`](PLAN.md) — implementation phases and acceptance criteria.
 - [`ROADMAP.md`](ROADMAP.md) — shipped work, known gaps, and next engineering steps.

@@ -9,7 +9,8 @@ references, not the plan for the product model below.
 
 - The web app starts in guest mode. Authentication is optional.
 - Local note content stays local by default.
-- GitHub is the server-verifiable source for public development activity.
+- GitHub is the server-verifiable source for public and user-approved private
+  development activity.
 - The XP engine consumes normalized events, not raw note text or ad hoc snapshots.
 - Every event has a stable ID and is safe to replay.
 - XP belongs to the active companion. Collection membership and XP are separate.
@@ -47,11 +48,14 @@ Build the first-run flow:
 2. Show a starter companion immediately.
 3. Offer “Let my work decide,” “Surprise me,” and “Connect later.”
 4. Store the local profile and event ledger in browser storage.
-5. Warn that guest state can be lost on a new device or cleared browser data.
+5. Offer a privacy-safe local state export/import path for backups.
+6. Warn that guest state can be lost on a new device or cleared browser data.
 
 The app must remain useful with no source connected and no network.
 
-**Status: partial — guest onboarding and local persistence are shipped; account recovery and compact cross-session source snapshots remain.**
+**Status: partial — guest onboarding and local persistence are shipped; account
+recovery, portable state export/import, and compact cross-session source
+snapshots remain.**
 
 ## Phase 2. Event ledger and basic XP
 
@@ -66,8 +70,15 @@ Implement:
 - GitHub commit, PR, release, issue, and CI event normalization;
 - stable event IDs and deduplication;
 - per-source daily caps;
+- cross-source diminishing returns or a global soft XP limit;
 - active-companion XP attribution;
 - an explainable XP ledger with local or verified provenance.
+
+The initial Markdown XP contract stays intentionally small: writing sessions,
+new notes or projects, coarse net-new body-word buckets, and newly resolved
+wikilinks. Tags, backlinks, maturity labels, reading, and unchanged saves are
+signals or no-ops rather than separate XP events until playtesting shows a
+clear reason to add them.
 
 Initial rates are defined in `PRODUCT.md`. Do not add AI quality scoring. Test
 empty commits, unchanged saves, repeated scans, duplicate deliveries, tiny
@@ -86,11 +97,22 @@ Implement a provider-neutral catalog:
 
 - companion family and identity;
 - encounter tags and rarity tier;
-- progression steps;
+- provider-neutral progression slots and a shared XP curve;
 - form metadata;
 - animated and static asset URLs;
 - asset fallback behavior;
 - provider attribution and license state.
+
+Keep the catalog versioned. Store the family definition, forms, progression
+slot-to-form mapping, provider references, skin compatibility, and fallback
+metadata in the catalog; store only family ID, catalog version, XP, Essence,
+and selected skin in user state. Derive the current progression slot from XP.
+
+Support two catalog inputs: a curated PokeAPI importer that maps a selected
+evolution path into Terrarium slots, and future artist manifests that define a
+creative line against the same slots. A skin may replace compatible appearance
+assets without changing progression. A different progression line is a new
+family.
 
 Implement encounter logic:
 
@@ -100,6 +122,10 @@ Implement encounter logic:
 - work-pattern weighting using rules, not AI;
 - duplicate-to-family-Essence conversion;
 - collection union and active-companion switching.
+
+Evolution progression is driven by companion XP through the provider's valid
+steps. Duplicate Essence is a separate optional mastery/cosmetic track and must
+not be required to evolve a companion.
 
 The PokeAPI adapter may populate the prototype catalog, but the game engine must
 not depend on PokeAPI names, numeric IDs, or URL conventions.
@@ -116,13 +142,20 @@ Finish the local source layer:
 - recursive `.md` and `.mdx` scanning;
 - Obsidian vault support without an Obsidian plugin;
 - ignore `.obsidian` and hidden system folders;
+- vault-local graph resolution for core Wikilinks, Markdown file links, and
+  aliases;
 - permission-revocation recovery;
+- progressive browser support: persistent folder mounting where available, and
+  local one-time directory selection or drag-and-drop scanning elsewhere;
 - baseline-aware net word, note, and resolved-link events;
 - safe rename and delete behavior;
+- conservative identity matching that avoids duplicate new-note rewards;
 - no note-content upload.
 
-The website scans while open or on demand. Monitoring a closed browser is out of
-scope for this phase.
+The website scans while open or on demand. A persistent folder handle is a
+progressive enhancement; one-time directory selection or drag-and-drop scanning
+must remain available where that API is unsupported. Monitoring a closed
+browser is out of scope for this phase.
 
 **Status: partial — verified event normalization and derived-only merge contracts are shipped; product sync API wiring and OAuth integration remain.**
 
@@ -133,12 +166,42 @@ scope for this phase.
 Add optional GitHub sign-in and derived-state sync:
 
 - GitHub OAuth identifies the user and protects recovery;
-- public GitHub events are server-verified;
+- selected public and private GitHub events are server-verified;
+- attribute GitHub XP to the connected user and explicitly linked AI identities,
+  excluding teammates and unrelated bots;
+- deduplicate co-authored commits and tie CI rewards to eligible
+  user-attributed commits or pull requests;
+- repository access comes from an explicit picker, with opt-in automatic
+  inclusion for future personal repositories or selected organizations;
+- explain approved-versus-tracked repository state before authorization and in
+  source settings;
+- use quiet, state-change-only reminders for untracked new repositories and
+  revoked permissions, with dismissal persistence;
+- newly discovered repositories begin at a fresh baseline and never award
+  retroactive XP;
 - local note events remain labelled local/unverified;
-- sync payloads reject note contents at the schema boundary;
-- first sign-in imports guest state when no server state exists;
-- existing server state merges by event ID without double-counting;
+- sync payloads reject note contents and detailed local-note telemetry at the
+  schema boundary;
+- local-note sync is opt-in and uploads only a private condition snapshot and
+  sync checkpoint;
+- support manual sync or scheduled scan-then-sync while the website is open,
+  with a 15-minute default interval and 5-minute/30-minute alternatives;
+- skip scheduled cloud writes when a scan produces no relevant derived changes;
+- make clear that a closed browser cannot scan or sync a mounted folder;
+- first sign-in imports the current companion condition when no server state
+  exists;
+- GitHub state merges by event ID, while local-note condition reconciles by
+  checkpoint without double-counting;
+- irreversible progression merges automatically, while mutable preference
+  conflicts offer a local-versus-cloud choice;
 - companion XP remains per companion after merge;
+- separate disconnect, source removal, local reset, and cloud deletion controls
+  with an export-before-delete safeguard;
+- account deletion hides public state and stops integrations immediately, then
+  permanently purges cloud profile, companion, sync, and GitHub-token data after
+  a recoverable 30-day period without touching local notes;
+- early first evolution, slower later evolution, and more frequent encounters;
+- shared XP evolution curve across companion families;
 - server state becomes authoritative after a completed merge.
 
 Do not make sign-in a prerequisite for using the editor, mounting notes, or
@@ -156,7 +219,16 @@ Update the website, extension, profile, and badge to the new state model:
 - encounter reveal and duplicate feedback;
 - evidence ledger and verification labels;
 - public profile with derived state only;
-- extension showing public synced state only;
+- opt-in aggregate local-note contribution signal, with no note content or
+  structure exposed;
+- opt-in public companion profile and per-surface visibility controls;
+- owner-controlled public presentation fields and a compact extension hover
+  preview;
+- extension showing public synced state only for opted-in profiles;
+- extension reactions that are visual-only and cannot award XP;
+- dialogue-first mood reactions with optional artist-provided animation;
+- predefined dialogue with quiet, balanced, and chatty frequency controls;
+- resting and returning reactions with no XP decay or inactivity penalty;
 - static README badge;
 - mobile read-only fallback.
 
@@ -167,14 +239,15 @@ private or local note activity was independently verified.
 
 **Depends on:** Phases 3 and 6.
 
-Define the artist provider contract and moderation workflow:
+Define the artist provider contract and automated marketplace workflow:
 
 - original asset upload;
 - explicit license and attribution;
 - progression and form metadata;
 - tags and rarity;
 - preview and accessibility text;
-- moderation and takedown state;
+- automated validation and safety-scan state;
+- community reports and takedown state;
 - provider versioning and asset fallback.
 
 Do not commercialize Pokémon names, designs, or sprites. Replace the prototype
