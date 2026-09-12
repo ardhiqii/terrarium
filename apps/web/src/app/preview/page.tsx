@@ -64,6 +64,7 @@ export default async function PreviewPage() {
     id: stage.id,
     name: stage.name,
     index: stage.index,
+    slot: stage.slot,
   }))
 
   return (

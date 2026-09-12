@@ -32,6 +32,8 @@ export interface PreviewStage {
   id: string
   name: string
   index: number
+  /** 'evolution' | 'mastery' — mastery is the final Mega form slot. */
+  slot: 'evolution' | 'mastery'
 }
 
 interface PreviewStageProps {
@@ -75,6 +77,7 @@ export default function PreviewStage({ lines, stages }: PreviewStageProps) {
   const activeLine =
     lines.find((l) => l.id === activeLineId) ?? lines[0]
   // stages is ordered by index 1..4, so a plain array pick is correct.
+  const activeStage = stages[activeStageIndex - 1]
   const activeSprite = activeLine?.stages[activeStageIndex - 1]
 
   return (
@@ -127,7 +130,7 @@ export default function PreviewStage({ lines, stages }: PreviewStageProps) {
             </h2>
           )}
           <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>
-            Stage {activeStageIndex} of {stages.length}
+            {activeStage.slot === 'mastery' ? 'Mastery' : `Stage ${activeStageIndex}`} of {stages.length}
             {activeSprite && (
               <span style={{ color: 'var(--accent)' }}> · #{activeSprite.pokemonId}</span>
             )}
