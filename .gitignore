@@ -55,3 +55,7 @@ reports/
 
 # sync layer: local SQLite database (apps/web/src/lib/sync/sqlite-store.ts)
 /.data/
+
+# host-side deploy artifacts (home server)
+deploy.log
+deploy-terrarium.sh
