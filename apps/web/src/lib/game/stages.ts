@@ -4,6 +4,15 @@
 
 import { STAGES, Stage } from './types'
 
+/**
+ * The label for a stage's progression slot. Stages 1-3 are real evolutions;
+ * the heartwood stage is a mastery/form slot (Mega), per PRODUCT.md §7 — a
+ * final mastery milestone must be labelled as mastery/form, not an evolution.
+ */
+export function slotLabel(stage: { slot: Stage['slot'] }): string {
+  return stage.slot === 'mastery' ? 'Mastery' : 'Evolution'
+}
+
 export interface ResolvedStage {
   stage: Stage
   nextStage: Stage | null

@@ -79,9 +79,15 @@ export function StageLine({ stages, currentStageIndex, sprites }: StageLineProps
             </div>
 
             <h3 className="font-ui text-base font-semibold">{stage.name}</h3>
-            <p className="font-data text-xs" style={{ color: 'var(--ink-muted)' }}>
-              {stage.threshold.toLocaleString()} xp
-            </p>
+            {stage.slot === 'mastery' ? (
+              <p className="font-data text-[10px] uppercase tracking-widest" style={{ color: 'var(--accent)' }}>
+                Mastery · final form
+              </p>
+            ) : (
+              <p className="font-data text-xs" style={{ color: 'var(--ink-muted)' }}>
+                {stage.threshold.toLocaleString()} xp
+              </p>
+            )}
 
             {reached ? (
               <p className="font-prose text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>

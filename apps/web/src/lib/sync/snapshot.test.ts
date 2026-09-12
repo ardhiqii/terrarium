@@ -21,6 +21,7 @@ function fakeStage(overrides: Partial<Stage> = {}): Stage {
     name: 'Mossling',
     index: 2,
     threshold: 1500,
+    slot: 'evolution',
     blurb: 'Notes are accumulating and starting to link.',
     ...overrides,
   }

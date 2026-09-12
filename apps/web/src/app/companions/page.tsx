@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import { getCreatureState } from '@/lib/game/state'
 import { STAGES } from '@/lib/game/types'
+import { slotLabel } from '@/lib/game/stages'
 import { getOwnerCollection, getClusterCollection } from '@/lib/game/collection'
 import { CreatureSprite } from '@/components/game/CreatureSprite'
 import { StageLine } from '@/components/game/StageLine'
@@ -138,9 +139,13 @@ export default async function CompanionsPage() {
 
       {/* Evolution line */}
       <section className="mb-14">
-        <h2 className="font-ui text-xl font-semibold tracking-tighter mb-5">
-          Evolution line
+        <h2 className="font-ui text-xl font-semibold tracking-tighter mb-1">
+          Progression
         </h2>
+        <p className="font-prose text-sm leading-relaxed mb-5 max-w-2xl" style={{ color: 'var(--ink-muted)' }}>
+          The first three stages are evolutions; the final stage is the
+          family&apos;s mastery form ({slotLabel(STAGES[STAGES.length - 1])}).
+        </p>
         <StageLine stages={STAGES} currentStageIndex={state.stage.index} sprites={stageSprites} />
       </section>
 

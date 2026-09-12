@@ -135,6 +135,13 @@ export interface Stage {
   index: number
   /** Cumulative XP at which this stage begins. */
   threshold: number
+  /**
+   * Whether this is an evolution step or a final mastery state. Stages 1-3
+   * are real evolutions; heartwood (the Mega form) is a mastery/form slot, not
+   * a canonical evolution. PRODUCT.md §7: a final mastery milestone must be
+   * labelled as mastery/form, not as a new evolution.
+   */
+  slot: 'evolution' | 'mastery'
   /** One sentence on what reaching this stage says about the garden. */
   blurb: string
 }
@@ -149,6 +156,7 @@ export const STAGES: readonly Stage[] = [
     name: 'Sporeling',
     index: 1,
     threshold: 0,
+    slot: 'evolution',
     blurb: 'The garden exists. A few scattered notes.',
   },
   {
@@ -156,6 +164,7 @@ export const STAGES: readonly Stage[] = [
     name: 'Mossling',
     index: 2,
     threshold: 1500,
+    slot: 'evolution',
     blurb: 'Notes are accumulating and starting to link.',
   },
   {
@@ -163,6 +172,7 @@ export const STAGES: readonly Stage[] = [
     name: 'Bracken',
     index: 3,
     threshold: 5000,
+    slot: 'evolution',
     blurb: 'A real body of work with dense interconnection.',
   },
   {
@@ -170,7 +180,8 @@ export const STAGES: readonly Stage[] = [
     name: 'Heartwood',
     index: 4,
     threshold: 12000,
-    blurb: 'An established garden.',
+    slot: 'mastery',
+    blurb: "An established garden. The family's final form.",
   },
 ] as const
 

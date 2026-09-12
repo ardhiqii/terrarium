@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import { SPECIES_LINES } from '@/lib/game/sprites/species'
 import { STAGES } from '@/lib/game/types'
+import { slotLabel } from '@/lib/game/stages'
 import { CreatureSprite } from '@/components/game/CreatureSprite'
 
 export const metadata: Metadata = {
@@ -54,7 +55,7 @@ export default function SpeciesGalleryPage() {
         {STAGES.map((stage) => (
           <div key={stage.id} className="text-center">
             <p className="font-data text-[10px] uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>
-              Stage {stage.index}
+              {slotLabel(stage)}
             </p>
             <p className="font-ui text-sm font-semibold">{stage.name}</p>
           </div>
