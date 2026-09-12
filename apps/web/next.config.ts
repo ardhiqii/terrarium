@@ -1,6 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Self-contained production bundle for the Docker runtime stage (lean image,
+  // keeps `app/api/*/route.ts` dynamic handlers working). See the Dockerfile.
+  output: "standalone",
   // Lets someone open the dev server from their phone or another machine.
   //
   // Next blocks cross-origin requests to `/_next/*` dev assets by default,
@@ -27,6 +30,7 @@ const nextConfig: NextConfig = {
     '10.*.*.*', // private range, some routers and VPNs
     '172.16.*.*', // Docker default bridge and similar
     '100.*.*.*', // Tailscale (CGNAT 100.64.0.0/10)
+    'terrarium.rakhawiratama.com', // Cloudflare tunnel (public preview via localhost:3101)
   ],
   async redirects() {
     return [

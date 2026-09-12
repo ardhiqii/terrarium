@@ -6,6 +6,7 @@ import { CreatureSprite } from '@/components/game/CreatureSprite'
 import { StageLine } from '@/components/game/StageLine'
 import { ItemDrawer } from '@/components/game/ItemDrawer'
 import { CollectionGrid } from '@/components/game/CollectionGrid'
+import Link from 'next/link'
 
 const OWNER_LOGIN = process.env.GITHUB_LOGIN
 const TOKEN = process.env.GITHUB_TOKEN
@@ -78,7 +79,24 @@ export default async function CompanionsPage() {
           style={{ color: 'var(--ink-muted)' }}
         >
           Every stage the creature can reach and every item it can carry,
-          documented whether or not the garden has gotten there yet.
+          documented whether or not the garden has gotten there yet. See the
+          full sprite set line by line in the{' '}
+          <Link
+            href="/species"
+            className="underline decoration-dotted underline-offset-2 hover:opacity-70 transition-opacity"
+            style={{ color: 'var(--accent)' }}
+          >
+            species gallery
+          </Link>
+          , or step through a single creature interactively in the{' '}
+          <Link
+            href="/preview"
+            className="underline decoration-dotted underline-offset-2 hover:opacity-70 transition-opacity"
+            style={{ color: 'var(--accent)' }}
+          >
+            preview
+          </Link>
+          .
         </p>
       </div>
 

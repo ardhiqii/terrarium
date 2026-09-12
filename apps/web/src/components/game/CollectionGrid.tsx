@@ -1,6 +1,7 @@
 import type { CollectionEntry } from '@/lib/game/collection'
 import { resolveVariant } from '@/lib/game/variants'
 import { CreatureSprite } from './CreatureSprite'
+import Link from 'next/link'
 
 /**
  * The pokedex grid: one tile per companion, sprite plus name plus stage.
@@ -57,42 +58,47 @@ export async function CollectionGrid({ entries }: CollectionGridProps) {
       className="grid gap-3"
       style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))' }}
     >
-      {entries.map((entry, i) => (
-        <div
-          key={`${entry.kind ?? 'repo'}-${entry.repo}`}
-          className="relative flex flex-col items-center text-center gap-2 p-4"
-          style={{
-            background: 'var(--paper)',
-            border: entry.isNew ? '1px solid var(--accent)' : '1px solid var(--rule)',
-          }}
-        >
-          {entry.isNew && (
-            <span
-              className="absolute top-0 right-0 font-data text-[9px] uppercase tracking-widest px-1.5 py-0.5"
-              style={{ background: 'var(--accent)', color: 'var(--paper)' }}
-            >
-              New
-            </span>
-          )}
-          <div className="h-16 flex items-center justify-center [&_img]:max-h-full [&_img]:max-w-full [&_img]:w-auto [&_img]:h-auto [&_img]:object-contain">
-            {tiles[i]}
-          </div>
-          <p className="font-ui text-xs font-medium truncate w-full" title={entry.repo}>
-            {entry.kind === 'cluster' ? `#${entry.repo}` : entry.repo}
-          </p>
-          <p className="font-data text-[10px] uppercase tracking-wide" style={{ color: 'var(--ink-muted)' }}>
-            {entry.state.stage.name} · L{entry.state.stage.index}
-            {variants[i] && (
-              <span style={{ color: 'var(--accent)' }}> · var. {variants[i]}</span>
+      {entries.map((entry, i) => {
+        const label = entry.kind === 'cluster' ? `#${entry.repo}` : entry.repo
+        const previewHref = `/preview?line=${entry.speciesLine.id}&stage=${entry.state.stage.id}&from=${encodeURIComponent(label)}`
+        return (
+          <Link
+            key={`${entry.kind ?? 'repo'}-${entry.repo}`}
+            href={previewHref}
+            className="relative flex flex-col items-center text-center gap-2 p-4 transition-opacity hover:opacity-75"
+            style={{
+              background: 'var(--paper)',
+              border: entry.isNew ? '1px solid var(--accent)' : '1px solid var(--rule)',
+            }}
+          >
+            {entry.isNew && (
+              <span
+                className="absolute top-0 right-0 font-data text-[9px] uppercase tracking-widest px-1.5 py-0.5"
+                style={{ background: 'var(--accent)', color: 'var(--paper)' }}
+              >
+                New
+              </span>
             )}
-          </p>
-          <p className="font-data text-[10px]" style={{ color: 'var(--ink-muted)' }}>
-            {entry.kind === 'cluster'
-              ? `Cluster · ${entry.speciesLine.name}`
-              : `${entry.language ?? 'unlabeled'} · ${entry.speciesLine.name}`}
-          </p>
-        </div>
-      ))}
+            <div className="h-16 flex items-center justify-center [&_img]:max-h-full [&_img]:max-w-full [&_img]:w-auto [&_img]:h-auto [&_img]:object-contain">
+              {tiles[i]}
+            </div>
+            <p className="font-ui text-xs font-medium truncate w-full" title={entry.repo}>
+              {entry.kind === 'cluster' ? `#${entry.repo}` : entry.repo}
+            </p>
+            <p className="font-data text-[10px] uppercase tracking-wide" style={{ color: 'var(--ink-muted)' }}>
+              {entry.state.stage.name} · L{entry.state.stage.index}
+              {variants[i] && (
+                <span style={{ color: 'var(--accent)' }}> · var. {variants[i]}</span>
+              )}
+            </p>
+            <p className="font-data text-[10px]" style={{ color: 'var(--ink-muted)' }}>
+              {entry.kind === 'cluster'
+                ? `Cluster · ${entry.speciesLine.name}`
+                : `${entry.language ?? 'unlabeled'} · ${entry.speciesLine.name}`}
+            </p>
+          </Link>
+        )
+      })}
     </div>
   )
 }
