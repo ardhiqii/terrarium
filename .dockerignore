@@ -1,0 +1,10 @@
+node_modules
+.next
+.git
+*.log
+.env*
+apps/web/.next
+apps/web/node_modules
+docs
+.github
+.dockerignore

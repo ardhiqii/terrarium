@@ -1,0 +1,24 @@
+services:
+  web:
+    image: ghcr.io/ardhiqii/terrarium:main
+    container_name: terrarium-web
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3101
+      - HOSTNAME=0.0.0.0
+      # Optional; used by the API/badge. Without GITHUB_LOGIN the site still
+      # renders, but the garden creature stats are empty. Set in .env.
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITHUB_LOGIN=${GITHUB_LOGIN:-}
+    ports:
+      # localhost-only: Cloudflare tunnel reaches it, internet never hits it raw.
+      - "127.0.0.1:3101:3101"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    cap_drop:
+      - ALL

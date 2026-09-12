@@ -1,6 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Self-contained production bundle for the Docker runtime stage (lean image,
+  // keeps `app/api/*/route.ts` dynamic handlers working). See the Dockerfile.
+  output: "standalone",
   // Lets someone open the dev server from their phone or another machine.
   //
   // Next blocks cross-origin requests to `/_next/*` dev assets by default,
