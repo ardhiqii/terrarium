@@ -2,6 +2,7 @@
 
 import { DEFAULT_ENCOUNTER_CONFIG } from '@/lib/game/encounters'
 import type { ProductState } from '@/lib/game/product-state'
+import { displayCompanionName } from './display-name'
 
 export interface ProductActivityPanelProps {
   state: ProductState
@@ -11,11 +12,6 @@ export interface ProductActivityPanelProps {
 function percentage(value: number): number {
   if (!Number.isFinite(value)) return 0
   return Math.round(Math.min(1, Math.max(0, value)) * 100)
-}
-
-function displayCompanionName(companionId: string): string {
-  const name = companionId.replace(/[-_]+/g, ' ').trim()
-  return name ? name.charAt(0).toUpperCase() + name.slice(1) : 'Unnamed companion'
 }
 
 function evidenceWording(

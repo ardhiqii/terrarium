@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { ProductActivityPanel } from './ProductActivityPanel'
+import { EncounterReveal } from './EncounterReveal'
+import { CompanionSwitcher } from './CompanionSwitcher'
 import {
   addEvents,
   type EventLedger,
@@ -16,6 +18,7 @@ import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
 import {
   createProductState,
   applyProductEvents,
+  switchActiveCompanion,
   type ProductState,
 } from '@/lib/game/product-state'
 import {
@@ -27,6 +30,7 @@ import { normalizeMarkdownEvents, type MarkdownFileSnapshot } from '@/lib/game/m
 
 const LEDGER_KEY = 'terrarium:guest-event-ledger'
 const ENCOUNTER_KEY = 'terrarium:guest-encounters'
+const REVEALED_DRAWS_KEY = 'terrarium:guest-revealed-draws'
 const LEGACY_LEDGER_KEY = 'digital-garden:guest-event-ledger'
 const LEGACY_ENCOUNTER_KEY = 'digital-garden:guest-encounters'
 const PROFILE_EVENT = 'terrarium:guest-profile-updated'
@@ -91,6 +95,20 @@ function saveEncounters(encounters: EncounterState): void {
   storage().setItem(ENCOUNTER_KEY, JSON.stringify(encounters))
 }
 
+function loadRevealedDraws(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(storage().getItem(REVEALED_DRAWS_KEY) ?? '[]')
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((value): value is string => typeof value === 'string')
+  } catch {
+    return []
+  }
+}
+
+function saveRevealedDraws(ids: readonly string[]): void {
+  storage().setItem(REVEALED_DRAWS_KEY, JSON.stringify(ids))
+}
+
 function currentProfile(): GuestProfile | null {
   try {
     return loadGuestProfile(storage())
@@ -132,6 +150,7 @@ function recordBaseline(profile: GuestProfile, sourceId: string, files: readonly
 
 export function GuestProductRuntime() {
   const [state, setState] = useState<ProductState | null>(null)
+  const [revealedDraws, setRevealedDraws] = useState<string[]>(() => loadRevealedDraws())
   const previousScans = useRef(new Map<string, MarkdownFileSnapshot[]>())
 
   useEffect(() => {
@@ -209,6 +228,35 @@ export function GuestProductRuntime() {
     }
   }, [])
 
+  const dismissDraw = (drawId: string) => {
+    setRevealedDraws((current) => {
+      const next = current.includes(drawId) ? current : [...current, drawId]
+      saveRevealedDraws(next)
+      return next
+    })
+  }
+
+  const makeActive = (companionId: string) => {
+    if (!state) return
+    const next = switchActiveCompanion(state, companionId, PROTOTYPE_COMPANION_CATALOG)
+    if (next !== state && next.profile.activeCompanionId !== state.profile.activeCompanionId) {
+      saveGuestProfile(storage(), next.profile)
+      window.dispatchEvent(new Event(PROFILE_EVENT))
+      setState(next)
+    }
+  }
+
   if (!state) return null
-  return <ProductActivityPanel state={state} sourceLabel="Local companion" />
+  return (
+    <>
+      <EncounterReveal
+        state={state}
+        revealedIds={revealedDraws}
+        onReveal={dismissDraw}
+        onMakeActive={makeActive}
+      />
+      <ProductActivityPanel state={state} sourceLabel="Local companion" />
+      <CompanionSwitcher state={state} onSwitch={makeActive} />
+    </>
+  )
 }
