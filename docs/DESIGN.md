@@ -43,6 +43,12 @@ move from what they built to the remote activity that can grow the companion.
 The account menu remains for identity, profile, leaderboard, and sign-out
 actions.
 
+Repository choices use a focused mutation state: only the save control changes
+to “Saving choices...” while the server request is in flight, prevents duplicate
+submissions, and exposes a live status for assistive technology. Read-only
+repository browsing remains still so the page does not turn every component
+into a loading surface.
+
 ---
 
 ## 2. Visual system
