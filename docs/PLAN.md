@@ -183,8 +183,9 @@ Add optional GitHub sign-in and derived-state sync:
 - commit evidence, merged pull requests, releases, and successful CI are
   connected to the event normalizer; attribution is filtered at the GitHub
   boundary and the existing account-wide caps/deduplication remain in force;
-- sync fan-out is bounded per request and partial reads do not create a new
-  baseline; linked-issue timeline extraction remains a follow-up.
+- sync fan-out is bounded per request, partial reads do not create a new
+  baseline, and a failed receipt issuance leaves the prior checkpoint intact;
+  linked-issue timeline extraction remains a follow-up.
 
 The current prototype expects a GitHub App registration with fine-grained read
 permissions for metadata, contents, pull requests, issues, checks/actions, and
@@ -197,11 +198,12 @@ The migration enables RLS and grants access only to the server role.
 The Supabase adapter covers the public sync snapshot, GitHub account/settings,
 and product snapshot stores. The browser restores a blank account namespace
 from the cloud snapshot and merges same-guest local/cloud history while keeping
-source identities local. The local SQLite adapter remains suitable for the
-persistent home-server path and local development, but not for a
-multi-instance/serverless deployment. Remaining hosted hardening work includes
-server-issued event receipts, concurrent merge protection, stable GitHub-ID
-account migration, public-profile visibility enforcement, and a
+source identities local. Product snapshots use immutable GitHub IDs, optimistic
+write checkpoints, server-issued GitHub event receipts, and replay-safe event
+IDs. The local SQLite adapter remains suitable for the persistent home-server
+path and local development, but not for a multi-instance/serverless
+deployment. Remaining hosted work includes public-profile visibility
+enforcement, SQLite-to-Supabase migration for existing users, and a
 restart/redeploy end-to-end test.
 
 - GitHub OAuth identifies the user and protects recovery;

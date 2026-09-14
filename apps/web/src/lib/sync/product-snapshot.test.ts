@@ -3,7 +3,7 @@ import { asCompanionId, asEventId, type NormalizedEvent } from '../game/events'
 import { PROTOTYPE_COMPANION_CATALOG } from '../game/companion-catalog'
 import { advanceEncounter, createEncounterState } from '../game/encounters'
 import { createGuestProfile } from '../game/guest-profile'
-import { createProductState } from '../game/product-state'
+import { applyProductEvents, createProductState } from '../game/product-state'
 import {
   buildProductSnapshot,
   buildProductSyncedSnapshot,
@@ -35,6 +35,18 @@ function event(id: string, companionId = 'pikachu-family'): NormalizedEvent {
       description: 'do not sync this text',
       activityCount: 1,
     },
+  }
+}
+
+function githubEvent(id: string): NormalizedEvent {
+  return {
+    eventId: asEventId(id),
+    companionId: asCompanionId('pikachu-family'),
+    source: 'github',
+    sourceId: 'github-account:42',
+    provenance: 'verified',
+    category: 'work-session',
+    occurredAt: now,
   }
 }
 
@@ -155,6 +167,20 @@ describe('product snapshot', () => {
     expect(merged.events[0]).toMatchObject({ provenance: 'verified', category: 'successful-ci' })
   })
 
+  it('lets a receipt-backed local delivery upgrade an older local copy without duplicating XP', () => {
+    const guest = buildProductSnapshot(state([event('event-1')]))
+    const server = buildProductSnapshot(state([event('event-1')]))
+    const upgradedGuest: ProductSnapshot = {
+      ...guest,
+      events: [{ ...guest.events[0], provenance: 'verified', verifiedProof: 'server-receipt' }],
+    }
+
+    const merged = mergeGuestWithServer(upgradedGuest, server)
+
+    expect(merged.events[0]).toMatchObject({ provenance: 'verified', verifiedProof: 'server-receipt' })
+    expect(merged.companions.find((companion) => companion.companionId === 'pikachu-family')?.xp).toBe(25)
+  })
+
   it('falls back to the server active companion only when the guest active ID is invalid', () => {
     const guest = snapshotWith({ activeCompanionId: 'missing-companion' })
     const server = snapshotWith({
@@ -186,6 +212,21 @@ describe('product snapshot', () => {
     expect(restored.profile.sourceBaselines).toEqual([])
     expect(restored.ledger.events).toHaveLength(1)
     expect(restored.companions.find((companion) => companion.companionId === 'pikachu-family')?.xp).toBe(25)
+  })
+
+  it('keeps restored GitHub events idempotent when the provider delivers the same source ID again', () => {
+    const sourceEvent = githubEvent('github:42:commit:abc123')
+    const cloud = buildProductSnapshot(state([sourceEvent]), now)
+    const restored = restoreProductStateFromSnapshot(
+      cloud,
+      createGuestProfile({ guestId: 'fresh-browser', starterCompanionId: 'pikachu-family', now }),
+      PROTOTYPE_COMPANION_CATALOG,
+    )
+
+    const replayed = applyProductEvents(restored, [sourceEvent], PROTOTYPE_COMPANION_CATALOG)
+
+    expect(replayed.ledger.events).toHaveLength(1)
+    expect(replayed.companions.find((companion) => companion.companionId === 'pikachu-family')?.xp).toBe(10)
   })
 
   it('restores the safe event fields while dropping opaque source hashes', () => {

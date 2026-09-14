@@ -117,6 +117,13 @@ GitHub token is sent to the browser. Applying the checked-in migration is part
 of deployment. Note contents and detailed note history remain on the user's
 device under the existing condition-only sync contract.
 
+Product snapshots are keyed by immutable GitHub account ID rather than the
+mutable login handle. Writes use an optimistic checkpoint so two devices do
+not silently replace one another's latest condition. GitHub activity receipts
+are issued by the server-side GitHub sync route and verified before a product
+upload can preserve `verified` provenance. A cloud restore keeps event IDs
+stable so the next provider delivery remains idempotent.
+
 ### 4.4 GitHub
 
 GitHub is the primary remote source for developer activity. A connected GitHub
@@ -187,8 +194,9 @@ may count eligible activity that happened since the last checkpoint, using the
 activity date for daily and session caps rather than the sync date. A catch-up
 is summarized as one returning update instead of replaying every reaction.
 Activity from before approval or the initial baseline never awards retroactive
-XP. If GitHub no longer exposes enough history to verify an event, Terrarium
-does not guess.
+XP. Receipt issuance completes before a new checkpoint is saved, so a signing
+failure can be retried without consuming eligible activity. If GitHub no
+longer exposes enough history to verify an event, Terrarium does not guess.
 
 Commits are evidence of activity rather than unlimited direct XP. Empty and
 generated-only commits award no XP. Active days and work sessions are capped;

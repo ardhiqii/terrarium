@@ -30,7 +30,8 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
 - Browser extension for public GitHub pages.
 - Built-in Markdown editor and local File System Access folder mounting.
 - GitHub sign-in and derived-state sync foundation.
-- GitHub source selection, baseline-aware activity sync, verified XP receipts,
+- GitHub source selection, baseline-aware activity sync, server-issued verified
+  event receipts,
   and duplicate-safe reward messaging.
 - PokeAPI sprite adapter with local fallback.
 
@@ -68,7 +69,8 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
 - Supabase project/schema and server-only adapters now provide a durable hosted
   storage path for Vercel; signed-in GitHub browsers can hydrate blank account
   namespaces from the cloud snapshot; SQLite remains the local/single-server
-  fallback.
+  fallback. Product snapshots now key by immutable GitHub ID, protect writes
+  with optimistic timestamps, and keep restored event IDs replay-safe.
 
 ### Known prototype mismatch
 
@@ -87,7 +89,7 @@ collection is considered final.
 | 2 | Event ledger and basic XP | **partial, Markdown and GitHub wired; broader surfaces pending** |
 | 3 | Companion catalog, forms, and encounters | **partial, engine and PokeAPI bridge shipped** |
 | 4 | Recursive Markdown and Obsidian mounting | partial, needs upgrade |
-| 5 | GitHub verification and guest sync merge | **partial, Feature A activity slice shipped and live-tested; merge migration pending** |
+| 5 | GitHub verification and guest sync merge | **partial, Feature A and hosted hardening shipped; deployment and profile migration pending** |
 | 6 | Collection UI, profiles, extension integration | **partial, extension adapter shipped; surfaces pending** |
 | 7 | Licensed marketplace providers and original art | future |
 
@@ -105,19 +107,17 @@ ordinary localStorage. Keep the raw note boundary local.
 
 The GitHub source now has repository selection, encrypted server credentials,
 stable-ID baselines, attributed commit evidence, a `/github` sync surface, and
-verified XP receipts. The Supabase adapter, migration, and cloud hydration are
-prepared; deploy the branch with the Vercel variables, then verify OAuth,
-repository selection, baselines, XP, cloud restore, and repeated sync across a
-redeploy. Persist server-issued event receipts and checkpoints so forged
-verified events, cold starts, and concurrent devices cannot duplicate or lose
-sync history.
+server-issued verified event receipts. Supabase storage, immutable account
+keys, optimistic writes, and replay-safe product IDs are now implemented.
+Deploy and exercise OAuth, repository selection, baselines, XP, cloud restore,
+a second device, account rename, revoked access, and a redeploy before calling
+the hosted path production-ready.
 
-### 3. Add the product sync route
+### 3. Complete public profile privacy and account lifecycle
 
-Create a provider-neutral companion catalog. The PokeAPI provider should resolve
-species, forms, evolution chains, and the best available asset. The game engine
-should consume only the provider contract. Keep the PokeAPI provider isolated so
-it can be replaced with licensed artist assets.
+Gate `/u/[handle]`, leaderboard rows, and extension payloads behind the existing
+opt-in visibility policy. Add explicit disconnect, cloud-delete, guest export,
+and account-switch flows before exposing public companion state widely.
 
 ### 4. Replace legacy collection surfaces
 

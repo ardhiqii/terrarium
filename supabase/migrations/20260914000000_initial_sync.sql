@@ -30,7 +30,8 @@ create table if not exists public.github_accounts (
 );
 
 create table if not exists public.product_snapshots (
-  handle text primary key,
+  github_id bigint unique,
+  handle text not null,
   snapshot_json jsonb not null,
   updated_at timestamptz not null,
   constraint product_snapshots_handle_lowercase check (handle = lower(handle) and btrim(handle) <> '')

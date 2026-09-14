@@ -20,6 +20,7 @@ import {
 } from './encounters'
 import { resolveCompanionProgression, type CompanionCatalog } from './companion-catalog'
 import type { GuestCollectionReference, GuestProfile } from './guest-profile'
+import { canonicalizeProductEvent } from '../sync/product-event-id'
 
 export interface ProductCompanionState {
   companionId: string
@@ -115,7 +116,8 @@ export function applyProductEvents(
   options: ApplyProductEventsOptions = {},
 ): ProductState {
   const known = new Set(state.ledger.events.map((event) => event.eventId))
-  const newEvents = incoming.filter((event) => !known.has(event.eventId))
+  const canonicalIncoming = incoming.map(canonicalizeProductEvent)
+  const newEvents = canonicalIncoming.filter((event) => !known.has(event.eventId))
   const ledger = addEvents(state.ledger, newEvents)
   if (newEvents.length === 0) return createProductState(state.profile, ledger, state.encounters, catalog)
 

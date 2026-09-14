@@ -16,6 +16,8 @@ import { checkRateLimit } from '@/lib/game/api-cache'
 import { getGithubAccountStore, type GithubAccountSettings } from '@/lib/sync/github-account-store'
 import { fetchGithubRepositories, type GithubRepository } from '@/lib/sync/github-repositories'
 import { getSessionProvider } from '@/lib/sync/session'
+import { productSnapshotEvent } from '@/lib/sync/product-snapshot'
+import { issueVerifiedEventProof } from '@/lib/sync/verified-event-proof'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -166,6 +168,19 @@ export async function POST(request: NextRequest): Promise<Response> {
       }
     }
 
+    if (fetchStatus === 'unavailable') {
+      return json(502, { error: 'GitHub activity could not be read completely. No new baseline was recorded.' })
+    }
+
+    // Receipt issuance is part of the same logical checkpoint as the
+    // baseline. If signing fails, leave the old baseline untouched so the
+    // activity can be retried instead of being silently consumed.
+    const verifiedEventProofs: Record<string, string> = {}
+    for (const event of events) {
+      const snapshotEvent = productSnapshotEvent(event)
+      verifiedEventProofs[snapshotEvent.eventId] = issueVerifiedEventProof(snapshotEvent, session.githubId)
+    }
+
     const nextSettings: GithubAccountSettings = {
       ...settings,
       trackedRepositoryIds: [...trackedRepositoryIds].sort(),
@@ -173,10 +188,6 @@ export async function POST(request: NextRequest): Promise<Response> {
       lastSyncedAt: fetchStatus === 'ok' ? now : settings.lastSyncedAt,
     }
     await store.saveSettings(session.githubId, nextSettings)
-
-    if (fetchStatus === 'unavailable') {
-      return json(502, { error: 'GitHub activity could not be read completely. No new baseline was recorded.' })
-    }
 
     return json(200, {
       kind: fetchStatus === 'partial'
@@ -192,6 +203,7 @@ export async function POST(request: NextRequest): Promise<Response> {
       lastSyncedAt: now,
       syncStatus: fetchStatus,
       summary: activitySummary(events),
+      verifiedEventProofs,
     })
   } catch {
     return json(500, { error: 'GitHub activity could not be synced.' })

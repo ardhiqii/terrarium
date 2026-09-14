@@ -9,7 +9,8 @@ import GardenMark from '../GardenMark'
 import { siteConfig } from '@/lib/site-config'
 
 /**
- * Eight flat items became six, and the order changed. What moved and why:
+ * The primary row keeps the working surfaces together, with GitHub visible as
+ * a source rather than hiding it inside the account menu.
  *
  * "Home" is gone. The wordmark beside it already links to `/`, so it was two
  * controls for one destination burning a scarce slot.
@@ -35,6 +36,7 @@ const BASE_NAV_LINKS = [
   { href: '/notes', label: 'Notes' },
   { href: '/write', label: 'Write' },
   { href: '/projects', label: 'Projects' },
+  { href: '/github', label: 'GitHub' },
   { href: '/graph', label: 'Graph' },
   { href: '/companions', label: 'Companions' },
   { href: '/guide', label: 'Guide' },
@@ -131,7 +133,7 @@ export default function Navbar() {
     window.location.reload()
   }, [])
 
-  // The same six links for everyone, signed in or not. Leaderboard and the
+  // The same seven links for everyone, signed in or not. Leaderboard and the
   // profile used to be appended here when signed in, which made the nav row
   // reflow at sign in and pushed "Sign out" into a two-line wrap. They live in
   // the account menu now.

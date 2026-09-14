@@ -25,8 +25,10 @@ import {
   mergeProductSnapshots,
   PRODUCT_SNAPSHOT_SCHEMA_VERSION,
   type ProductSnapshot,
+  type ProductSnapshotEvent,
 } from '@/lib/sync/product-snapshot'
 import { checkRateLimit } from '@/lib/game/api-cache'
+import { verifyVerifiedEventProof } from '@/lib/sync/verified-event-proof'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -48,6 +50,29 @@ function parseProductPayload(value: unknown): ProductSnapshot | null {
   // exact closed schema). Non-string bodies are rejected up front.
   if (typeof value !== 'string') return null
   return deserializeProductSnapshot(value)
+}
+
+function trustStoredEvents(snapshot: ProductSnapshot, githubId: number): ProductSnapshot {
+  let changed = false
+  const events = snapshot.events.flatMap((event): ProductSnapshotEvent[] => {
+    // GitHub is never a local source. A local GitHub event could only have
+    // come from a pre-receipt client or a forged upload, so retaining it would
+    // preserve unverified XP forever after the upload guard is fixed.
+    if (event.source === 'github' && event.provenance === 'local') {
+      changed = true
+      return []
+    }
+    const trusted = event.provenance !== 'verified' || (
+      event.source === 'github' &&
+      Boolean(event.verifiedProof) &&
+      verifyVerifiedEventProof(event, githubId, event.verifiedProof as string)
+    )
+    if (trusted) return [event]
+    changed = true
+    const { verifiedProof: _verifiedProof, ...withoutProof } = event
+    return [{ ...withoutProof, provenance: 'local' as const }]
+  })
+  return changed ? { ...snapshot, events } : snapshot
 }
 
 export async function POST(request: NextRequest): Promise<Response> {
@@ -84,34 +109,48 @@ export async function POST(request: NextRequest): Promise<Response> {
     })
   }
 
+  const untrustedEvent = incoming.events.find((event) =>
+    event.source === 'github'
+      ? event.provenance !== 'verified' ||
+        !event.verifiedProof ||
+        !verifyVerifiedEventProof(event, session.githubId, event.verifiedProof)
+      : event.provenance === 'verified',
+  )
+  if (untrustedEvent) {
+    return json(400, { error: 'Verified GitHub events must include a server-issued receipt.' })
+  }
+
   const store = getProductStore()
   const handle = session.handle.toLowerCase()
 
-  // Load the existing server copy, then merge without double-counting.
-  const server = await store.get(handle)
-  const now = new Date().toISOString()
-
-  if (server) {
-    // mergeProductSnapshots requires matching guestId.
-    if (server.guestId !== incoming.guestId) {
-      // A different guest on the same account: treat as a fresh baseline but
-      // reject replacing the server copy would silently drop history.
+  // Retry a short optimistic-concurrency window. This keeps two tabs/devices
+  // from silently replacing one another's event history while preserving the
+  // simple provider-neutral store contract.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const serverRecord = await store.getRecord(session.githubId, handle)
+    const server = serverRecord ? trustStoredEvents(serverRecord.snapshot, session.githubId) : null
+    if (server && server.guestId !== incoming.guestId) {
       return json(409, { error: 'This GitHub account already has a different guest profile.' })
     }
-    const merged = mergeProductSnapshots(incoming, server)
-    await store.put(handle, merged, now)
-    return json(200, merged)
+    const merged = server ? mergeProductSnapshots(incoming, server) : incoming
+    const saved = await store.put(
+      session.githubId,
+      handle,
+      merged,
+      new Date().toISOString(),
+      serverRecord?.updatedAt ?? null,
+    )
+    if (saved) return json(200, merged)
   }
 
-  // No server copy yet: this is the first sync. Persist the incoming mergeable copy.
-  await store.put(handle, incoming, now)
-  return json(200, incoming)
+  return json(409, { error: 'This condition changed on another device. Sync again to merge the latest state.' })
 }
 
 export async function GET(): Promise<Response> {
   const session = await getSessionProvider().current()
   if (!session) return json(401, { error: 'Sign in required.' })
-  const snapshot = await getProductStore().get(session.handle.toLowerCase())
+  const record = await getProductStore().getRecord(session.githubId, session.handle)
+  const snapshot = record ? trustStoredEvents(record.snapshot, session.githubId) : null
   if (!snapshot) return json(404, { error: 'This account has never synced the product snapshot.' })
   return json(200, snapshot)
 }
@@ -119,6 +158,6 @@ export async function GET(): Promise<Response> {
 export async function DELETE(): Promise<Response> {
   const session = await getSessionProvider().current()
   if (!session) return json(401, { error: 'Sign in required.' })
-  await getProductStore().remove(session.handle.toLowerCase())
+  await getProductStore().remove(session.githubId)
   return json(204, undefined)
 }
