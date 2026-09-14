@@ -250,6 +250,7 @@ export function GitHubSourcePanel() {
   const [status, setStatus] = useState<'loading' | 'ready' | 'signed-out' | 'error'>('loading')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
+  const [savingSettings, setSavingSettings] = useState(false)
   const [lastSyncSummary, setLastSyncSummary] = useState<string | null>(null)
 
   const hydrateState = useCallback(() => {
@@ -328,30 +329,40 @@ export function GitHubSourcePanel() {
   )
 
   const saveSettings = useCallback(async (): Promise<boolean> => {
-    const response = await fetch('/api/github/repositories', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        trackedRepositoryIds: [...draftTrackedIds].sort(),
-        excludedRepositoryIds: [...draftExcludedIds].sort(),
-        autoIncludePersonal: draftAutoPersonal,
-        autoIncludeOrganizations: [...draftOrganizations].sort(),
-      }),
-    })
-    const body = await responseBody(response)
-    if (!response.ok) {
-      setMessage(errorMessage(body, 'Repository settings could not be saved.'))
+    if (savingSettings) return false
+    setSavingSettings(true)
+    setMessage('')
+    try {
+      const response = await fetch('/api/github/repositories', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trackedRepositoryIds: [...draftTrackedIds].sort(),
+          excludedRepositoryIds: [...draftExcludedIds].sort(),
+          autoIncludePersonal: draftAutoPersonal,
+          autoIncludeOrganizations: [...draftOrganizations].sort(),
+        }),
+      })
+      const body = await responseBody(response)
+      if (!response.ok) {
+        setMessage(errorMessage(body, 'Repository settings could not be saved.'))
+        return false
+      }
+      const data = body as unknown as RepositoryResponse
+      setRepositories(data.repositories)
+      setSettings(data.settings)
+      setDraftTrackedIds(data.settings.trackedRepositoryIds)
+      setDraftExcludedIds(data.settings.excludedRepositoryIds)
+      setDraftAutoPersonal(data.settings.autoIncludePersonal)
+      setDraftOrganizations(data.settings.autoIncludeOrganizations)
+      return true
+    } catch {
+      setMessage('Repository settings could not be saved. Try again.')
       return false
+    } finally {
+      setSavingSettings(false)
     }
-    const data = body as unknown as RepositoryResponse
-    setRepositories(data.repositories)
-    setSettings(data.settings)
-    setDraftTrackedIds(data.settings.trackedRepositoryIds)
-    setDraftExcludedIds(data.settings.excludedRepositoryIds)
-    setDraftAutoPersonal(data.settings.autoIncludePersonal)
-    setDraftOrganizations(data.settings.autoIncludeOrganizations)
-    return true
-  }, [draftAutoPersonal, draftOrganizations, draftTrackedIds])
+  }, [draftAutoPersonal, draftOrganizations, draftTrackedIds, savingSettings])
 
   const syncNow = useCallback(async () => {
     if (!productState) return
@@ -594,9 +605,22 @@ export function GitHubSourcePanel() {
               <button type="button" onClick={() => { setDraftTrackedIds([]); setDraftExcludedIds(repositories.filter((repo) => !repo.archived && repo.canRead && (repo.ownerType === 'User' ? draftAutoPersonal : draftOrganizations.includes(repo.ownerLogin.toLowerCase()))).map((repo) => repo.id)) }} className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider" style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}>
                 Clear tracking
               </button>
-              <button type="button" onClick={() => void saveSettings()} disabled={!settingsChanged || busy} className="ui-row font-ui border px-3 py-2 text-sm disabled:opacity-50" style={{ borderColor: 'var(--accent)' }}>
-                {settingsChanged ? 'Save repository choices' : 'Choices saved'}
+              <button
+                type="button"
+                onClick={() => void saveSettings()}
+                disabled={!settingsChanged || busy || savingSettings}
+                aria-busy={savingSettings}
+                className="ui-row font-ui inline-flex items-center gap-2 border px-3 py-2 text-sm disabled:cursor-wait disabled:opacity-50"
+                style={{ borderColor: 'var(--accent)' }}
+              >
+                {savingSettings && <span aria-hidden="true" className="inline-block h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: 'var(--accent)' }} />}
+                {savingSettings ? 'Saving choices...' : settingsChanged ? 'Save repository choices' : 'Choices saved'}
               </button>
+              {savingSettings && (
+                <span role="status" aria-live="polite" className="font-data self-center text-xs uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>
+                  Saving repository choices
+                </span>
+              )}
             </div>
           </section>
 
