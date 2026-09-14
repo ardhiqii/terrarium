@@ -115,6 +115,17 @@ function cleanSettings(settings: GithubAccountSettings): GithubAccountSettings {
   }
 }
 
+function sameBaselineMap(
+  left: Readonly<Record<string, string>>,
+  right: Readonly<Record<string, string>>,
+): boolean {
+  const leftKeys = Object.keys(left).sort()
+  const rightKeys = Object.keys(right).sort()
+  return leftKeys.length === rightKeys.length && leftKeys.every((key, index) =>
+    key === rightKeys[index] && left[key] === right[key],
+  )
+}
+
 function throwDatabaseError(operation: string, error: { message: string }): never {
   throw new Error(`Supabase ${operation} failed: ${error.message}`)
 }
@@ -218,6 +229,38 @@ export class SupabaseGithubAccountStore implements GithubAccountStore {
       .maybeSingle()
     if (error) throwDatabaseError('github_accounts.saveSettings', error)
     if (!data) throw new Error('GitHub account credential not found')
+  }
+
+  async advanceBaseline(
+    githubId: number,
+    expectedBaselineByRepositoryId: Readonly<Record<string, string>>,
+    nextBaselineByRepositoryId: Readonly<Record<string, string>>,
+    lastSyncedAt: string | null,
+  ): Promise<boolean> {
+    const current = await this.get(githubId)
+    if (!current) throw new Error('GitHub account credential not found')
+    if (sameBaselineMap(current.settings.baselineByRepositoryId, nextBaselineByRepositoryId)) return true
+    if (!sameBaselineMap(current.settings.baselineByRepositoryId, expectedBaselineByRepositoryId)) return false
+
+    const cleanNext = cleanSettings({
+      ...current.settings,
+      baselineByRepositoryId: nextBaselineByRepositoryId,
+      lastSyncedAt,
+    })
+    const { data, error } = await getSupabaseAdminClient()
+      .from('github_accounts')
+      .update({
+        baseline_by_repository_id_json: cleanNext.baselineByRepositoryId,
+        last_synced_at: cleanNext.lastSyncedAt,
+      })
+      .eq('github_id', githubId)
+      .eq('baseline_by_repository_id_json', current.settings.baselineByRepositoryId)
+      .select('github_id')
+      .maybeSingle()
+    if (error) throwDatabaseError('github_accounts.advanceBaseline', error)
+    if (data) return true
+    const latest = await this.get(githubId)
+    return Boolean(latest && sameBaselineMap(latest.settings.baselineByRepositoryId, nextBaselineByRepositoryId))
   }
 
   async remove(githubId: number): Promise<void> {

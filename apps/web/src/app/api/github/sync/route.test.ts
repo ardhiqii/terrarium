@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
+import { verifyGithubSyncCheckpoint } from '@/lib/sync/github-sync-checkpoint'
 
 const mocks = vi.hoisted(() => ({
   settings: {
@@ -104,7 +105,9 @@ describe('POST /api/github/sync', () => {
     expect(body.kind).toBe('baseline')
     expect(body.events).toEqual([])
     expect(body.newBaselineRepositoryIds).toEqual(['101'])
-    expect(mocks.settings.baselineByRepositoryId['101']).toMatch(/^20\d\d-/u)
+    expect(mocks.settings.baselineByRepositoryId).toEqual({})
+    expect(body.checkpoint).toEqual(expect.stringMatching(/\./u))
+    expect(mocks.saveSettings).not.toHaveBeenCalled()
   })
 
   it('filters by the stored baseline and sends only normalized verified events', async () => {
@@ -174,6 +177,39 @@ describe('POST /api/github/sync', () => {
 
     expect(response.status).toBe(200)
     expect(body.repositoryCount).toBe(0)
+    expect(mocks.fetchEvents).not.toHaveBeenCalled()
+  })
+
+  it('keeps auto-included repositories policy-derived so disabling auto inclusion stops tracking', async () => {
+    mocks.settings = {
+      trackedRepositoryIds: [],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: true,
+      autoIncludeOrganizations: [],
+      baselineByRepositoryId: {},
+      lastSyncedAt: null,
+    }
+
+    const first = await POST(request())
+    expect(first.status).toBe(200)
+    expect(mocks.settings.trackedRepositoryIds).toEqual([])
+
+    mocks.settings.autoIncludePersonal = false
+    const second = await POST(request())
+    expect(second.status).toBe(200)
+    expect((await second.json()).repositoryCount).toBe(0)
+  })
+
+  it('clears a baseline when a complete repository refresh no longer exposes it', async () => {
+    mocks.settings.baselineByRepositoryId = { '101': '2026-01-01T00:00:00.000Z' }
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', repositories: [] })
+
+    const response = await POST(request())
+    const body = await response.json()
+    const checkpoint = verifyGithubSyncCheckpoint(body.checkpoint, 9001)
+
+    expect(response.status).toBe(200)
+    expect(checkpoint?.nextBaselineByRepositoryId).toEqual({})
     expect(mocks.fetchEvents).not.toHaveBeenCalled()
   })
 })

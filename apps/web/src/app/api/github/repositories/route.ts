@@ -34,6 +34,17 @@ function publicSettings(settings: GithubAccountSettings) {
   }
 }
 
+function repositoryIsTracked(
+  repository: GithubRepository,
+  settings: GithubAccountSettings,
+): boolean {
+  if (!repository.canRead || repository.archived) return false
+  if (settings.excludedRepositoryIds.includes(repository.id)) return false
+  if (settings.trackedRepositoryIds.includes(repository.id)) return true
+  if (repository.ownerType === 'User' && settings.autoIncludePersonal) return true
+  return settings.autoIncludeOrganizations.includes(repository.ownerLogin.toLowerCase())
+}
+
 async function context(): Promise<{
   session: Session
   token: string
@@ -69,7 +80,7 @@ export async function GET(): Promise<Response> {
       repositories,
       settings: publicSettings(value.settings),
       approvedRepositoryCount: repositories.length,
-      trackedRepositoryCount: repositories.filter((repo) => value.settings.trackedRepositoryIds.includes(repo.id)).length,
+      trackedRepositoryCount: repositories.filter((repo) => repositoryIsTracked(repo, value.settings)).length,
     })
   } catch {
     return json(500, { error: 'Repository settings could not be loaded.' })
@@ -130,14 +141,29 @@ export async function PUT(request: NextRequest): Promise<Response> {
     const repositories = await availableRepositories(value.token)
     if (repositories instanceof Response) return repositories
     const byId = new Map(repositories.map((repo) => [repo.id, repo]))
-    const unknown = [...settingsPayload.trackedRepositoryIds, ...settingsPayload.excludedRepositoryIds].filter((id) => {
+    const existingTrackedIds = new Set(value.settings.trackedRepositoryIds)
+    const existingExcludedIds = new Set(value.settings.excludedRepositoryIds)
+    const unknownNewTrackedIds = settingsPayload.trackedRepositoryIds.filter((id) => {
       const repository = byId.get(id)
-      return !repository || repository.archived || !repository.canRead
+      return (!repository || repository.archived || !repository.canRead) && !existingTrackedIds.has(id)
     })
-    if (unknown.length > 0) {
+    const unknownNewExcludedIds = settingsPayload.excludedRepositoryIds.filter((id) => {
+      return !byId.has(id) && !existingExcludedIds.has(id)
+    })
+    if (unknownNewTrackedIds.length > 0 || unknownNewExcludedIds.length > 0) {
       return json(400, { error: 'A selected repository is unavailable for activity tracking. Refresh the list and try again.' })
     }
-    if (settingsPayload.trackedRepositoryIds.some((id) => settingsPayload.excludedRepositoryIds.includes(id))) {
+    // A repository can disappear from GitHub after permission revocation or
+    // deletion. Drop stale tracked IDs so they stop contributing immediately,
+    // while retaining an existing exclusion in case access returns later.
+    const trackedRepositoryIds = settingsPayload.trackedRepositoryIds.filter((id) => {
+      const repository = byId.get(id)
+      return repository !== undefined && !repository.archived && repository.canRead
+    })
+    const excludedRepositoryIds = settingsPayload.excludedRepositoryIds.filter((id) => {
+      return byId.has(id) || existingExcludedIds.has(id)
+    })
+    if (trackedRepositoryIds.some((id) => excludedRepositoryIds.includes(id))) {
       return json(400, { error: 'A repository cannot be both tracked and excluded.' })
     }
     const visibleOrganizations = new Set(
@@ -151,18 +177,28 @@ export async function PUT(request: NextRequest): Promise<Response> {
 
     const nextSettings: GithubAccountSettings = {
       ...value.settings,
-      trackedRepositoryIds: settingsPayload.trackedRepositoryIds,
-      excludedRepositoryIds: settingsPayload.excludedRepositoryIds,
+      trackedRepositoryIds,
+      excludedRepositoryIds,
       autoIncludePersonal: settingsPayload.autoIncludePersonal,
       autoIncludeOrganizations: settingsPayload.autoIncludeOrganizations,
     }
-    await getGithubAccountStore().saveSettings(value.session.githubId, nextSettings)
+    const baselineByRepositoryId = { ...nextSettings.baselineByRepositoryId }
+    for (const repository of repositories) {
+      // Re-enabling a source or resuming a repository starts a fresh
+      // checkpoint. Otherwise activity performed while it was paused would
+      // be discovered later and look like new work.
+      if (!repositoryIsTracked(repository, value.settings) && repositoryIsTracked(repository, nextSettings)) {
+        delete baselineByRepositoryId[repository.id]
+      }
+    }
+    const savedSettings: GithubAccountSettings = { ...nextSettings, baselineByRepositoryId }
+    await getGithubAccountStore().saveSettings(value.session.githubId, savedSettings)
     return json(200, {
       githubId: value.session.githubId,
       repositories,
-      settings: publicSettings(nextSettings),
+      settings: publicSettings(savedSettings),
       approvedRepositoryCount: repositories.length,
-      trackedRepositoryCount: settingsPayload.trackedRepositoryIds.length,
+      trackedRepositoryCount: repositories.filter((repo) => repositoryIsTracked(repo, savedSettings)).length,
     })
   } catch {
     return json(500, { error: 'Repository settings could not be saved.' })

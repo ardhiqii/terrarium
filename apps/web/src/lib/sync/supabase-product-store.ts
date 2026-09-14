@@ -44,6 +44,7 @@ export class SupabaseProductStore implements ProductStore {
       if (error.code === '23505') return false
       throwDatabaseError('product_snapshots.put', error)
     }
+    if (updatedAt === expectedUpdatedAt) return false
     const { data, error } = await client
       .from('product_snapshots')
       .update(row)
@@ -79,8 +80,23 @@ export class SupabaseProductStore implements ProductStore {
           .update({ github_id: githubId })
           .eq('handle', normalizeHandle(handle))
           .is('github_id', null)
+          .select('github_id, handle, snapshot_json, updated_at')
+          .maybeSingle()
         if (migrated.error) throwDatabaseError('product_snapshots.migrate', migrated.error)
-        data = { ...data, github_id: githubId }
+        if (migrated.data) {
+          // The conditional update returned a row only when this caller won
+          // the legacy-row claim. If another account won the race, re-read by
+          // immutable ID instead of returning data that belongs to it.
+          data = migrated.data as ProductSnapshotRow
+        } else {
+          const claimed = await client
+            .from('product_snapshots')
+            .select('github_id, handle, snapshot_json, updated_at')
+            .eq('github_id', githubId)
+            .maybeSingle()
+          if (claimed.error) throwDatabaseError('product_snapshots.get', claimed.error)
+          data = claimed.data as ProductSnapshotRow | null
+        }
       }
     }
     if (!data) return null
@@ -103,12 +119,21 @@ export class SupabaseProductStore implements ProductStore {
     return (await this.getRecord(githubId, handle))?.snapshot ?? null
   }
 
-  async remove(githubId: number): Promise<void> {
-    const { error } = await getSupabaseAdminClient()
+  async remove(githubId: number, handle?: string): Promise<void> {
+    const client = getSupabaseAdminClient()
+    const { error } = await client
       .from('product_snapshots')
       .delete()
       .eq('github_id', githubId)
     if (error) throwDatabaseError('product_snapshots.remove', error)
+    if (handle) {
+      const legacy = await client
+        .from('product_snapshots')
+        .delete()
+        .eq('handle', normalizeHandle(handle))
+        .is('github_id', null)
+      if (legacy.error) throwDatabaseError('product_snapshots.remove', legacy.error)
+    }
   }
 }
 

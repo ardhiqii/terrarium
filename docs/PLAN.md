@@ -184,8 +184,10 @@ Add optional GitHub sign-in and derived-state sync:
   connected to the event normalizer; attribution is filtered at the GitHub
   boundary and the existing account-wide caps/deduplication remain in force;
 - sync fan-out is bounded per request, partial reads do not create a new
-  baseline, and a failed receipt issuance leaves the prior checkpoint intact;
-  linked-issue timeline extraction remains a follow-up.
+  baseline, and a signed deferred checkpoint advances the GitHub baseline only
+  after the derived product condition is stored; failed receipt, checkpoint,
+  or product writes leave the prior checkpoint intact. Linked-issue timeline
+  extraction remains a follow-up.
 
 The current prototype expects a GitHub App registration with fine-grained read
 permissions for metadata, contents, pull requests, issues, checks/actions, and

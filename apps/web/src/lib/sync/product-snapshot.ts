@@ -620,7 +620,9 @@ function unionEvents(guest: readonly ProductSnapshotEvent[], server: readonly Pr
   // post-sync upload can upgrade an event without duplicating its XP.
   for (const event of [...server, ...guest]) {
     const existing = result.get(event.eventId)
-    if (!existing || (event.provenance === 'verified' && event.verifiedProof && existing.provenance !== 'verified')) {
+    const receiptBacked = event.provenance === 'verified' && Boolean(event.verifiedProof)
+    const existingReceiptBacked = existing?.provenance === 'verified' && Boolean(existing.verifiedProof)
+    if (!existing || (receiptBacked && !existingReceiptBacked)) {
       result.set(event.eventId, event)
     }
   }

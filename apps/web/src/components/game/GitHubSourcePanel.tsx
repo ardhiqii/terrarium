@@ -21,9 +21,11 @@ import {
   loadBrowserEncounters,
   loadBrowserLedger,
   loadRevealedDraws,
+  loadVerifiedEventProofs,
   saveBrowserEncounters,
   saveBrowserLedger,
   saveRevealedDraws,
+  saveVerifiedEventProofs,
 } from '@/lib/game/product-browser-storage'
 import { saveGuestProfile } from '@/lib/game/guest-profile'
 import {
@@ -32,6 +34,7 @@ import {
   mergeProductSnapshots,
   restoreProductStateFromSnapshot,
 } from '@/lib/sync/product-snapshot'
+import { productEventId } from '@/lib/sync/product-event-id'
 import { CompanionSwitcher } from './CompanionSwitcher'
 import { EncounterReveal } from './EncounterReveal'
 import { ProductActivityPanel } from './ProductActivityPanel'
@@ -143,6 +146,16 @@ function parseVerifiedEventProofs(value: unknown): Record<string, string> {
   return proofs
 }
 
+function proofsFromSnapshotEvents(
+  events: readonly { eventId: string; verifiedProof?: string }[],
+): Record<string, string> {
+  const proofs: Record<string, string> = {}
+  for (const event of events) {
+    if (event.verifiedProof) proofs[event.eventId] = event.verifiedProof
+  }
+  return proofs
+}
+
 async function responseBody(response: Response): Promise<Record<string, unknown>> {
   const body: unknown = await response.json().catch(() => ({}))
   return isRecord(body) ? body : {}
@@ -182,6 +195,8 @@ async function restoreCloudProductState(
   namespace: string,
 ): Promise<{ state: ProductState; message?: string }> {
   try {
+    const storage = browserProductStorage()
+    const localProofs = loadVerifiedEventProofs(storage, namespace)
     const response = await fetch('/api/sync/product', { cache: 'no-store' })
     if (response.status === 401 || response.status === 404) return { state: local }
     const body = await responseBody(response)
@@ -197,14 +212,17 @@ async function restoreCloudProductState(
     }
 
     let restored: ProductState
+    let restoredProofs: Record<string, string>
     if (cloud.guestId === local.profile.guestId) {
-      const merged = mergeProductSnapshots(buildProductSnapshot(local), cloud)
+      const merged = mergeProductSnapshots(buildProductSnapshot(local, undefined, localProofs), cloud)
       restored = restoreProductStateFromSnapshot(merged, local.profile, PROTOTYPE_COMPANION_CATALOG)
+      restoredProofs = proofsFromSnapshotEvents(merged.events)
     } else if (isBlankAccountState(local)) {
       // A fresh browser has a new local guest ID. Adopt the account's cloud ID
       // so future POSTs can continue the recovered profile instead of hitting
       // the route's different-guest conflict guard.
       restored = restoreProductStateFromSnapshot(cloud, local.profile, PROTOTYPE_COMPANION_CATALOG)
+      restoredProofs = proofsFromSnapshotEvents(cloud.events)
     } else {
       return {
         state: local,
@@ -212,6 +230,7 @@ async function restoreCloudProductState(
       }
     }
     saveBrowserProductState(restored, namespace)
+    saveVerifiedEventProofs(storage, restoredProofs, restored.ledger.events.map((event) => productEventId(event.eventId)), namespace)
     return { state: restored, message: 'Cloud condition restored.' }
   } catch {
     return { state: local, message: 'Cloud condition could not be restored; local progress is safe.' }
@@ -350,10 +369,13 @@ export function GitHubSourcePanel() {
         setMessage(errorMessage(body, 'GitHub activity could not be synced.'))
         return
       }
-      const incoming = Array.isArray(body.events)
-        ? body.events.map(parseEvent).filter((event): event is NormalizedEvent => event !== null)
-        : []
       const verifiedEventProofs = parseVerifiedEventProofs(body.verifiedEventProofs)
+      const incoming = Array.isArray(body.events)
+        ? body.events
+          .map(parseEvent)
+          .filter((event): event is NormalizedEvent => event !== null)
+          .filter((event) => Boolean(verifiedEventProofs[productEventId(event.eventId)]))
+        : []
       const next = applyProductEvents(
         productState,
         incoming,
@@ -366,10 +388,27 @@ export function GitHubSourcePanel() {
       saveBrowserEncounters(storage, next.encounters, accountNamespace ?? undefined)
       setProductState(next)
 
+      const persistedProofs = {
+        ...loadVerifiedEventProofs(storage, accountNamespace ?? undefined),
+        ...verifiedEventProofs,
+      }
+      const uploadSnapshot = buildProductSnapshot(next, undefined, persistedProofs)
+      // Save receipts before the cloud upload. The signed checkpoint sent with
+      // the snapshot is committed server-side only after this upload succeeds,
+      // so a failed condition upload remains retryable.
+      saveVerifiedEventProofs(
+        storage,
+        proofsFromSnapshotEvents(uploadSnapshot.events),
+        uploadSnapshot.events.map((event) => event.eventId),
+        accountNamespace ?? undefined,
+      )
+      const checkpoint = typeof body.checkpoint === 'string' ? body.checkpoint : null
+      const snapshotHeaders: HeadersInit = { 'Content-Type': 'application/json' }
+      if (checkpoint) snapshotHeaders['x-github-sync-checkpoint'] = checkpoint
       const snapshotResponse = await fetch('/api/sync/product', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildProductSnapshot(next, undefined, verifiedEventProofs)),
+        headers: snapshotHeaders,
+        body: JSON.stringify(uploadSnapshot),
       })
       const snapshotBody = await responseBody(snapshotResponse)
       const count = typeof body.repositoryCount === 'number' ? body.repositoryCount : 0

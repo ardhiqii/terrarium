@@ -62,4 +62,27 @@ describe('GithubAccountSqliteStore', () => {
     vi.stubEnv('SESSION_SECRET', 'd'.repeat(32))
     expect(await store.getToken(42)).toBeNull()
   })
+
+  it('advances a baseline with compare-and-swap semantics', async () => {
+    vi.stubEnv('SESSION_SECRET', 'e'.repeat(32))
+    const store = new GithubAccountSqliteStore(':memory:')
+    await store.putCredential(identity, 'token', ['repo'])
+    const previous = { '101': '2026-09-12T00:00:00.000Z' }
+    const next = { '101': '2026-09-14T00:00:00.000Z' }
+    await store.saveSettings(42, {
+      trackedRepositoryIds: ['101'],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+      baselineByRepositoryId: previous,
+      lastSyncedAt: null,
+    })
+
+    await expect(store.advanceBaseline(42, previous, next, '2026-09-14T01:00:00.000Z')).resolves.toBe(true)
+    await expect(store.advanceBaseline(42, previous, { '101': '2026-09-15T00:00:00.000Z' }, null)).resolves.toBe(false)
+    await expect(store.getSettings(42)).resolves.toMatchObject({
+      baselineByRepositoryId: next,
+      lastSyncedAt: '2026-09-14T01:00:00.000Z',
+    })
+  })
 })

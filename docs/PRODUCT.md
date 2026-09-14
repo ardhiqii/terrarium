@@ -194,9 +194,13 @@ may count eligible activity that happened since the last checkpoint, using the
 activity date for daily and session caps rather than the sync date. A catch-up
 is summarized as one returning update instead of replaying every reaction.
 Activity from before approval or the initial baseline never awards retroactive
-XP. Receipt issuance completes before a new checkpoint is saved, so a signing
-failure can be retried without consuming eligible activity. If GitHub no
-longer exposes enough history to verify an event, Terrarium does not guess.
+XP. A sync returns a short-lived signed checkpoint, and the GitHub baseline is
+committed only after the derived product condition upload succeeds. This keeps
+an interrupted cloud write retryable; receipt or checkpoint validation failure
+does not consume eligible activity. A repository that disappears, is archived,
+or is paused is cleared back to a fresh baseline before it can resume. If
+GitHub no longer exposes enough history to verify an event, Terrarium does not
+guess.
 
 Commits are evidence of activity rather than unlimited direct XP. Empty and
 generated-only commits award no XP. Active days and work sessions are capped;
