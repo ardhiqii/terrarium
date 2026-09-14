@@ -359,6 +359,22 @@ cloud write when no relevant derived state changed. A new device can restore
 the synced companion condition and verified GitHub activity, but cannot restore
 local note history that was never synced or exported.
 
+## Hosted sync storage
+
+Vercel is stateless from the application's point of view, so its local SQLite
+filesystem is not the canonical account store. Supabase Postgres is the hosted
+storage choice for Terrarium's server-side sync path. It persists the encrypted
+GitHub credential, repository settings and baselines, derived product state,
+and public derived snapshots. The existing GitHub OAuth flow remains the
+identity provider; adopting Supabase does not force a second authentication
+system.
+
+The Supabase migration enables row-level security and does not expose new
+tables automatically. Only the server-side Supabase key may access the tables.
+The local SQLite adapter remains a fallback for development and a single
+persistent home-server deployment with a mounted data volume. Raw note content
+and detailed note history stay local under the condition-only sync decision.
+
 Sync conflicts use a simple split rule. Irreversible progression—XP, evolution,
 Essence, collection membership, and persisted encounters—merges automatically
 and never moves backward. Mutable preferences—active companion choice, nickname,

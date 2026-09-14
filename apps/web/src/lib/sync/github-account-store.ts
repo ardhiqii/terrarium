@@ -12,15 +12,14 @@
  * deployment concern before relying on this on a multi-instance platform.
  */
 
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import path from 'node:path'
 import { getSessionSecret } from './session-cookie'
 import type { GithubIdentity } from './github-oauth'
-
-const CIPHER = 'aes-256-gcm'
-const IV_BYTES = 12
+import { decryptGithubToken, encryptGithubToken } from './github-token-crypto'
+import { getSupabaseGithubAccountStore } from './supabase-github-account-store'
+import { shouldUseSupabase } from './supabase-client'
 
 export interface GithubAccountSettings {
   readonly trackedRepositoryIds: readonly string[]
@@ -36,6 +35,19 @@ export interface GithubAccountRecord {
   readonly handle: string
   readonly scopes: readonly string[]
   readonly settings: GithubAccountSettings
+}
+
+export interface GithubAccountStore {
+  putCredential(
+    identity: GithubIdentity,
+    token: string,
+    scopes: readonly string[],
+  ): Promise<void>
+  getToken(githubId: number): Promise<string | null>
+  get(githubId: number): Promise<GithubAccountRecord | null>
+  getSettings(githubId: number): Promise<GithubAccountSettings>
+  saveSettings(githubId: number, settings: GithubAccountSettings): Promise<void>
+  remove(githubId: number): Promise<void>
 }
 
 interface Row {
@@ -64,44 +76,12 @@ function ensureDir(dbPath: string): void {
   mkdirSync(path.dirname(dbPath), { recursive: true })
 }
 
-function keyFromSecret(secret: string): Buffer {
-  return createHash('sha256').update(`terrarium:github-token:${secret}`).digest()
-}
-
-function encryptToken(token: string, secret: string): {
-  iv: string
-  tag: string
-  ciphertext: string
-} {
-  const iv = randomBytes(IV_BYTES)
-  const cipher = createCipheriv(CIPHER, keyFromSecret(secret), iv)
-  const ciphertext = Buffer.concat([cipher.update(token, 'utf8'), cipher.final()])
-  return {
-    iv: iv.toString('base64url'),
-    tag: cipher.getAuthTag().toString('base64url'),
-    ciphertext: ciphertext.toString('base64url'),
-  }
-}
-
-function decryptToken(row: Row, secret: string): string | null {
-  try {
-    const decipher = createDecipheriv(
-      CIPHER,
-      keyFromSecret(secret),
-      Buffer.from(row.token_iv, 'base64url'),
-    )
-    decipher.setAuthTag(Buffer.from(row.token_tag, 'base64url'))
-    return Buffer.concat([
-      decipher.update(Buffer.from(row.token_ciphertext, 'base64url')),
-      decipher.final(),
-    ]).toString('utf8')
-  } catch {
-    return null
-  }
-}
-
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))]
+}
+
+function uniqueOrganizations(values: readonly string[]): string[] {
+  return [...new Set(values.map((value) => value.trim().toLowerCase()).filter(Boolean))]
 }
 
 function defaultSettings(): GithubAccountSettings {
@@ -135,9 +115,9 @@ function rowSettings(row: Row): GithubAccountSettings {
     trackedRepositoryIds: uniqueStrings(parseJson<string[]>(row.tracked_repository_ids_json, [])),
     excludedRepositoryIds: uniqueStrings(parseJson<string[]>(row.excluded_repository_ids_json, [])),
     autoIncludePersonal: row.auto_include_personal === 1,
-    autoIncludeOrganizations: uniqueStrings(
+    autoIncludeOrganizations: uniqueOrganizations(
       parseJson<string[]>(row.auto_include_organizations_json, []),
-    ).map((value) => value.toLowerCase()),
+    ),
     baselineByRepositoryId,
     lastSyncedAt: row.last_synced_at,
   }
@@ -163,9 +143,7 @@ function cleanSettings(settings: GithubAccountSettings): GithubAccountSettings {
     trackedRepositoryIds: uniqueStrings(settings.trackedRepositoryIds),
     excludedRepositoryIds: uniqueStrings(settings.excludedRepositoryIds),
     autoIncludePersonal: settings.autoIncludePersonal === true,
-    autoIncludeOrganizations: uniqueStrings(settings.autoIncludeOrganizations).map((value) =>
-      value.toLowerCase(),
-    ),
+    autoIncludeOrganizations: uniqueOrganizations(settings.autoIncludeOrganizations),
     baselineByRepositoryId,
     lastSyncedAt: settings.lastSyncedAt && !Number.isNaN(Date.parse(settings.lastSyncedAt))
       ? settings.lastSyncedAt
@@ -173,7 +151,7 @@ function cleanSettings(settings: GithubAccountSettings): GithubAccountSettings {
   }
 }
 
-export class GithubAccountSqliteStore {
+export class GithubAccountSqliteStore implements GithubAccountStore {
   private readonly db: DatabaseSync
 
   constructor(dbPath: string = defaultDbPath()) {
@@ -221,7 +199,7 @@ export class GithubAccountSqliteStore {
     if (!normalizedToken) throw new TypeError('GitHub token must not be empty')
     const current = this.row(identity.githubId)
     const settings = current ? rowSettings(current) : defaultSettings()
-    const encrypted = encryptToken(normalizedToken, secret)
+    const encrypted = encryptGithubToken(normalizedToken, secret)
     this.db
       .prepare(
         `INSERT INTO github_accounts (
@@ -256,7 +234,12 @@ export class GithubAccountSqliteStore {
     const secret = getSessionSecret()
     if (!secret) return null
     const row = this.row(githubId)
-    return row ? decryptToken(row, secret) : null
+    return row
+      ? decryptGithubToken(
+          { iv: row.token_iv, tag: row.token_tag, ciphertext: row.token_ciphertext },
+          secret,
+        )
+      : null
   }
 
   async get(githubId: number): Promise<GithubAccountRecord | null> {
@@ -302,7 +285,8 @@ export class GithubAccountSqliteStore {
 
 let singleton: GithubAccountSqliteStore | null = null
 
-export function getGithubAccountStore(): GithubAccountSqliteStore {
+export function getGithubAccountStore(): GithubAccountStore {
+  if (shouldUseSupabase()) return getSupabaseGithubAccountStore()
   if (!singleton) singleton = new GithubAccountSqliteStore()
   return singleton
 }

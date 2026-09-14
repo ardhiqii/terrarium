@@ -101,7 +101,23 @@ condition, then mount the folder and establish a fresh local note baseline.
 The website cannot scan or sync a mounted folder while it is completely closed;
 reliable background syncing is reserved for a future desktop app.
 
-### 4.3 GitHub
+### 4.3 Hosted sync storage
+
+The server-side sync boundary is durable Postgres storage for deployments that
+may handle requests on more than one short-lived instance. The current hosted
+provider is Supabase. It stores the encrypted GitHub credential, repository
+tracking settings and baselines, derived product snapshots, and opt-in public
+derived profiles. The existing GitHub OAuth/session flow remains owned by
+Terrarium; Supabase is a persistence layer, not a second login requirement.
+
+The local SQLite adapter remains the development and persistent single-server
+fallback. Vercel must use the Supabase adapter. Supabase tables have row-level
+security enabled and are accessed by a server-only key; no database key or
+GitHub token is sent to the browser. Applying the checked-in migration is part
+of deployment. Note contents and detailed note history remain on the user's
+device under the existing condition-only sync contract.
+
+### 4.4 GitHub
 
 GitHub is the primary remote source for developer activity. A connected GitHub
 account may include public repositories, private personal repositories, and

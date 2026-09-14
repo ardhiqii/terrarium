@@ -24,7 +24,29 @@ This runs Stryker, which deliberately introduces bugs into the XP engine and che
 
 Report opens at `reports/mutation/mutation.html`.
 
-Current: **70.69%** across 7 modules. Do not chase 100%. A large share of survivors are provably equivalent mutants, meaning no input can distinguish them, and a good chunk of the rest are blanked display strings the suite intentionally does not assert. `reports/mutation/mutation.html` shows exactly which.
+Current: **69.00% overall / 71.01% of covered mutants** across 7 legacy game modules. The latest full run had 559 killed, 229 survived, 23 with no coverage, 2 timeouts, and 0 errors. Do not chase 100%. A large share of survivors are provably equivalent mutants, meaning no input can distinguish them, and a good chunk of the rest are blanked display strings the suite intentionally does not assert. `reports/mutation/mutation.html` shows exactly which.
+
+### Hosted sync validation
+
+The Supabase adapter has a separate focused mutation run because the default
+configuration still targets the legacy game modules:
+
+```powershell
+npx vitest run apps/web/src/lib/sync/supabase-client.test.ts apps/web/src/lib/sync/supabase-store.test.ts apps/web/src/lib/sync/supabase-product-store.test.ts apps/web/src/lib/sync/supabase-github-account-store.test.ts apps/web/src/app/api/sync/product/route.test.ts
+```
+
+The focused integration contracts cover adapter serialization, normalization,
+errors, product POST/GET/DELETE, replay-safe merging, guest conflicts, payload
+validation, and size limits. The latest run passed **6 files / 33 tests**.
+The latest focused mutation run covered the Supabase adapters and cloud
+rehydration helper with **61.08% overall mutation score, 67.26% of covered
+mutants, 0 timeouts, and 0 errors**. Survivors are reported so they remain
+visible; this score is not a claim that the hosted path is fully hardened.
+
+The real Supabase project was checked manually in the SQL editor on 2026-09-14:
+all three tables (`synced_users`, `github_accounts`, `product_snapshots`) exist,
+and all three report `rls_enabled = true`. Tests must continue using mocks or
+local SQLite; do not put live Supabase calls in the Vitest suite.
 
 ---
 
@@ -100,7 +122,21 @@ To use it once deployed:
 
 ---
 
-## 5. The extension
+## 5. Browser smoke / E2E
+
+There is no Playwright/Cypress runner in this repository yet, so this is a
+real-browser smoke check rather than a committed automated E2E suite. On the
+local Next server, the home, companions, notes, projects, graph, and preview
+pages loaded without runtime errors. The creature API returned 200 for a valid
+handle, 400 for a missing handle, and 404 for an unknown handle. The hosted
+`/github` page also rendered the authenticated repository picker and account
+settings.
+
+Cloud restore still needs to be exercised after this branch is deployed with
+the Vercel Supabase variables; the current browser deployment predates the
+uncommitted adapter changes.
+
+## 6. The extension
 
 **This is the only part no test covers.** Its logic is unit tested, but nothing verifies it renders on a real GitHub page. That check needs you.
 
@@ -124,11 +160,12 @@ Almost always the API base. Open the popup, check the API base URL setting, and 
 
 ---
 
-## 6. What is not done
+## 7. What is not done
 
 Not bugs, deliberate calls:
 
-- **Not deployed.** Everything runs locally. Until it is on Vercel and the extension points at a public origin, none of it works for anyone but you.
+- **This branch is not deployed.** The Vercel Supabase variables and schema are ready, but the adapter and cloud-restore changes remain uncommitted on `main-aufa`. A deployment verification is still required.
+- **Hosted sync is not fully hardened.** Account-rename migration, public-profile visibility enforcement, server-issued verified-event receipts, concurrent merge protection, and SQLite-to-Supabase data migration remain open.
 - **Not on the Chrome Web Store.** Publishing distributes Pokemon sprites under your developer identity, which is a different posture from a personal project. The `SpriteSource` abstraction exists so swapping to original art is one file.
 - **Variant traits** (DESIGN.md 3.5) were dropped on purpose rather than half-built.
 - **`/graph` node labels overlap** on first render. Pre-existing, from the force-layout library settling.

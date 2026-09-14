@@ -27,6 +27,8 @@ import {
   serializeProductSnapshot,
   type ProductSnapshot,
 } from './product-snapshot'
+import { getSupabaseProductStore } from './supabase-product-store'
+import { shouldUseSupabase } from './supabase-client'
 
 /** Same default-db resolution as `sqlite-store.ts`, including the Vitest in-memory override. */
 export function defaultProductDbPath(): string {
@@ -50,7 +52,13 @@ interface Row {
   updated_at: string
 }
 
-export class ProductSqliteStore {
+export interface ProductStore {
+  put(handle: string, snapshot: ProductSnapshot, updatedAt: string): Promise<void>
+  get(handle: string): Promise<ProductSnapshot | null>
+  remove(handle: string): Promise<void>
+}
+
+export class ProductSqliteStore implements ProductStore {
   private readonly db: DatabaseSync
 
   constructor(dbPath: string = defaultProductDbPath()) {
@@ -100,7 +108,8 @@ export class ProductSqliteStore {
 let singleton: ProductSqliteStore | null = null
 
 /** Lazily constructed once per process; reset per test via `resetProductStoreForTests`. */
-export function getProductStore(): ProductSqliteStore {
+export function getProductStore(): ProductStore {
+  if (shouldUseSupabase()) return getSupabaseProductStore()
   if (!singleton) singleton = new ProductSqliteStore()
   return singleton
 }

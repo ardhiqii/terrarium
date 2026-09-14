@@ -65,6 +65,10 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
 - The `/github` source screen now explains the XP map and shows recent verified
   receipts. A live smoke test awarded 50 XP from a post-baseline release and
   active-workday event, then kept XP at 50 on a repeated sync.
+- Supabase project/schema and server-only adapters now provide a durable hosted
+  storage path for Vercel; signed-in GitHub browsers can hydrate blank account
+  namespaces from the cloud snapshot; SQLite remains the local/single-server
+  fallback.
 
 ### Known prototype mismatch
 
@@ -97,13 +101,16 @@ Persist compact per-file scan summaries so changes made while the website is
 closed can be detected without storing a second copy of a large vault in
 ordinary localStorage. Keep the raw note boundary local.
 
-### 2. Harden hosted GitHub persistence and ledger checkpoints
+### 2. Verify hosted GitHub persistence and ledger checkpoints
 
 The GitHub source now has repository selection, encrypted server credentials,
 stable-ID baselines, attributed commit evidence, a `/github` sync surface, and
-verified XP receipts. Replace the temporary hosted SQLite path with durable
-storage and persist checkpoints/event IDs server-side so cold starts do not lose
-tokens, selections, or sync history.
+verified XP receipts. The Supabase adapter, migration, and cloud hydration are
+prepared; deploy the branch with the Vercel variables, then verify OAuth,
+repository selection, baselines, XP, cloud restore, and repeated sync across a
+redeploy. Persist server-issued event receipts and checkpoints so forged
+verified events, cold starts, and concurrent devices cannot duplicate or lose
+sync history.
 
 ### 3. Add the product sync route
 

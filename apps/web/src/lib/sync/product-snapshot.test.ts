@@ -11,6 +11,7 @@ import {
   mergeGuestWithServer,
   mergeProductSnapshots,
   PRODUCT_SNAPSHOT_SCHEMA_VERSION,
+  restoreProductStateFromSnapshot,
   serializeProductSnapshot,
   serializeProductSyncedSnapshot,
   validateProductSnapshot,
@@ -120,6 +121,13 @@ describe('product snapshot', () => {
     expect(serialized).not.toContain('private-note')
     expect(serialized).not.toContain('private seed')
     expect(serialized).not.toContain('secret-tag')
+
+    const restored = restoreProductStateFromSnapshot(snapshot, profileState.profile, PROTOTYPE_COMPANION_CATALOG)
+    expect(restored.encounters.draws[0]?.weights[0]).toMatchObject({
+      matchedTags: [],
+      matchedLanguages: [],
+      matchedFileTypes: [],
+    })
   })
 
   it('unions events and collection references, deduplicates replayed IDs, and keeps a valid guest active companion', () => {
@@ -162,5 +170,52 @@ describe('product snapshot', () => {
     })
 
     expect(mergeGuestWithServer(guest, server).activeCompanionId).toBe('pikachu-family')
+  })
+
+  it('rehydrates a cloud snapshot into a local runtime without restoring source identities', () => {
+    const cloud = buildProductSnapshot(state([event('event-1')]), now)
+    const localProfile = createGuestProfile({ guestId: 'fresh-browser', starterCompanionId: 'pikachu-family', now })
+    const restored = restoreProductStateFromSnapshot(
+      cloud,
+      localProfile,
+      PROTOTYPE_COMPANION_CATALOG,
+    )
+
+    expect(restored.profile.guestId).toBe('guest-1')
+    expect(restored.profile.activeCompanionId).toBe('pikachu-family')
+    expect(restored.profile.sourceBaselines).toEqual([])
+    expect(restored.ledger.events).toHaveLength(1)
+    expect(restored.companions.find((companion) => companion.companionId === 'pikachu-family')?.xp).toBe(25)
+  })
+
+  it('restores the safe event fields while dropping opaque source hashes', () => {
+    const original = buildProductSnapshot(state([event('event-1')]), now)
+    const cloud = {
+      ...original,
+      events: [{
+        ...original.events[0],
+        cap: { key: 'cap-hash', limit: 1 },
+        metadata: {
+          activityCount: 1,
+          bucket: 2,
+          number: 3,
+          repositoryIdHash: 'repo-hash',
+          linkedPullRequestIdHash: 'linked-pr-hash',
+          pullRequestIdHash: 'pr-hash',
+          sessionBucket: '2026-08-28-0',
+        },
+      }],
+    }
+    const restored = restoreProductStateFromSnapshot(
+      cloud,
+      createGuestProfile({ guestId: 'fresh-browser', starterCompanionId: 'pikachu-family', now }),
+      PROTOTYPE_COMPANION_CATALOG,
+    )
+
+    expect(restored.ledger.events[0]).toMatchObject({
+      cap: { key: 'cap-hash', limit: 1 },
+      metadata: { activityCount: 1, bucket: 2, number: 3, sessionBucket: '2026-08-28-0' },
+    })
+    expect(restored.ledger.events[0]?.metadata).not.toHaveProperty('repositoryIdHash')
   })
 })
