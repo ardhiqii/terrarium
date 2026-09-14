@@ -327,6 +327,7 @@ export function GitHubSourcePanel() {
     settings.autoIncludePersonal !== draftAutoPersonal ||
     settings.autoIncludeOrganizations.join('|') !== [...draftOrganizations].sort().join('|')
   )
+  const sourceControlsDisabled = savingSettings || busy
 
   const saveSettings = useCallback(async (): Promise<boolean> => {
     if (savingSettings) return false
@@ -499,7 +500,7 @@ export function GitHubSourcePanel() {
             <button
               type="button"
               onClick={() => void syncNow()}
-              disabled={busy || !productState}
+              disabled={sourceControlsDisabled || !productState}
               className="ui-row font-ui shrink-0 border px-4 py-3 text-sm font-medium disabled:cursor-wait disabled:opacity-50"
               style={{ borderColor: 'var(--accent)', color: 'var(--ink)' }}
             >
@@ -587,28 +588,28 @@ export function GitHubSourcePanel() {
 
             <div className="mt-6 grid gap-3 border-t pt-5 sm:grid-cols-2" style={{ borderColor: 'var(--rule)' }}>
               <label className="flex items-start gap-3 text-sm">
-                <input type="checkbox" checked={draftAutoPersonal} onChange={(event) => setDraftAutoPersonal(event.target.checked)} className="mt-1" />
+                <input type="checkbox" checked={draftAutoPersonal} disabled={sourceControlsDisabled} onChange={(event) => setDraftAutoPersonal(event.target.checked)} className="mt-1" />
                 <span><span className="font-ui block">Auto-include personal repos</span><span className="font-prose text-xs" style={{ color: 'var(--ink-muted)' }}>Future personal repositories get a fresh baseline.</span></span>
               </label>
               {organizations.map((organization) => (
                 <label key={organization} className="flex items-start gap-3 text-sm">
-                  <input type="checkbox" checked={draftOrganizations.includes(organization.toLowerCase())} onChange={() => toggleOrganization(organization.toLowerCase())} className="mt-1" />
+                  <input type="checkbox" checked={draftOrganizations.includes(organization.toLowerCase())} disabled={sourceControlsDisabled} onChange={() => toggleOrganization(organization.toLowerCase())} className="mt-1" />
                   <span><span className="font-ui block">Auto-include {organization}</span><span className="font-prose text-xs" style={{ color: 'var(--ink-muted)' }}>New repos in this approved organization start fresh.</span></span>
                 </label>
               ))}
             </div>
 
             <div className="mt-5 flex flex-wrap gap-3">
-              <button type="button" onClick={() => { setDraftTrackedIds(repositories.filter((repo) => repo.canRead && !repo.archived).map((repo) => repo.id)); setDraftExcludedIds([]) }} className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider" style={{ borderColor: 'var(--rule)' }}>
+              <button type="button" disabled={sourceControlsDisabled} onClick={() => { setDraftTrackedIds(repositories.filter((repo) => repo.canRead && !repo.archived).map((repo) => repo.id)); setDraftExcludedIds([]) }} className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50" style={{ borderColor: 'var(--rule)' }}>
                 Select all available
               </button>
-              <button type="button" onClick={() => { setDraftTrackedIds([]); setDraftExcludedIds(repositories.filter((repo) => !repo.archived && repo.canRead && (repo.ownerType === 'User' ? draftAutoPersonal : draftOrganizations.includes(repo.ownerLogin.toLowerCase()))).map((repo) => repo.id)) }} className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider" style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}>
+              <button type="button" disabled={sourceControlsDisabled} onClick={() => { setDraftTrackedIds([]); setDraftExcludedIds(repositories.filter((repo) => !repo.archived && repo.canRead && (repo.ownerType === 'User' ? draftAutoPersonal : draftOrganizations.includes(repo.ownerLogin.toLowerCase()))).map((repo) => repo.id)) }} className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50" style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}>
                 Clear tracking
               </button>
               <button
                 type="button"
                 onClick={() => void saveSettings()}
-                disabled={!settingsChanged || busy || savingSettings}
+                disabled={!settingsChanged || sourceControlsDisabled}
                 aria-busy={savingSettings}
                 className="ui-row font-ui inline-flex items-center gap-2 border px-3 py-2 text-sm disabled:cursor-wait disabled:opacity-50"
                 style={{ borderColor: 'var(--accent)' }}
@@ -639,8 +640,8 @@ export function GitHubSourcePanel() {
                     const checked = draftTrackedIds.includes(repository.id) || (autoTracked && !draftExcludedIds.includes(repository.id))
                     const disabled = repository.archived || !repository.canRead
                     return (
-                      <label key={repository.id} className="flex items-start gap-3 px-5 py-4" style={{ opacity: disabled ? 0.55 : 1 }}>
-                        <input type="checkbox" checked={checked} disabled={disabled} onChange={() => toggleTracked(repository)} className="mt-1" />
+                      <label key={repository.id} className="flex items-start gap-3 px-5 py-4" style={{ opacity: disabled || sourceControlsDisabled ? 0.55 : 1 }}>
+                        <input type="checkbox" checked={checked} disabled={disabled || sourceControlsDisabled} onChange={() => toggleTracked(repository)} className="mt-1" />
                         <span className="min-w-0 flex-1">
                           <span className="flex flex-wrap items-center gap-2">
                             <span className="font-ui text-sm font-medium">{repository.name}</span>
