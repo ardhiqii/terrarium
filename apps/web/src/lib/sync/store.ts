@@ -41,6 +41,8 @@
 
 import type { SyncStore } from './types'
 import { getSyncStore as getSqliteStore } from './sqlite-store'
+import { getSupabaseSyncStore } from './supabase-store'
+import { shouldUseSupabase } from './supabase-client'
 
 /**
  * Picks the implementation. One branch today, which is the honest state of
@@ -49,6 +51,7 @@ import { getSyncStore as getSqliteStore } from './sqlite-store'
  * local edit rather than a restructure.
  */
 function selectStore(): SyncStore {
+  if (shouldUseSupabase()) return getSupabaseSyncStore()
   return getSqliteStore()
 }
 

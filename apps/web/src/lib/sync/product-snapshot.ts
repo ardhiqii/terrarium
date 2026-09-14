@@ -19,6 +19,8 @@ import {
   type Provenance,
   type SourceKind,
 } from '../game/events'
+import { createProductState, type ProductState } from '../game/product-state'
+import type { CompanionCatalog } from '../game/companion-catalog'
 import type {
   EncounterState,
   PersistedEncounterDraw,
@@ -28,7 +30,7 @@ import type {
   GuestProfile,
   LocalSourceBaseline,
 } from '../game/guest-profile'
-import type { ProductCompanionState, ProductState } from '../game/product-state'
+import type { ProductCompanionState } from '../game/product-state'
 
 export const PRODUCT_SNAPSHOT_SCHEMA_VERSION = 1
 /** Descriptive alias for callers that distinguish this from the legacy snapshot. */
@@ -609,6 +611,54 @@ function toNormalizedEvent(event: ProductSnapshotEvent): NormalizedEvent {
     ...(event.cap ? { cap: event.cap } : {}),
     ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
   }
+}
+
+/**
+ * Rehydrate a browser runtime from a server snapshot.
+ *
+ * Snapshot fields intentionally contain hashes instead of local source IDs,
+ * so restored baselines are not copied into the local source observer. The
+ * event ledger and encounter history are still sufficient to rebuild XP,
+ * collection, and progression without transferring note or repository text.
+ */
+export function restoreProductStateFromSnapshot(
+  snapshot: ProductSnapshot,
+  fallbackProfile: GuestProfile,
+  catalog: CompanionCatalog,
+): ProductState {
+  validateProductSnapshot(snapshot)
+  const profile: GuestProfile = {
+    ...fallbackProfile,
+    schemaVersion: 1,
+    guestId: snapshot.guestId,
+    createdAt: snapshot.createdAt,
+    updatedAt: snapshot.updatedAt,
+    activeCompanionId: snapshot.activeCompanionId,
+    collection: snapshot.collection.map((reference) => ({ ...reference })),
+    recoverabilityWarning: { ...snapshot.recoverabilityWarning },
+  }
+  const encounters: EncounterState = {
+    meter: snapshot.encounters.meter,
+    totalProgress: snapshot.encounters.totalProgress,
+    nextSequence: snapshot.encounters.nextSequence,
+    draws: snapshot.encounters.draws.map((draw): PersistedEncounterDraw => ({
+      ...draw,
+      weights: draw.weights.map((weight) => ({
+        ...weight,
+        matchedTags: [],
+        matchedLanguages: [],
+        matchedFileTypes: [],
+      })),
+    })),
+    processedTriggerIds: [...snapshot.encounters.processedTriggerIds],
+    essenceByFamily: { ...snapshot.encounters.essenceByFamily },
+  }
+  return createProductState(
+    profile,
+    { events: snapshot.events.map(toNormalizedEvent) },
+    encounters,
+    catalog,
+  )
 }
 
 function mergeCompanions(

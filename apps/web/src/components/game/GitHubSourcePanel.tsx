@@ -26,7 +26,12 @@ import {
   saveRevealedDraws,
 } from '@/lib/game/product-browser-storage'
 import { saveGuestProfile } from '@/lib/game/guest-profile'
-import { buildProductSnapshot } from '@/lib/sync/product-snapshot'
+import {
+  buildProductSnapshot,
+  deserializeProductSnapshot,
+  mergeProductSnapshots,
+  restoreProductStateFromSnapshot,
+} from '@/lib/sync/product-snapshot'
 import { CompanionSwitcher } from './CompanionSwitcher'
 import { EncounterReveal } from './EncounterReveal'
 import { ProductActivityPanel } from './ProductActivityPanel'
@@ -147,6 +152,61 @@ function browserState(namespace?: string): ProductState {
   )
 }
 
+function saveBrowserProductState(state: ProductState, namespace: string): void {
+  const storage = browserProductStorage()
+  saveGuestProfile(storage, state.profile, `terrarium:guest-profile:${namespace}`)
+  saveBrowserLedger(storage, state.ledger, namespace)
+  saveBrowserEncounters(storage, state.encounters, namespace)
+}
+
+function isBlankAccountState(state: ProductState): boolean {
+  return state.ledger.events.length === 0 &&
+    state.profile.sourceBaselines.length === 0 &&
+    state.profile.collection.length === 1 &&
+    state.profile.collection[0]?.acquisition === 'starter'
+}
+
+async function restoreCloudProductState(
+  local: ProductState,
+  namespace: string,
+): Promise<{ state: ProductState; message?: string }> {
+  try {
+    const response = await fetch('/api/sync/product', { cache: 'no-store' })
+    if (response.status === 401 || response.status === 404) return { state: local }
+    const body = await responseBody(response)
+    if (!response.ok) {
+      return {
+        state: local,
+        message: errorMessage(body, 'Cloud condition could not be restored; local progress is safe.'),
+      }
+    }
+    const cloud = deserializeProductSnapshot(JSON.stringify(body))
+    if (!cloud) {
+      return { state: local, message: 'Cloud condition was invalid; local progress is safe.' }
+    }
+
+    let restored: ProductState
+    if (cloud.guestId === local.profile.guestId) {
+      const merged = mergeProductSnapshots(buildProductSnapshot(local), cloud)
+      restored = restoreProductStateFromSnapshot(merged, local.profile, PROTOTYPE_COMPANION_CATALOG)
+    } else if (isBlankAccountState(local)) {
+      // A fresh browser has a new local guest ID. Adopt the account's cloud ID
+      // so future POSTs can continue the recovered profile instead of hitting
+      // the route's different-guest conflict guard.
+      restored = restoreProductStateFromSnapshot(cloud, local.profile, PROTOTYPE_COMPANION_CATALOG)
+    } else {
+      return {
+        state: local,
+        message: 'A different local guest profile is already active. Local progress was kept; export or review it before restoring the cloud condition.',
+      }
+    }
+    saveBrowserProductState(restored, namespace)
+    return { state: restored, message: 'Cloud condition restored.' }
+  } catch {
+    return { state: local, message: 'Cloud condition could not be restored; local progress is safe.' }
+  }
+}
+
 export function GitHubSourcePanel() {
   const [repositories, setRepositories] = useState<GithubRepository[]>([])
   const [settings, setSettings] = useState<GithubSettings | null>(null)
@@ -190,7 +250,10 @@ export function GitHubSourcePanel() {
       setDraftOrganizations(data.settings.autoIncludeOrganizations)
       const namespace = `github-${data.githubId}`
       setAccountNamespace(namespace)
-      setProductState(browserState(namespace))
+      const localState = browserState(namespace)
+      const hydrated = await restoreCloudProductState(localState, namespace)
+      setProductState(hydrated.state)
+      if (hydrated.message) setMessage(hydrated.message)
       setRevealedDraws(loadRevealedDraws(browserProductStorage(), namespace))
       setStatus('ready')
     } catch (error) {

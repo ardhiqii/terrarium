@@ -159,7 +159,7 @@ progressive enhancement; one-time directory selection or drag-and-drop scanning
 must remain available where that API is unsupported. Monitoring a closed
 browser is out of scope for this phase.
 
-**Status: partial — verified event normalization, GitHub OAuth credential storage, repository selection, and the first activity-sync slice are shipped; durable hosted storage and broader account/profile migration remain.**
+**Status: partial — verified event normalization, GitHub OAuth credential storage, repository selection, the first activity-sync slice, the Supabase durable-store adapter, and cloud product hydration are implemented; production deployment verification and broader account/profile migration remain.**
 
 ## Phase 5. GitHub identity and sync
 
@@ -190,13 +190,19 @@ The current prototype expects a GitHub App registration with fine-grained read
 permissions for metadata, contents, pull requests, issues, checks/actions, and
 the required organization approval. It deliberately does not request the
 classic `repo` scope, which grants broader write-capable access. Before
-production, move the account/settings store to durable hosted storage and
-managed key protection.
+production, keep `SUPABASE_URL` and the server-only `SUPABASE_SECRET_KEY` in the
+deployment secret store and apply `supabase/migrations/20260914000000_initial_sync.sql`.
+The migration enables RLS and grants access only to the server role.
 
-The local SQLite adapter is suitable for the persistent home-server path, not
-for a multi-instance/serverless deployment. The temporary preview can show the
-UI/build flow, but repository credentials and product state need a durable
-shared store before relying on it for real account recovery.
+The Supabase adapter covers the public sync snapshot, GitHub account/settings,
+and product snapshot stores. The browser restores a blank account namespace
+from the cloud snapshot and merges same-guest local/cloud history while keeping
+source identities local. The local SQLite adapter remains suitable for the
+persistent home-server path and local development, but not for a
+multi-instance/serverless deployment. Remaining hosted hardening work includes
+server-issued event receipts, concurrent merge protection, stable GitHub-ID
+account migration, public-profile visibility enforcement, and a
+restart/redeploy end-to-end test.
 
 - GitHub OAuth identifies the user and protects recovery;
 - selected public and private GitHub events are server-verified;
