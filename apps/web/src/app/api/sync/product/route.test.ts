@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { asCompanionId, asEventId, type NormalizedEvent } from '@/lib/game/events'
 import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
 import { createEncounterState } from '@/lib/game/encounters'
@@ -17,15 +19,21 @@ function request(method: string, body?: string, headers?: HeadersInit): NextRequ
   })
 }
 
+function fakeGithubId(handle: string): number {
+  let hash = 0
+  for (const character of handle) hash = (hash * 31 + character.charCodeAt(0)) | 0
+  return Math.abs(hash) || 1
+}
+
 function snapshot(eventIds: readonly string[] = [], guestId = 'guest-1'): ProductSnapshot {
   const now = '2026-08-28T10:00:00.000Z'
   const profile = createGuestProfile({ guestId, starterCompanionId: 'pikachu-family', now })
   const events: NormalizedEvent[] = eventIds.map((eventId) => ({
     eventId: asEventId(eventId),
     companionId: asCompanionId('pikachu-family'),
-    source: 'github',
-    sourceId: 'github:42',
-    provenance: 'verified',
+    source: 'mounted-markdown',
+    sourceId: 'vault:42',
+    provenance: 'local',
     category: 'work-session',
     occurredAt: now,
   }))
@@ -113,5 +121,85 @@ describe('POST/GET/DELETE /api/sync/product', () => {
       'content-length': String(512 * 1024 + 1),
     }))).status).toBe(413)
     expect((await GET()).status).toBe(404)
+  })
+
+  it('rejects a client-forged verified GitHub event without a server receipt', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST } = await import('./route')
+    const value = snapshot(['event-1'])
+    const forged: ProductSnapshot = {
+      ...value,
+      events: [{ ...value.events[0], provenance: 'verified' }],
+    }
+
+    const response = await POST(request('POST', JSON.stringify(forged)))
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: expect.stringMatching(/server-issued receipt/i) })
+  })
+
+  it('rejects a forged GitHub event downgraded to local provenance', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST } = await import('./route')
+    const value = snapshot(['event-1'])
+    const forged: ProductSnapshot = {
+      ...value,
+      events: [{ ...value.events[0], source: 'github', provenance: 'local' }],
+    }
+
+    const response = await POST(request('POST', JSON.stringify(forged)))
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: expect.stringMatching(/server-issued receipt/i) })
+  })
+
+  it('downgrades legacy stored verified events without a valid receipt before returning them', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const dbPath = path.join(tmpdir(), `terrarium-product-route-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.db`)
+    vi.stubEnv('SYNC_DB_PATH', dbPath)
+    const { POST, GET } = await import('./route')
+    const { getProductStore } = await import('@/lib/sync/product-store')
+
+    await POST(request('POST', JSON.stringify(snapshot(['legacy-event']))))
+    const store = getProductStore()
+    const record = await store.getRecord(fakeGithubId('octocat'), 'octocat')
+    expect(record).not.toBeNull()
+    if (!record) return
+
+    const legacyVerified: ProductSnapshot = {
+      ...record.snapshot,
+      events: [{ ...record.snapshot.events[0], provenance: 'verified' }],
+    }
+    expect(await store.put(record.githubId, record.handle, legacyVerified, '2026-08-28T10:01:00.000Z', record.updatedAt)).toBe(true)
+
+    const response = await GET()
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body.events[0]).toMatchObject({ provenance: 'local' })
+    expect((await store.getRecord(record.githubId, record.handle))?.snapshot.events[0].provenance).toBe('verified')
+  })
+
+  it('drops legacy local GitHub events instead of preserving unverified XP', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const dbPath = path.join(tmpdir(), `terrarium-product-route-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.db`)
+    vi.stubEnv('SYNC_DB_PATH', dbPath)
+    const { POST, GET } = await import('./route')
+    const { getProductStore } = await import('@/lib/sync/product-store')
+
+    await POST(request('POST', JSON.stringify(snapshot(['legacy-event']))))
+    const store = getProductStore()
+    const record = await store.getRecord(fakeGithubId('octocat'), 'octocat')
+    expect(record).not.toBeNull()
+    if (!record) return
+
+    const legacyForged: ProductSnapshot = {
+      ...record.snapshot,
+      events: [{ ...record.snapshot.events[0], source: 'github', provenance: 'local' }],
+    }
+    expect(await store.put(record.githubId, record.handle, legacyForged, '2026-08-28T10:02:00.000Z', record.updatedAt)).toBe(true)
+
+    const response = await GET()
+    expect(response.status).toBe(200)
+    expect((await response.json()).events).toEqual([])
   })
 })

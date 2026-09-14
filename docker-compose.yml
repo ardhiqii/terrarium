@@ -12,6 +12,14 @@ services:
       # renders, but the garden creature stats are empty. Set in .env.
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - GITHUB_LOGIN=${GITHUB_LOGIN:-}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
+      - SESSION_SECRET=${SESSION_SECRET:-}
+      - AUTH_BASE_URL=${AUTH_BASE_URL:-}
+      - SYNC_STORE=${SYNC_STORE:-supabase}
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_SECRET_KEY=${SUPABASE_SECRET_KEY:-}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
     ports:
       # localhost-only: Cloudflare tunnel reaches it, internet never hits it raw.
       - "127.0.0.1:3101:3101"

@@ -37,6 +37,12 @@ Notes are **observations**. Projects are **field studies**. The creature is a **
 
 Game UI never intrudes on a reading surface. This is not negotiable; it is the thing that makes the concept work.
 
+The GitHub source is a primary working surface, not an account-only setting.
+It stays visible in the main navigation beside Projects so a developer can
+move from what they built to the remote activity that can grow the companion.
+The account menu remains for identity, profile, leaderboard, and sign-out
+actions.
+
 ---
 
 ## 2. Visual system

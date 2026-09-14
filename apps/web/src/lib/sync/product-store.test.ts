@@ -19,25 +19,26 @@ function baseSnapshot() {
 }
 
 describe('ProductSqliteStore', () => {
-  it('round-trips a put then get on a fresh in-memory store', async () => {
+  it('round-trips a versioned put then get on a fresh in-memory store', async () => {
     const store = new ProductSqliteStore(':memory:')
     const snapshot = baseSnapshot()
-    await store.put('octocat', snapshot, snapshot.updatedAt)
-    const fetched = await store.get('octocat')
+    await expect(store.put(42, 'octocat', snapshot, snapshot.updatedAt, null)).resolves.toBe(true)
+    const fetched = await store.get(42, 'octocat')
     expect(fetched).toEqual(snapshot)
   })
 
-  it('returns null for a handle that has never synced', async () => {
+  it('returns null for an identity that has never synced', async () => {
     const store = new ProductSqliteStore(':memory:')
-    const fetched = await store.get('nobody')
+    const fetched = await store.get(404, 'nobody')
     expect(fetched).toBeNull()
   })
 
-  it('upserts and forgets a handle', async () => {
+  it('rejects a stale writer and forgets an identity', async () => {
     const store = new ProductSqliteStore(':memory:')
     const snapshot = baseSnapshot()
-    await store.put('octocat', snapshot, snapshot.updatedAt)
-    await store.remove('octocat')
-    expect(await store.get('octocat')).toBeNull()
+    await store.put(42, 'octocat', snapshot, snapshot.updatedAt, null)
+    expect(await store.put(42, 'octocat', snapshot, '2026-09-12T01:00:00.000Z', 'stale')).toBe(false)
+    await store.remove(42)
+    expect(await store.get(42, 'octocat')).toBeNull()
   })
 })

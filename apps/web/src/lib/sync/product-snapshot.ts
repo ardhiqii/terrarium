@@ -31,6 +31,7 @@ import type {
   LocalSourceBaseline,
 } from '../game/guest-profile'
 import type { ProductCompanionState } from '../game/product-state'
+import { productEventId } from './product-event-id'
 
 export const PRODUCT_SNAPSHOT_SCHEMA_VERSION = 1
 /** Descriptive alias for callers that distinguish this from the legacy snapshot. */
@@ -55,6 +56,8 @@ export interface ProductSnapshotEvent {
   readonly provenance: Provenance
   readonly category: EventCategory
   readonly occurredAt: string
+  /** Server-issued HMAC receipt for verified GitHub events. */
+  readonly verifiedProof?: string
   readonly cap?: { readonly key: string; readonly limit: number }
   readonly metadata?: ProductEventMetadata
 }
@@ -218,6 +221,7 @@ function assertEnum<T extends string>(value: unknown, values: readonly T[], fiel
 
 /** A deterministic opaque ID suitable for sync while remaining stable across devices. */
 function opaqueId(value: string, prefix: string): string {
+  if (prefix === 'event') return productEventId(value)
   let first = 2166136261
   let second = 2246822519
   for (let index = 0; index < value.length; index += 1) {
@@ -247,14 +251,21 @@ function safeMetadata(metadata: Readonly<Record<string, EventMetadataValue>> | u
   return Object.keys(result).length > 0 ? result : undefined
 }
 
-function snapshotEvent(event: NormalizedEvent): ProductSnapshotEvent {
+export function productSnapshotEvent(
+  event: NormalizedEvent,
+  verifiedProof?: string,
+  downgradeUnprovenVerified = false,
+): ProductSnapshotEvent {
+  const eventId = opaqueId(event.eventId, 'event')
+  const trustedVerified = event.provenance !== 'verified' || Boolean(verifiedProof)
   return {
-    eventId: opaqueId(event.eventId, 'event'),
+    eventId,
     companionId: event.companionId,
     source: event.source,
-    provenance: event.provenance,
+    provenance: downgradeUnprovenVerified && !trustedVerified ? 'local' : event.provenance,
     category: event.category,
     occurredAt: event.occurredAt,
+    ...(trustedVerified && verifiedProof ? { verifiedProof } : {}),
     ...(event.cap
       ? { cap: { key: opaqueId(event.cap.key, 'cap'), limit: event.cap.limit } }
       : {}),
@@ -345,6 +356,7 @@ function snapshotEncounters(encounters: EncounterState): ProductSnapshotEncounte
 export function buildProductSnapshot(
   state: ProductState,
   generatedAt = new Date().toISOString(),
+  verifiedProofs: Readonly<Record<string, string>> = {},
 ): ProductSnapshot {
   const profile = state.profile
   const snapshot: ProductSnapshot = {
@@ -358,7 +370,10 @@ export function buildProductSnapshot(
     collection: profile.collection.map(snapshotCollectionReference),
     sourceBaselines: profile.sourceBaselines.map(snapshotBaseline),
     recoverabilityWarning: { ...profile.recoverabilityWarning },
-    events: state.ledger.events.map(snapshotEvent),
+    events: state.ledger.events.map((event) => {
+      const eventId = opaqueId(event.eventId, 'event')
+      return productSnapshotEvent(event, verifiedProofs[eventId], true)
+    }),
     encounters: snapshotEncounters(state.encounters),
   }
   validateProductSnapshot(snapshot)
@@ -397,13 +412,17 @@ function validateMetadata(value: unknown, field: string): asserts value is Produ
 function validateEvent(value: unknown, index: number): asserts value is ProductSnapshotEvent {
   const field = `events[${index}]`
   if (!isRecord(value)) throw new TypeError(`${field} must be an object`)
-  assertExactKeys(value, ['eventId', 'companionId', 'source', 'provenance', 'category', 'occurredAt'], ['cap', 'metadata'], field)
+  assertExactKeys(value, ['eventId', 'companionId', 'source', 'provenance', 'category', 'occurredAt'], ['verifiedProof', 'cap', 'metadata'], field)
   assertNonEmptyString(value.eventId, `${field}.eventId`)
   assertNonEmptyString(value.companionId, `${field}.companionId`)
   assertEnum(value.source, SOURCE_KINDS, `${field}.source`)
   assertEnum(value.provenance, PROVENANCES, `${field}.provenance`)
   assertEnum(value.category, EVENT_CATEGORIES, `${field}.category`)
   assertTimestamp(value.occurredAt, `${field}.occurredAt`)
+  if ('verifiedProof' in value) {
+    assertNonEmptyString(value.verifiedProof, `${field}.verifiedProof`)
+    if (value.verifiedProof.length > 128) throw new TypeError(`${field}.verifiedProof is too long`)
+  }
   if ('cap' in value) {
     if (!isRecord(value.cap)) throw new TypeError(`${field}.cap must be an object`)
     assertExactKeys(value.cap, ['key', 'limit'], [], `${field}.cap`)
@@ -594,6 +613,20 @@ function unionById<T>(left: readonly T[], right: readonly T[], id: (value: T) =>
   return [...result.values()]
 }
 
+function unionEvents(guest: readonly ProductSnapshotEvent[], server: readonly ProductSnapshotEvent[]): ProductSnapshotEvent[] {
+  const result = new Map<string, ProductSnapshotEvent>()
+  // The stored server event wins by default. A freshly receipt-backed event
+  // may replace an older local copy with the same stable ID so a first
+  // post-sync upload can upgrade an event without duplicating its XP.
+  for (const event of [...server, ...guest]) {
+    const existing = result.get(event.eventId)
+    if (!existing || (event.provenance === 'verified' && event.verifiedProof && existing.provenance !== 'verified')) {
+      result.set(event.eventId, event)
+    }
+  }
+  return [...result.values()]
+}
+
 function toNormalizedEvent(event: ProductSnapshotEvent): NormalizedEvent {
   const metadata: Record<string, EventMetadataValue> = {}
   if (event.metadata?.activityCount !== undefined) metadata.activityCount = event.metadata.activityCount
@@ -712,7 +745,7 @@ export function mergeGuestWithServer(guest: ProductSnapshot, server: ProductSnap
   validateProductSnapshot(server)
   if (guest.guestId !== server.guestId) throw new TypeError('Cannot merge snapshots for different guests')
 
-  const events = unionById(guest.events, server.events, (event) => event.eventId).sort(
+  const events = unionEvents(guest.events, server.events).sort(
     (left, right) => left.occurredAt.localeCompare(right.occurredAt) || left.eventId.localeCompare(right.eventId),
   )
   const collection = unionById(guest.collection, server.collection, (reference) => reference.referenceId).sort(

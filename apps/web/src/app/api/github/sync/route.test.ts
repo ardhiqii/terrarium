@@ -64,6 +64,7 @@ function request(): NextRequest {
 
 describe('POST /api/github/sync', () => {
   beforeEach(() => {
+    vi.stubEnv('SESSION_SECRET', 's'.repeat(32))
     mocks.settings = {
       trackedRepositoryIds: ['101'],
       excludedRepositoryIds: [],
@@ -119,6 +120,10 @@ describe('POST /api/github/sync', () => {
       'work-session',
     ])
     expect(body.events.every((event: { provenance: string }) => event.provenance === 'verified')).toBe(true)
+    expect(Object.values(body.verifiedEventProofs)).toEqual([
+      expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
+      expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
+    ])
     expect(mocks.fetchEvents).toHaveBeenCalledWith(expect.objectContaining({
       login: 'octo',
       token: 'server-token',
@@ -141,6 +146,17 @@ describe('POST /api/github/sync', () => {
     expect(body.kind).toBe('partial')
     expect(body.newBaselineRepositoryIds).toEqual([])
     expect(mocks.settings.baselineByRepositoryId).toEqual({})
+  })
+
+  it('does not advance the baseline when receipt issuance fails', async () => {
+    mocks.settings.baselineByRepositoryId = { '101': '2026-01-01T00:00:00.000Z' }
+    vi.stubEnv('SESSION_SECRET', '')
+
+    const response = await POST(request())
+
+    expect(response.status).toBe(500)
+    expect(mocks.settings.baselineByRepositoryId).toEqual({ '101': '2026-01-01T00:00:00.000Z' })
+    expect(mocks.saveSettings).not.toHaveBeenCalled()
   })
 
   it('honors a manual exclusion even when automatic personal inclusion is enabled', async () => {

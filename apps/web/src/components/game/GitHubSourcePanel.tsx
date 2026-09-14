@@ -132,6 +132,17 @@ function parseEvent(value: unknown): NormalizedEvent | null {
   return event
 }
 
+function parseVerifiedEventProofs(value: unknown): Record<string, string> {
+  if (!isRecord(value)) return {}
+  const proofs: Record<string, string> = {}
+  for (const [eventId, proof] of Object.entries(value)) {
+    if (/^event-[0-9a-f]{8}-[0-9a-f]{8}$/u.test(eventId) && typeof proof === 'string' && proof.length <= 128) {
+      proofs[eventId] = proof
+    }
+  }
+  return proofs
+}
+
 async function responseBody(response: Response): Promise<Record<string, unknown>> {
   const body: unknown = await response.json().catch(() => ({}))
   return isRecord(body) ? body : {}
@@ -342,6 +353,7 @@ export function GitHubSourcePanel() {
       const incoming = Array.isArray(body.events)
         ? body.events.map(parseEvent).filter((event): event is NormalizedEvent => event !== null)
         : []
+      const verifiedEventProofs = parseVerifiedEventProofs(body.verifiedEventProofs)
       const next = applyProductEvents(
         productState,
         incoming,
@@ -357,7 +369,7 @@ export function GitHubSourcePanel() {
       const snapshotResponse = await fetch('/api/sync/product', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildProductSnapshot(next)),
+        body: JSON.stringify(buildProductSnapshot(next, undefined, verifiedEventProofs)),
       })
       const snapshotBody = await responseBody(snapshotResponse)
       const count = typeof body.repositoryCount === 'number' ? body.repositoryCount : 0
@@ -477,6 +489,37 @@ export function GitHubSourcePanel() {
 
       {status === 'ready' && settings && (
         <>
+          <section
+            aria-label="GitHub source status"
+            className="mt-6 grid gap-px border sm:grid-cols-3"
+            style={{ borderColor: 'var(--rule)', background: 'var(--rule)' }}
+          >
+            <div className="bg-[color:var(--paper)] px-5 py-4">
+              <p className="font-data text-[10px] uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Connection</p>
+              <p className="font-ui mt-1 text-sm font-medium">GitHub account linked</p>
+              <p className="font-prose mt-1 text-xs" style={{ color: 'var(--ink-muted)' }}>Private activity stays owner-only.</p>
+            </div>
+            <div className="bg-[color:var(--paper)] px-5 py-4">
+              <p className="font-data text-[10px] uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Tracking</p>
+              <p className="font-ui mt-1 text-sm font-medium">{effectiveTrackedCount} of {repositories.length} repositories</p>
+              <p className="font-prose mt-1 text-xs" style={{ color: 'var(--ink-muted)' }}>Only selected sources move XP.</p>
+            </div>
+            <div className="bg-[color:var(--paper)] px-5 py-4">
+              <p className="font-data text-[10px] uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Last checkpoint</p>
+              <p className="font-ui mt-1 text-sm font-medium">{settings.lastSyncedAt ? new Date(settings.lastSyncedAt).toLocaleDateString() : 'Not synced yet'}</p>
+              <p className="font-prose mt-1 text-xs" style={{ color: 'var(--ink-muted)' }}>Sync again when you want fresh receipts.</p>
+            </div>
+          </section>
+
+          {effectiveTrackedCount === 0 && (
+            <section className="mt-6 border-l-2 px-5 py-4" style={{ borderColor: 'var(--accent)', background: 'var(--paper-raised)' }}>
+              <p className="font-ui text-sm font-medium">Choose a repository before your companion can follow GitHub work.</p>
+              <p className="font-prose mt-1 max-w-2xl text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
+                Start with one project, or select all available repositories below. The first sync records a clean baseline; it will not award old history.
+              </p>
+            </section>
+          )}
+
           <section className="mt-6 border p-5 sm:p-6" style={{ borderColor: 'var(--rule)' }}>
             <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
               <div>

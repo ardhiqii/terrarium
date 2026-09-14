@@ -8,6 +8,7 @@
 
 import { addEvents, type EventLedger, type NormalizedEvent } from './events'
 import { createEncounterState, type EncounterState } from './encounters'
+import { canonicalizeProductEvent } from '../sync/product-event-id'
 import {
   createGuestProfile,
   GUEST_PROFILE_STORAGE_KEY,
@@ -41,7 +42,7 @@ export function loadBrowserLedger(storage: BrowserProductStorage, namespace?: st
     if (!parsed || typeof parsed !== 'object' || !('events' in parsed) || !Array.isArray(parsed.events)) {
       return { events: [] }
     }
-    return addEvents({ events: [] }, parsed.events as NormalizedEvent[])
+    return addEvents({ events: [] }, (parsed.events as NormalizedEvent[]).map(canonicalizeProductEvent))
   } catch {
     return { events: [] }
   }
