@@ -130,4 +130,39 @@ describe('fetchGitHubEvents', () => {
     expect(result.login).toBe('octo')
     expect(result.input.mergedPullRequests).toEqual([])
   })
+
+  it('fetches attributed commit details and preserves the stable repository ID', async () => {
+    const occurredAt = '2026-09-12T12:00:00Z'
+    const repo = 'acme/widgets'
+    const routes: Record<string, unknown> = {
+      [`https://api.github.com/repos/${repo}/commits?author=octo&per_page=30&page=1`]: [
+        { sha: 'sha-1', author: { login: 'octo' } },
+        { sha: 'sha-2', author: { login: 'someone-else' } },
+      ],
+      [`https://api.github.com/repos/${repo}/commits/sha-1`]: {
+        sha: 'sha-1',
+        commit: { author: { date: occurredAt } },
+        stats: { additions: 4, deletions: 1, total: 1 },
+        files: [{ filename: 'src/app.ts' }],
+      },
+    }
+    const result = await fetchGitHubEvents({
+      login: 'octo',
+      repos: [{ fullName: repo, id: '777' }],
+      fetch: stubFetch(routes),
+    })
+
+    expect(result.input.commits).toEqual([
+      expect.objectContaining({
+        id: 'sha-1',
+        repositoryId: '777',
+        occurredAt,
+        additions: 4,
+        deletions: 1,
+        changedFiles: 1,
+        changedPaths: ['src/app.ts'],
+        contentChanged: true,
+      }),
+    ])
+  })
 })

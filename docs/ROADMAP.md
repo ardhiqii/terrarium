@@ -78,7 +78,7 @@ collection is considered final.
 | 2 | Event ledger and basic XP | **partial, Markdown wired; GitHub pending** |
 | 3 | Companion catalog, forms, and encounters | **partial, engine and PokeAPI bridge shipped** |
 | 4 | Recursive Markdown and Obsidian mounting | partial, needs upgrade |
-| 5 | GitHub verification and guest sync merge | **partial, product adapter ready; route pending** |
+| 5 | GitHub verification and guest sync merge | **partial, Feature A activity slice shipped; merge migration pending** |
 | 6 | Collection UI, profiles, extension integration | **partial, extension adapter shipped; surfaces pending** |
 | 7 | Licensed marketplace providers and original art | future |
 
@@ -94,8 +94,10 @@ ordinary localStorage. Keep the raw note boundary local.
 
 ### 2. Connect GitHub events to the product ledger
 
-Normalize note and GitHub changes into stable, replay-safe events. Establish a
-baseline when an existing source is first connected so old history can influence
+Normalize note and GitHub changes into stable, replay-safe events. The GitHub
+source now has repository selection, encrypted server credentials, stable-ID
+baselines, attributed commit evidence, and a `/github` sync surface. Establish
+a baseline when an existing source is first connected so old history can influence
 the first companion but cannot flood the user with retroactive XP.
 
 ### 3. Add the product sync route

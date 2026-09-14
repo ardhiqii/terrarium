@@ -47,9 +47,7 @@ export async function GET(request: NextRequest): Promise<Response> {
   const state = randomBytes(32).toString('base64url')
   const redirectUri = resolveRedirectUri(request.nextUrl.origin)
 
-  const response = NextResponse.redirect(
-    buildAuthorizeUrl({ clientId: config.clientId, state, redirectUri })
-  )
+  const response = NextResponse.redirect(buildAuthorizeUrl({ clientId: config.clientId, state, redirectUri }))
   response.cookies.set(OAUTH_STATE_COOKIE, state, sessionCookieOptions(STATE_MAX_AGE_SECONDS))
   return response
 }

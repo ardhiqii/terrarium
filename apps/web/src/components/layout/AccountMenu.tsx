@@ -91,6 +91,9 @@ export default function AccountMenu({
       <Link href="/leaderboard" role="menuitem" className={ITEM_CLASS} style={{ color: 'var(--ink)' }}>
         Leaderboard
       </Link>
+      <Link href="/github" role="menuitem" className={ITEM_CLASS} style={{ color: 'var(--ink)' }}>
+        GitHub source
+      </Link>
       <Link href={`/u/${handle}`} role="menuitem" className={ITEM_CLASS} style={{ color: 'var(--ink)' }}>
         Your profile
       </Link>
