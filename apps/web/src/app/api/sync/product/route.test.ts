@@ -6,7 +6,7 @@ import { asCompanionId, asEventId, type NormalizedEvent } from '@/lib/game/event
 import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
 import { createEncounterState } from '@/lib/game/encounters'
 import { createGuestProfile } from '@/lib/game/guest-profile'
-import { createProductState } from '@/lib/game/product-state'
+import { applyProductEvents, createProductState } from '@/lib/game/product-state'
 import {
   buildProductSnapshot,
   type ProductSnapshot,
@@ -153,7 +153,7 @@ describe('POST/GET/DELETE /api/sync/product', () => {
     expect(await response.json()).toMatchObject({ error: expect.stringMatching(/server-issued receipt/i) })
   })
 
-  it('downgrades legacy stored verified events without a valid receipt before returning them', async () => {
+  it('drops legacy verified events without a valid receipt and recomputes XP before returning them', async () => {
     vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
     const dbPath = path.join(tmpdir(), `terrarium-product-route-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.db`)
     vi.stubEnv('SYNC_DB_PATH', dbPath)
@@ -168,14 +168,15 @@ describe('POST/GET/DELETE /api/sync/product', () => {
 
     const legacyVerified: ProductSnapshot = {
       ...record.snapshot,
-      events: [{ ...record.snapshot.events[0], provenance: 'verified' }],
+      events: [{ ...record.snapshot.events[0], source: 'github', provenance: 'verified', verifiedProof: 'invalid-proof' }],
     }
     expect(await store.put(record.githubId, record.handle, legacyVerified, '2026-08-28T10:01:00.000Z', record.updatedAt)).toBe(true)
 
     const response = await GET()
     expect(response.status).toBe(200)
     const body = await response.json()
-    expect(body.events[0]).toMatchObject({ provenance: 'local' })
+    expect(body.events).toEqual([])
+    expect(body.companions[0].xp).toBe(0)
     expect((await store.getRecord(record.githubId, record.handle))?.snapshot.events[0].provenance).toBe('verified')
   })
 
@@ -201,5 +202,52 @@ describe('POST/GET/DELETE /api/sync/product', () => {
     const response = await GET()
     expect(response.status).toBe(200)
     expect((await response.json()).events).toEqual([])
+  })
+
+  it('invalidates encounter rewards that cannot be tied to trusted events', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const dbPath = path.join(tmpdir(), `terrarium-product-route-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.db`)
+    vi.stubEnv('SYNC_DB_PATH', dbPath)
+    const { GET, POST } = await import('./route')
+    const { getProductStore } = await import('@/lib/sync/product-store')
+    const now = '2026-08-28T10:00:00.000Z'
+    const profile = createGuestProfile({ guestId: 'guest-1', starterCompanionId: 'pikachu-family', now })
+    const event: NormalizedEvent = {
+      eventId: asEventId('encounter-event'),
+      companionId: asCompanionId('pikachu-family'),
+      source: 'mounted-markdown',
+      sourceId: 'vault:42',
+      provenance: 'local',
+      category: 'work-session',
+      occurredAt: now,
+    }
+    const state = applyProductEvents(
+      createProductState(profile, { events: [] }, createEncounterState(), PROTOTYPE_COMPANION_CATALOG),
+      [event],
+      PROTOTYPE_COMPANION_CATALOG,
+      { triggerId: 'legacy-github', encounterProgress: 100 },
+    )
+    const value = buildProductSnapshot(state, now)
+    const forged: ProductSnapshot = {
+      ...value,
+      events: [{ ...value.events[0], source: 'github', provenance: 'verified', verifiedProof: 'invalid-proof' }],
+    }
+
+    const first = await POST(request('POST', JSON.stringify(value)))
+    expect(first.status).toBe(200)
+    const store = getProductStore()
+    const record = await store.getRecord(fakeGithubId('octocat'), 'octocat')
+    expect(record).not.toBeNull()
+    if (!record) return
+    expect(await store.put(record.githubId, record.handle, forged, '2026-08-28T10:01:00.000Z', record.updatedAt)).toBe(true)
+
+    const response = await GET()
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body.encounters.draws).toEqual([])
+    expect(body.collection.every((reference: { acquisition: string }) => reference.acquisition !== 'encounter')).toBe(true)
+    expect(body.companions).toHaveLength(1)
+    expect(body.companions[0].essence).toBe(0)
+    expect(body.companions[0].encounterCount).toBe(1)
   })
 })

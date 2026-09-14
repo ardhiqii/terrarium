@@ -37,9 +37,10 @@ npx vitest run apps/web/src/lib/sync/supabase-client.test.ts apps/web/src/lib/sy
 
 The focused integration contracts cover adapter serialization, normalization,
 errors, product POST/GET/DELETE, optimistic writes, server-issued GitHub
-receipts, replay-safe merging, guest conflicts, payload validation, and size
-limits, including receipt-failure checkpoint recovery. The latest hardening run
-passed **6 files / 34 tests**.
+receipts, deferred checkpoint recovery, replay-safe merging, guest conflicts,
+payload validation, repository selection, browser receipt persistence, and size
+limits. Keep the focused command above scoped to the changed files when adding
+new sync hardening tests.
 The latest focused mutation run covered the Supabase adapters and cloud
 rehydration helper with **61.08% overall mutation score, 67.26% of covered
 mutants, 0 timeouts, and 0 errors**. Survivors are reported so they remain

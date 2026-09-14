@@ -29,6 +29,22 @@ describe('SupabaseProductStore', () => {
     expect(eq).toHaveBeenCalledWith('github_id', 42)
   })
 
+  it('also removes an old handle-keyed row when deleting an account', async () => {
+    const byId = vi.fn().mockResolvedValue({ error: null })
+    const legacyIs = vi.fn().mockResolvedValue({ error: null })
+    const legacyEq = vi.fn().mockReturnValue({ is: legacyIs })
+    const deleteQuery = vi.fn()
+      .mockReturnValueOnce({ eq: byId })
+      .mockReturnValueOnce({ eq: legacyEq })
+    mockedGetClient.mockReturnValue({ from: vi.fn().mockReturnValue({ delete: deleteQuery }) } as never)
+
+    await new SupabaseProductStore().remove(42, 'Torvalds')
+
+    expect(byId).toHaveBeenCalledWith('github_id', 42)
+    expect(legacyEq).toHaveBeenCalledWith('handle', 'torvalds')
+    expect(legacyIs).toHaveBeenCalledWith('github_id', null)
+  })
+
   function snapshot(): ProductSnapshot {
     const now = '2024-01-01T00:00:00.000Z'
     const profile = createGuestProfile({ guestId: 'guest-1', starterCompanionId: 'pikachu-family', now })
@@ -97,6 +113,49 @@ describe('SupabaseProductStore', () => {
 
     await expect(new SupabaseProductStore().get(42, 'renamed-user')).resolves.toBeNull()
     expect(query.is).toHaveBeenCalledWith('github_id', null)
+  })
+
+  it('claims a legacy handle row only when the conditional update returns it', async () => {
+    const legacySnapshot = snapshot()
+    const byId = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+    }
+    const legacy = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      is: vi.fn().mockReturnThis(),
+      maybeSingle: vi.fn().mockResolvedValue({
+        data: { github_id: null, handle: 'torvalds', snapshot_json: legacySnapshot, updated_at: legacySnapshot.updatedAt },
+        error: null,
+      }),
+    }
+    const migrate = {
+      update: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      is: vi.fn().mockReturnThis(),
+      select: vi.fn().mockReturnThis(),
+      maybeSingle: vi.fn().mockResolvedValue({
+        data: { github_id: 42, handle: 'torvalds', snapshot_json: legacySnapshot, updated_at: legacySnapshot.updatedAt },
+        error: null,
+      }),
+    }
+    mockedGetClient.mockReturnValue({
+      from: vi.fn()
+        .mockReturnValueOnce(byId)
+        .mockReturnValueOnce(legacy)
+        .mockReturnValueOnce(migrate),
+    } as never)
+
+    await expect(new SupabaseProductStore().getRecord(42, 'TORVALDS')).resolves.toEqual({
+      githubId: 42,
+      handle: 'torvalds',
+      snapshot: legacySnapshot,
+      updatedAt: legacySnapshot.updatedAt,
+    })
+    expect(migrate.update).toHaveBeenCalledWith({ github_id: 42 })
+    expect(migrate.select).toHaveBeenCalledWith('github_id, handle, snapshot_json, updated_at')
   })
 
   it('uses the stored timestamp as an optimistic concurrency check', async () => {

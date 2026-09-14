@@ -38,7 +38,23 @@ describe('ProductSqliteStore', () => {
     const snapshot = baseSnapshot()
     await store.put(42, 'octocat', snapshot, snapshot.updatedAt, null)
     expect(await store.put(42, 'octocat', snapshot, '2026-09-12T01:00:00.000Z', 'stale')).toBe(false)
+    expect(await store.put(42, 'octocat', snapshot, snapshot.updatedAt, snapshot.updatedAt)).toBe(false)
     await store.remove(42)
     expect(await store.get(42, 'octocat')).toBeNull()
+  })
+
+  it('removes a legacy handle row during account deletion', async () => {
+    const store = new ProductSqliteStore(':memory:')
+    const database = (store as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void; get: (...args: unknown[]) => unknown } } }).db
+    const snapshot = baseSnapshot()
+    database.prepare('INSERT INTO product_snapshots (handle, snapshot_json, updated_at) VALUES (?, ?, ?)').run(
+      'octocat',
+      JSON.stringify(snapshot),
+      snapshot.updatedAt,
+    )
+
+    await store.remove(42, 'Octocat')
+
+    expect(database.prepare('SELECT handle FROM product_snapshots WHERE handle = ?').get('octocat')).toBeUndefined()
   })
 })

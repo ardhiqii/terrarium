@@ -21,6 +21,8 @@ import {
 const LEDGER_KEY = 'terrarium:guest-event-ledger'
 const ENCOUNTER_KEY = 'terrarium:guest-encounters'
 const REVEALED_DRAWS_KEY = 'terrarium:guest-revealed-draws'
+const VERIFIED_EVENT_PROOFS_KEY = 'terrarium:github-event-proofs'
+const PRODUCT_EVENT_ID = /^event-[0-9a-f]{8}-[0-9a-f]{8}$/u
 
 export interface BrowserProductStorage extends GuestProfileStorage {}
 
@@ -50,6 +52,46 @@ export function loadBrowserLedger(storage: BrowserProductStorage, namespace?: st
 
 export function saveBrowserLedger(storage: BrowserProductStorage, ledger: EventLedger, namespace?: string): void {
   storage.setItem(namespacedKey(LEDGER_KEY, namespace), JSON.stringify(ledger))
+}
+
+/**
+ * Receipts must survive a failed cloud upload. GitHub's baseline advances in
+ * its own request, so the next retry may not return the same events again.
+ * Keep only opaque event IDs and short server receipts in the account-local
+ * namespace; source IDs and note content never enter this record.
+ */
+export function loadVerifiedEventProofs(
+  storage: BrowserProductStorage,
+  namespace?: string,
+): Record<string, string> {
+  try {
+    const parsed: unknown = JSON.parse(storage.getItem(namespacedKey(VERIFIED_EVENT_PROOFS_KEY, namespace)) ?? '{}')
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([eventId, proof]) =>
+        PRODUCT_EVENT_ID.test(eventId) && typeof proof === 'string' && proof.length > 0 && proof.length <= 128,
+      ),
+    )
+  } catch {
+    return {}
+  }
+}
+
+export function saveVerifiedEventProofs(
+  storage: BrowserProductStorage,
+  proofs: Readonly<Record<string, string>>,
+  eventIds?: readonly string[],
+  namespace?: string,
+): void {
+  const allowed = eventIds ? new Set(eventIds) : null
+  const clean = Object.fromEntries(
+    Object.entries(proofs).filter(([eventId, proof]) =>
+      PRODUCT_EVENT_ID.test(eventId) &&
+      (!allowed || allowed.has(eventId)) &&
+      typeof proof === 'string' && proof.length > 0 && proof.length <= 128,
+    ),
+  )
+  storage.setItem(namespacedKey(VERIFIED_EVENT_PROOFS_KEY, namespace), JSON.stringify(clean))
 }
 
 export function loadBrowserEncounters(storage: BrowserProductStorage, namespace?: string): EncounterState {

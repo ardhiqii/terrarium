@@ -70,7 +70,7 @@ export interface ProductStore {
   ): Promise<boolean>
   get(githubId: number, handle?: string): Promise<ProductSnapshot | null>
   getRecord(githubId: number, handle?: string): Promise<ProductSnapshotRecord | null>
-  remove(githubId: number): Promise<void>
+  remove(githubId: number, handle?: string): Promise<void>
 }
 
 export class ProductSqliteStore implements ProductStore {
@@ -140,6 +140,10 @@ export class ProductSqliteStore implements ProductStore {
         throw error
       }
     }
+    // An unchanged timestamp is not a successful optimistic write. Without
+    // this guard two writers that happen to share a millisecond version could
+    // both pass the WHERE clause and silently overwrite one another.
+    if (updatedAt === expectedUpdatedAt) return false
     const result = this.db
       .prepare('UPDATE product_snapshots SET handle = ?, snapshot_json = ?, updated_at = ? WHERE github_id = ? AND updated_at = ?')
       .run(normalizedHandle, json, updatedAt, githubId, expectedUpdatedAt) as { changes?: number }
@@ -162,10 +166,15 @@ export class ProductSqliteStore implements ProductStore {
   }
 
   /** Forget a GitHub identity's product snapshot entirely (opt-out). */
-  async remove(githubId: number): Promise<void> {
+  async remove(githubId: number, handle?: string): Promise<void> {
     this.db
       .prepare('DELETE FROM product_snapshots WHERE github_id = ?')
       .run(githubId)
+    if (handle) {
+      this.db
+        .prepare('DELETE FROM product_snapshots WHERE github_id IS NULL AND handle = ?')
+        .run(handle.toLowerCase())
+    }
   }
 }
 
