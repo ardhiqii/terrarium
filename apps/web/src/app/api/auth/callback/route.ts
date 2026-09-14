@@ -34,6 +34,7 @@ import {
   getSessionSecret,
   sessionCookieOptions,
 } from '@/lib/sync/session-cookie'
+import { getGithubAccountStore } from '@/lib/sync/github-account-store'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -90,8 +91,14 @@ export async function GET(request: NextRequest): Promise<Response> {
   const identity = await fetchGithubIdentity(token)
   if (!identity) return failed(request)
 
-  // The token has now done its entire job. It is not stored anywhere, which
-  // is why the app does not care whether GitHub expires it.
+  // Keep the token server-side for repository reads. It never enters the
+  // signed identity cookie or a response body.
+  try {
+    await getGithubAccountStore().putCredential(identity, token, [])
+  } catch {
+    return failed(request)
+  }
+
   const response = NextResponse.redirect(new URL('/', request.nextUrl.origin))
   response.cookies.set(
     SESSION_COOKIE_NAME,

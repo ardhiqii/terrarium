@@ -6,7 +6,7 @@ This is the execution status for the product described in
 remain useful as historical implementation notes, but they are not the current
 product contract.
 
-Last reviewed: **2026-08-28**
+Last reviewed: **2026-09-14**
 
 ## Product direction
 
@@ -30,6 +30,8 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
 - Browser extension for public GitHub pages.
 - Built-in Markdown editor and local File System Access folder mounting.
 - GitHub sign-in and derived-state sync foundation.
+- GitHub source selection, baseline-aware activity sync, verified XP receipts,
+  and duplicate-safe reward messaging.
 - PokeAPI sprite adapter with local fallback.
 
 ### Just verified
@@ -42,7 +44,7 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
 - Legacy cache entries refresh once to gain the new metadata, then remain
   cache-first.
 - `npm run typecheck` passes.
-- New product engine tests pass: 607 tests across 49 files.
+- New product engine tests pass: 640 tests across 56 files.
 - `npm run build` succeeds.
 
 ### New product loop shipped
@@ -60,6 +62,9 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
   the account API; the legacy sync endpoint remains backward compatible.
 - The extension can consume both the legacy creature payload and the future
   public companion payload with provenance labels.
+- The `/github` source screen now explains the XP map and shows recent verified
+  receipts. A live smoke test awarded 50 XP from a post-baseline release and
+  active-workday event, then kept XP at 50 on a repeated sync.
 
 ### Known prototype mismatch
 
@@ -75,10 +80,10 @@ collection is considered final.
 |---|---|---|
 | 0 | Product and data contracts | **complete** |
 | 1 | Guest onboarding and local profile | **partial, usable on `/write`** |
-| 2 | Event ledger and basic XP | **partial, Markdown wired; GitHub pending** |
+| 2 | Event ledger and basic XP | **partial, Markdown and GitHub wired; broader surfaces pending** |
 | 3 | Companion catalog, forms, and encounters | **partial, engine and PokeAPI bridge shipped** |
 | 4 | Recursive Markdown and Obsidian mounting | partial, needs upgrade |
-| 5 | GitHub verification and guest sync merge | **partial, product adapter ready; route pending** |
+| 5 | GitHub verification and guest sync merge | **partial, Feature A activity slice shipped and live-tested; merge migration pending** |
 | 6 | Collection UI, profiles, extension integration | **partial, extension adapter shipped; surfaces pending** |
 | 7 | Licensed marketplace providers and original art | future |
 
@@ -92,11 +97,13 @@ Persist compact per-file scan summaries so changes made while the website is
 closed can be detected without storing a second copy of a large vault in
 ordinary localStorage. Keep the raw note boundary local.
 
-### 2. Connect GitHub events to the product ledger
+### 2. Harden hosted GitHub persistence and ledger checkpoints
 
-Normalize note and GitHub changes into stable, replay-safe events. Establish a
-baseline when an existing source is first connected so old history can influence
-the first companion but cannot flood the user with retroactive XP.
+The GitHub source now has repository selection, encrypted server credentials,
+stable-ID baselines, attributed commit evidence, a `/github` sync surface, and
+verified XP receipts. Replace the temporary hosted SQLite path with durable
+storage and persist checkpoints/event IDs server-side so cold starts do not lose
+tokens, selections, or sync history.
 
 ### 3. Add the product sync route
 

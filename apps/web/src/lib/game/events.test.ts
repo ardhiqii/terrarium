@@ -8,6 +8,7 @@ import {
   makeEventId,
   mergeEventLedgers,
   sumXpPerCompanion,
+  xpAwardedForEvent,
   type EventCap,
   type EventLedger,
   type NormalizedEvent,
@@ -105,6 +106,9 @@ describe('event ledger', () => {
 
     const totals = sumXpPerCompanion(ledger(...events))
     expect(totals[companionA]).toBe(2 * XP_BY_EVENT_CATEGORY['new-note'])
+    expect(xpAwardedForEvent(ledger(...events), 'session-1')).toBe(XP_BY_EVENT_CATEGORY['new-note'])
+    expect(xpAwardedForEvent(ledger(...events), 'session-2')).toBe(XP_BY_EVENT_CATEGORY['new-note'])
+    expect(xpAwardedForEvent(ledger(...events), 'session-3')).toBe(0)
   })
 
   it('supports the active-day cap of one event per source day', () => {

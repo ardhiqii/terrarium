@@ -126,6 +126,12 @@ shown to the user, starts with a fresh baseline, and does not award retroactive
 XP. Users may exclude it, and an exclusion remains in effect until the user
 manually enables the repository again.
 
+The first GitHub activity slice stores the OAuth credential only in encrypted
+server-side account state and exposes no token to the browser. The registration
+is expected to be a GitHub App with fine-grained read permissions and required
+organization approval; the login flow deliberately avoids the classic `repo`
+scope because it is broader and includes write-capable access.
+
 The connection UI must clarify one important distinction without becoming
 noisy: **Approved** means Terrarium may read a repository, while **Tracked**
 means the repository contributes to progression. Before sending the user to
@@ -138,11 +144,34 @@ review notification, dismissed reminders stay quiet until the repository state
 changes, and revoked access pauses tracking with a **Reconnect or review
 access** action. Private repository details and these reminders are owner-only.
 
+One Terrarium profile has one active GitHub account at a time. Switching
+accounts archives the previous source, stops its future tracking, and preserves
+its earned progression and owner-only history. The new account requires fresh
+repository selection and a fresh baseline, with no retroactive XP. Reconnecting
+an archived account is an explicit future switch and never happens in the
+background. Public activity defaults to the current account; archived account
+details stay private unless the owner opts in.
+
 Public and approved private repositories use the same normalized activity rules.
 The connected GitHub account is one XP source for daily caps, so selecting more
 repositories cannot multiply the user's daily reward. Repository selection only
 controls which future activity is read; removing a repository stops future
 events but does not erase XP already earned from it.
+
+Repository continuity uses GitHub's stable repository ID. Renames preserve the
+tracking history and baseline. Ownership transfers preserve history only while
+the user retains permission; otherwise tracking pauses. Archiving or deleting a
+repository stops future events but preserves earned XP and owner history.
+Visibility changes follow GitHub's current visibility, so private details remain
+owner-only and public presentation is re-evaluated before the next profile
+update.
+
+Delayed GitHub sync uses bounded catch-up. Activity is eligible only after the
+repository is approved and its initial baseline is recorded. A later sync may
+count eligible activity since the last checkpoint, but daily and session caps
+use the activity date, not the sync date. Catch-up is summarized as one return
+update rather than replaying every reaction. Activity before approval or the
+initial baseline never awards retroactive XP; unavailable history is not guessed.
 
 Commits are evidence of activity, not an unlimited per-commit XP faucet. Empty
 or generated-only commits do not award XP. Active days and work sessions are
@@ -189,6 +218,13 @@ The first balance uses simple evidence-based events:
 - new notes and net-new words after the source baseline;
 - newly resolved links;
 - merged pull requests, releases, linked issues, and successful CI.
+
+Daily and session caps use one account-level progress timezone. It defaults to
+the browser timezone at first setup, does not change automatically while the
+user travels, and changes only explicitly for a future progress day. Past
+events keep their original day assignment. GitHub uses its verified activity
+timestamp for cap buckets; local note events use the time Terrarium observes
+the change and remain local/unverified.
 
 Note activity follows the same general rule as GitHub activity: reward returning
 to meaningful work, not raw volume. The initial note event set is deliberately

@@ -128,6 +128,13 @@ companion's progress. After returning from GitHub, show a setup prompt if no
 repositories are tracked and show the counts of approved versus tracked
 repositories in the source settings.
 
+The current prototype expects a GitHub App configured with fine-grained read
+permissions for repository metadata, contents, pull requests, issues, checks,
+and required organization approval. It deliberately does not request the
+classic `repo` scope, which is broader and includes write-capable access. The
+token is stored only in encrypted server-side account state and is never sent
+to the browser or included in a sync payload.
+
 Reminders are action-based and quiet. Show a one-time permission explanation
 before authorization, a persistent status with **Manage repositories**, and a
 single notification when new eligible repositories appear. A dismissed
@@ -136,10 +143,36 @@ If permission is revoked, tracking pauses and the owner sees **Reconnect or
 review access**. Private repository names and reminder details remain visible
 only to the owner.
 
+One Terrarium profile has one active GitHub account at a time. Switching is an
+explicit action: the previous account becomes archived and stops future
+tracking, while its earned XP and owner-only history remain. The new account
+requires fresh repository selection and a fresh baseline; it receives no
+retroactive XP. Reconnecting an archived account later is another explicit
+switch and never resumes it in the background. Public activity defaults to the
+current account; archived account details remain private unless the owner
+explicitly enables them.
+
 The same activity rules apply to public and approved private repositories. The
 connected GitHub account is one source for daily XP caps, so selecting more
 repositories cannot multiply rewards. Removing a repository stops future
 tracking but does not erase XP already earned from it.
+
+Repository identity follows GitHub's stable repository ID. A rename preserves
+the repository's tracking history and baseline. An ownership transfer keeps
+history only while the user still has permission; otherwise tracking pauses.
+Archiving or deleting a repository stops future tracking but preserves earned
+XP and owner history. Visibility changes follow GitHub's current visibility:
+private details remain owner-only, and public display is re-evaluated before
+the next profile update.
+
+Delayed GitHub sync uses bounded catch-up. Activity becomes eligible only after
+the repository is approved and its initial baseline is recorded. Later syncs
+may count eligible activity that happened since the last checkpoint, using the
+activity date for daily and session caps rather than the sync date. A catch-up
+is summarized as one returning update instead of replaying every reaction.
+Activity from before approval or the initial baseline never awards retroactive
+XP. If GitHub no longer exposes enough history to verify an event, Terrarium
+does not guess.
 
 Commits are evidence of activity rather than unlimited direct XP. Empty and
 generated-only commits award no XP. Active days and work sessions are capped;
@@ -147,6 +180,12 @@ merged pull requests, releases, linked issues, and successful CI produce stable
 one-time events. Repeated scans, webhook deliveries, CI reruns, repository
 renames, and other duplicate deliveries must be deduplicated by stable event
 IDs.
+
+The GitHub source screen makes this ledger legible: it explains the reward map,
+shows recent verified receipts with their category and XP value, and reports the
+number of newly applied events after each sync. A repeated sync may receive an
+already-known event from the provider, but it must report zero new events and
+leave the companion XP unchanged.
 
 The owner may see private activity details after authenticating with GitHub.
 Public profiles follow repository visibility: public activity may show its
@@ -274,6 +313,13 @@ history.
 
 XP belongs to the active companion. The system may show a small account-level
 encounter meter internally, but it must not become a second prominent level bar.
+
+Daily and session caps use one account-level **progress timezone**. It defaults
+to the browser timezone when the user starts, does not change automatically
+when the user travels, and can be changed explicitly for a future progress day.
+Past events are never reclassified after a timezone change. GitHub caps use the
+verified activity timestamp, not the user's computer clock; local note events
+use the time Terrarium observes the meaningful change and remain unverified.
 
 ### 5.1 Prototype rates
 

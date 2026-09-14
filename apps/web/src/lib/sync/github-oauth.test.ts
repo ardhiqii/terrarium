@@ -85,6 +85,18 @@ describe('buildAuthorizeUrl', () => {
     )
     expect(url.searchParams.has('scope')).toBe(false)
   })
+
+  it('can request the repository read scope for the GitHub activity feature', () => {
+    const url = new URL(
+      buildAuthorizeUrl({
+        clientId: 'Iv23liExample',
+        state: 's',
+        redirectUri: 'http://localhost:3000/api/auth/callback',
+        scope: 'repo read:org',
+      }),
+    )
+    expect(url.searchParams.get('scope')).toBe('repo read:org')
+  })
 })
 
 describe('resolveRedirectUri', () => {

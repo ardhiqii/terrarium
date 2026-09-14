@@ -70,6 +70,8 @@ Implement:
 - GitHub commit, PR, release, issue, and CI event normalization;
 - stable event IDs and deduplication;
 - per-source daily caps;
+- one account-level progress timezone with future-effective changes and no
+  retroactive event reassignment;
 - cross-source diminishing returns or a global soft XP limit;
 - active-companion XP attribution;
 - an explainable XP ledger with local or verified provenance.
@@ -157,13 +159,44 @@ progressive enhancement; one-time directory selection or drag-and-drop scanning
 must remain available where that API is unsupported. Monitoring a closed
 browser is out of scope for this phase.
 
-**Status: partial — verified event normalization and derived-only merge contracts are shipped; product sync API wiring and OAuth integration remain.**
+**Status: partial — verified event normalization, GitHub OAuth credential storage, repository selection, and the first activity-sync slice are shipped; durable hosted storage and broader account/profile migration remain.**
 
 ## Phase 5. GitHub identity and sync
 
 **Depends on:** Phases 1 and 2.
 
 Add optional GitHub sign-in and derived-state sync:
+
+### Feature A slice currently implemented
+
+- GitHub OAuth requests the repository/org permissions needed to discover the
+  connected user's personal and organization repositories;
+- the OAuth token is encrypted in the server-side account store and never
+  placed in the browser session cookie or API response;
+- `/github` lists the repositories GitHub makes available, keeps approved and
+  tracked state distinct, and supports explicit selection plus automatic
+  inclusion for future personal repositories or selected organizations;
+- `/api/github/sync` reads only tracked, non-archived repositories, records a
+  first-use baseline per stable repository ID, filters old activity, and
+  returns verified provider-neutral events for the active companion; manual
+  exclusions override automatic personal/organization inclusion;
+- commit evidence, merged pull requests, releases, and successful CI are
+  connected to the event normalizer; attribution is filtered at the GitHub
+  boundary and the existing account-wide caps/deduplication remain in force;
+- sync fan-out is bounded per request and partial reads do not create a new
+  baseline; linked-issue timeline extraction remains a follow-up.
+
+The current prototype expects a GitHub App registration with fine-grained read
+permissions for metadata, contents, pull requests, issues, checks/actions, and
+the required organization approval. It deliberately does not request the
+classic `repo` scope, which grants broader write-capable access. Before
+production, move the account/settings store to durable hosted storage and
+managed key protection.
+
+The local SQLite adapter is suitable for the persistent home-server path, not
+for a multi-instance/serverless deployment. The temporary preview can show the
+UI/build flow, but repository credentials and product state need a durable
+shared store before relying on it for real account recovery.
 
 - GitHub OAuth identifies the user and protects recovery;
 - selected public and private GitHub events are server-verified;
@@ -177,6 +210,13 @@ Add optional GitHub sign-in and derived-state sync:
   source settings;
 - use quiet, state-change-only reminders for untracked new repositories and
   revoked permissions, with dismissal persistence;
+- support one active GitHub account per Terrarium profile, archiving previous
+  accounts with preserved owner history and fresh baselines on switch;
+- preserve repository continuity by stable GitHub repository ID across renames,
+  pause after lost access or transfer, and preserve XP after archive/deletion;
+- support bounded GitHub catch-up from the approval/baseline checkpoint, apply
+  caps by activity date, summarize return updates, and never guess unavailable
+  history;
 - newly discovered repositories begin at a fresh baseline and never award
   retroactive XP;
 - local note events remain labelled local/unverified;

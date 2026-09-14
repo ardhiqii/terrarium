@@ -111,6 +111,86 @@ describe('fetchGitHubEvents', () => {
     expect(result.input.ciChecks?.[0]).toMatchObject({ id: 'CHECK1', name: 'test' })
   })
 
+  it('accepts GitHub\'s wrapped check-runs response and keeps the scan healthy', async () => {
+    const now = '2026-09-12T12:00:00Z'
+    const repo = 'widgets'
+    const routes: Record<string, unknown> = {
+      [`https://api.github.com/repos/${repo}/pulls?state=closed&per_page=30&page=1`]: [],
+      [`https://api.github.com/repos/${repo}/releases?per_page=30`]: [],
+      [`https://api.github.com/repos/${repo}/issues?state=closed&per_page=30&page=1`]: [],
+      [`https://api.github.com/repos/${repo}/commits?author=octo&per_page=30&page=1`]: [],
+      [`https://api.github.com/repos/${repo}/commits?committer=octo&per_page=30&page=1`]: [],
+      [`https://api.github.com/repos/${repo}/commits?per_page=30`]: [{ sha: 'headsha1' }],
+      [`https://api.github.com/repos/${repo}/commits/headsha1/check-runs?per_page=30`]: {
+        total_count: 1,
+        check_runs: [{
+          node_id: 'CHECK1',
+          id: 1,
+          conclusion: 'success',
+          status: 'completed',
+          completed_at: now,
+          name: 'test',
+        }],
+      },
+    }
+
+    const result = await fetchGitHubEvents({ ...opts, fetch: stubFetch(routes) })
+
+    expect(result.status).toBe('ok')
+    expect(result.input.ciChecks ?? []).toHaveLength(1)
+    expect(result.input.ciChecks?.[0]).toMatchObject({ id: 'CHECK1', name: 'test' })
+  })
+
+  it('marks a bounded check-runs scan partial when GitHub reports more runs than it returns', async () => {
+    const repo = 'widgets'
+    const routes: Record<string, unknown> = {
+      [`https://api.github.com/repos/${repo}/pulls?state=closed&per_page=30&page=1`]: [],
+      [`https://api.github.com/repos/${repo}/releases?per_page=30`]: [],
+      [`https://api.github.com/repos/${repo}/issues?state=closed&per_page=30&page=1`]: [],
+      [`https://api.github.com/repos/${repo}/commits?author=octo&per_page=30&page=1`]: [],
+      [`https://api.github.com/repos/${repo}/commits?committer=octo&per_page=30&page=1`]: [],
+      [`https://api.github.com/repos/${repo}/commits?per_page=30`]: [{ sha: 'headsha1' }],
+      [`https://api.github.com/repos/${repo}/commits/headsha1/check-runs?per_page=30`]: {
+        total_count: 31,
+        check_runs: Array.from({ length: 30 }, (_, index) => ({ id: index + 1 })),
+      },
+    }
+
+    const result = await fetchGitHubEvents({ ...opts, fetch: stubFetch(routes) })
+
+    expect(result.status).toBe('partial')
+  })
+
+  it('paginates default-branch commit discovery before reading CI checks', async () => {
+    const repo = 'widgets'
+    const firstPage = Array.from({ length: 30 }, (_, index) => ({ sha: `headsha-${index + 1}` }))
+    const routes: Record<string, unknown> = {
+      [`https://api.github.com/repos/${repo}/pulls?state=closed&per_page=30&page=1`]: [],
+      [`https://api.github.com/repos/${repo}/releases?per_page=30`]: [],
+      [`https://api.github.com/repos/${repo}/issues?state=closed&per_page=30&page=1`]: [],
+      [`https://api.github.com/repos/${repo}/commits?author=octo&per_page=30&page=1`]: [],
+      [`https://api.github.com/repos/${repo}/commits?committer=octo&per_page=30&page=1`]: [],
+      [`https://api.github.com/repos/${repo}/commits?per_page=30`]: firstPage,
+      [`https://api.github.com/repos/${repo}/commits?per_page=30&page=2`]: [{ sha: 'headsha-31' }],
+      [`https://api.github.com/repos/${repo}/commits/headsha-31/check-runs?per_page=30`]: [],
+    }
+    const urls: string[] = []
+    const recordingFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      urls.push(url)
+      const body = routes[url] ?? []
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const result = await fetchGitHubEvents({ ...opts, fetch: recordingFetch })
+
+    expect(result.status).toBe('ok')
+    expect(urls).toContain(`https://api.github.com/repos/${repo}/commits?per_page=30&page=2`)
+  })
+
   it('falls back to listing the user repos when no explicit repos are given', async () => {
     const routes: Record<string, unknown> = {
       'https://api.github.com/users/octo/repos?per_page=100&sort=updated': [
@@ -129,5 +209,40 @@ describe('fetchGitHubEvents', () => {
     // which returns nothing for each — so the input is empty but we did not throw.
     expect(result.login).toBe('octo')
     expect(result.input.mergedPullRequests).toEqual([])
+  })
+
+  it('fetches attributed commit details and preserves the stable repository ID', async () => {
+    const occurredAt = '2026-09-12T12:00:00Z'
+    const repo = 'acme/widgets'
+    const routes: Record<string, unknown> = {
+      [`https://api.github.com/repos/${repo}/commits?author=octo&per_page=30&page=1`]: [
+        { sha: 'sha-1', author: { login: 'octo' } },
+        { sha: 'sha-2', author: { login: 'someone-else' } },
+      ],
+      [`https://api.github.com/repos/${repo}/commits/sha-1`]: {
+        sha: 'sha-1',
+        commit: { author: { date: occurredAt } },
+        stats: { additions: 4, deletions: 1, total: 1 },
+        files: [{ filename: 'src/app.ts' }],
+      },
+    }
+    const result = await fetchGitHubEvents({
+      login: 'octo',
+      repos: [{ fullName: repo, id: '777' }],
+      fetch: stubFetch(routes),
+    })
+
+    expect(result.input.commits).toEqual([
+      expect.objectContaining({
+        id: 'sha-1',
+        repositoryId: '777',
+        occurredAt,
+        additions: 4,
+        deletions: 1,
+        changedFiles: 1,
+        changedPaths: ['src/app.ts'],
+        contentChanged: true,
+      }),
+    ])
   })
 })
