@@ -181,6 +181,12 @@ one-time events. Repeated scans, webhook deliveries, CI reruns, repository
 renames, and other duplicate deliveries must be deduplicated by stable event
 IDs.
 
+The GitHub source screen makes this ledger legible: it explains the reward map,
+shows recent verified receipts with their category and XP value, and reports the
+number of newly applied events after each sync. A repeated sync may receive an
+already-known event from the provider, but it must report zero new events and
+leave the companion XP unchanged.
+
 The owner may see private activity details after authenticating with GitHub.
 Public profiles follow repository visibility: public activity may show its
 normal evidence, while private repository names, pull requests, issues, file

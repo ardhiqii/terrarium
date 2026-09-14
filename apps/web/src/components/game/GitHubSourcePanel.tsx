@@ -30,6 +30,7 @@ import { buildProductSnapshot } from '@/lib/sync/product-snapshot'
 import { CompanionSwitcher } from './CompanionSwitcher'
 import { EncounterReveal } from './EncounterReveal'
 import { ProductActivityPanel } from './ProductActivityPanel'
+import { GitHubRewardGuide } from './GitHubRewardGuide'
 
 interface GithubRepository {
   id: string
@@ -297,7 +298,7 @@ export function GitHubSourcePanel() {
       })
       const snapshotBody = await responseBody(snapshotResponse)
       const count = typeof body.repositoryCount === 'number' ? body.repositoryCount : 0
-      const eventCount = incoming.length
+      const eventCount = Math.max(0, next.ledger.events.length - productState.ledger.events.length)
       const baselineCount = Array.isArray(body.newBaselineRepositoryIds) ? body.newBaselineRepositoryIds.length : 0
       const skippedCount = typeof body.skippedRepositoryCount === 'number' ? body.skippedRepositoryCount : 0
       const limitNote = skippedCount > 0 ? ` ${skippedCount} more will stay pending; narrow the selection to sync them.` : ''
@@ -306,6 +307,8 @@ export function GitHubSourcePanel() {
         : ` Local progress is safe, but cloud condition was not saved: ${errorMessage(snapshotBody, 'try again later')}`
       if (body.kind === 'baseline') {
         setLastSyncSummary(`Baseline recorded for ${baselineCount} ${baselineCount === 1 ? 'repository' : 'repositories'} · no old history awarded.${limitNote}${cloudNote}`)
+      } else if (body.kind === 'partial' || body.syncStatus === 'partial') {
+        setLastSyncSummary(`Checked ${count} tracked ${count === 1 ? 'repository' : 'repositories'} · ${eventCount} new verified events. Some activity could not be read completely; try again to catch up.${limitNote}${cloudNote}`)
       } else {
         setLastSyncSummary(`Checked ${count} tracked ${count === 1 ? 'repository' : 'repositories'} · ${eventCount} new verified events.${limitNote}${cloudNote}`)
       }
@@ -490,14 +493,15 @@ export function GitHubSourcePanel() {
             )}
           </section>
 
-          {message && <p className="font-ui mt-5 text-sm" style={{ color: 'var(--accent)' }}>{message}</p>}
-          {lastSyncSummary && <p className="font-prose mt-5 border-l-2 pl-4 text-sm leading-relaxed" style={{ borderColor: 'var(--accent)', color: 'var(--ink-muted)' }}>{lastSyncSummary}</p>}
+          {message && <p role="alert" className="font-ui mt-5 text-sm" style={{ color: 'var(--accent)' }}>{message}</p>}
+          {lastSyncSummary && <p role="status" aria-live="polite" className="font-prose mt-5 border-l-2 pl-4 text-sm leading-relaxed" style={{ borderColor: 'var(--accent)', color: 'var(--ink-muted)' }}>{lastSyncSummary}</p>}
           {settings.lastSyncedAt && !lastSyncSummary && <p className="font-data mt-5 text-xs" style={{ color: 'var(--ink-muted)' }}>Last checked {new Date(settings.lastSyncedAt).toLocaleString()}</p>}
 
           {productState && (
             <div className="mt-8">
               <EncounterReveal state={productState} revealedIds={revealedDraws} onReveal={dismissDraw} onMakeActive={makeActive} />
               <ProductActivityPanel state={productState} sourceLabel="Verified GitHub activity" />
+              <GitHubRewardGuide state={productState} />
               <CompanionSwitcher state={productState} onSwitch={makeActive} />
             </div>
           )}

@@ -149,6 +149,38 @@ function orderedForCap(events: readonly NormalizedEvent[]): NormalizedEvent[] {
   })
 }
 
+/** Returns the canonical events that survive their shared cap buckets. */
+export function acceptedLedgerEvents(ledger: EventLedger): readonly NormalizedEvent[] {
+  const events = uniqueEvents(ledger.events)
+  const cappedGroups = new Map<string, NormalizedEvent[]>()
+  const accepted = events.filter((event) => {
+    if (!event.cap) return true
+    const group = cappedGroups.get(event.cap.key) ?? []
+    group.push(event)
+    cappedGroups.set(event.cap.key, group)
+    return false
+  })
+
+  for (const group of cappedGroups.values()) {
+    const ordered = orderedForCap(group)
+    // A conflicting limit is fail-closed. This avoids allowing a malformed
+    // later event to silently enlarge an already established cap bucket.
+    const limit = Math.min(...ordered.map((event) => event.cap!.limit))
+    accepted.push(...ordered.slice(0, limit))
+  }
+
+  return accepted
+}
+
+/** Returns the XP actually awarded by one canonical event after caps. */
+export function xpAwardedForEvent(
+  ledger: EventLedger,
+  eventId: EventId | string,
+): number {
+  const accepted = acceptedLedgerEvents(ledger).find((event) => event.eventId === eventId)
+  return accepted ? XP_BY_EVENT_CATEGORY[accepted.category] : 0
+}
+
 /**
  * Sums accepted XP by companion. Cap buckets are evaluated once across the
  * whole ledger, so switching companions cannot bypass a per-source limit.
@@ -158,32 +190,8 @@ function orderedForCap(events: readonly NormalizedEvent[]): NormalizedEvent[] {
 export function sumXpPerCompanion(
   ledger: EventLedger,
 ): Readonly<Record<CompanionId, number>> {
-  const events = uniqueEvents(ledger.events)
-  const cappedGroups = new Map<string, NormalizedEvent[]>()
-  const uncapped: NormalizedEvent[] = []
-
-  for (const event of events) {
-    if (!event.cap) {
-      uncapped.push(event)
-      continue
-    }
-
-    const group = cappedGroups.get(event.cap.key) ?? []
-    group.push(event)
-    cappedGroups.set(event.cap.key, group)
-  }
-
-  const accepted = [...uncapped]
-  for (const group of cappedGroups.values()) {
-    const ordered = orderedForCap(group)
-    // A conflicting limit is fail-closed. This avoids allowing a malformed
-    // later event to silently enlarge an already established cap bucket.
-    const limit = Math.min(...ordered.map((event) => event.cap!.limit))
-    accepted.push(...ordered.slice(0, limit))
-  }
-
   const totals: Record<CompanionId, number> = {}
-  for (const event of accepted) {
+  for (const event of acceptedLedgerEvents(ledger)) {
     totals[event.companionId] =
       (totals[event.companionId] ?? 0) + XP_BY_EVENT_CATEGORY[event.category]
   }

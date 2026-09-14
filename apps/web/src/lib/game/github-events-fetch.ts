@@ -296,31 +296,54 @@ async function fetchCheckRuns(
   // We need merged PRs to tie CI checks to. Fetch recent check runs against
   // the default branch's commits; map success back to a PR by head sha is
   // approximate but keeps the check in the eligible set.
-  const url = `${apiBase}/repos/${repoPath(repo)}/commits?per_page=${DEFAULT_PAGE_SIZE}`
-  const commits = await fetchJsonPage(client, url, headers, health)
-  if (!commits) return out
+  const commits: Record<string, unknown>[] = []
+  for (let page = 1; page <= MAX_PAGES; page += 1) {
+    const url = `${apiBase}/repos/${repoPath(repo)}/commits?per_page=${DEFAULT_PAGE_SIZE}${page === 1 ? '' : `&page=${page}`}`
+    const pageCommits = await fetchJsonPage(client, url, headers, health)
+    if (!pageCommits) break
+    commits.push(...pageCommits)
+    if (pageCommits.length < DEFAULT_PAGE_SIZE) break
+    if (page === MAX_PAGES) {
+      // The bounded adapter cannot claim completeness when every allowed page
+      // is full and GitHub may have another page of commits.
+      health.failedRequests += 1
+    }
+  }
   for (const commit of commits) {
     const commitSha = optionalString(stringField(commit, 'sha'))
     if (!commitSha) continue
-    const checksUrl = `${apiBase}/repos/${repoPath(repo)}/commits/${encodeURIComponent(commitSha)}/check-runs?per_page=30`
-    const checks = await fetchJsonPage(client, checksUrl, headers, health)
-    if (!checks) continue
-    for (const check of checks) {
-      const conclusion = optionalString(stringField(check, 'conclusion'))
-      const status = optionalString(stringField(check, 'status'))
-      const checkName = optionalString(stringField(check, 'name'))
-      const completedAt = stringField(check, 'completed_at')
-      if (conclusion?.toLowerCase() !== 'success') continue
-      if (!completedAt) continue
-      out.push({
-        id: stringField(check, 'node_id') ?? String(numberField(check, 'id') ?? 0),
-        repositoryId: repositoryId(repo),
-        completedAt,
-        conclusion,
-        status,
-        commitSha: commitSha,
-        ...(checkName ? { name: checkName } : {}),
-      })
+    let fetchedCheckCount = 0
+    let reportedCheckCount: number | undefined
+    for (let page = 1; page <= MAX_PAGES; page += 1) {
+      const checksUrl = `${apiBase}/repos/${repoPath(repo)}/commits/${encodeURIComponent(commitSha)}/check-runs?per_page=${DEFAULT_PAGE_SIZE}${page === 1 ? '' : `&page=${page}`}`
+      const checksPage = await fetchCheckRunsPage(client, checksUrl, headers, health)
+      if (!checksPage) break
+      fetchedCheckCount += checksPage.items.length
+      reportedCheckCount = checksPage.totalCount ?? reportedCheckCount
+      for (const check of checksPage.items) {
+        const conclusion = optionalString(stringField(check, 'conclusion'))
+        const status = optionalString(stringField(check, 'status'))
+        const checkName = optionalString(stringField(check, 'name'))
+        const completedAt = stringField(check, 'completed_at')
+        if (conclusion?.toLowerCase() !== 'success') continue
+        if (!completedAt) continue
+        out.push({
+          id: stringField(check, 'node_id') ?? String(numberField(check, 'id') ?? 0),
+          repositoryId: repositoryId(repo),
+          completedAt,
+          conclusion,
+          status,
+          commitSha: commitSha,
+          ...(checkName ? { name: checkName } : {}),
+        })
+      }
+      if (checksPage.items.length < DEFAULT_PAGE_SIZE) break
+      if (reportedCheckCount !== undefined && fetchedCheckCount >= reportedCheckCount) break
+    }
+    if (reportedCheckCount !== undefined && fetchedCheckCount < reportedCheckCount) {
+      // A bounded scan must not claim to be complete when GitHub reports more
+      // check runs than the adapter was able to read.
+      health.failedRequests += 1
     }
   }
   return out
@@ -442,6 +465,44 @@ async function fetchJsonObject(
     if (result) health.successfulRequests += 1
     else health.failedRequests += 1
     return result
+  } catch {
+    health.failedRequests += 1
+    return null
+  }
+}
+
+/** GitHub's check-runs list is wrapped in `{ check_runs: [...] }`. */
+interface CheckRunsPage {
+  items: Array<Record<string, unknown>>
+  totalCount?: number
+}
+
+async function fetchCheckRunsPage(
+  client: typeof fetch,
+  url: string,
+  headers: Record<string, string>,
+  health: FetchHealth,
+): Promise<CheckRunsPage | null> {
+  try {
+    const response = await withTimeout(client, url, headers)
+    if (!response.ok) {
+      health.failedRequests += 1
+      return null
+    }
+    const body: unknown = await response.json()
+    const bodyRecord = itemRecord(body)
+    const items = Array.isArray(body) ? body : bodyRecord?.check_runs
+    if (!Array.isArray(items)) {
+      health.failedRequests += 1
+      return null
+    }
+    health.successfulRequests += 1
+    const records = items.filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+    const totalCount = bodyRecord ? numberField(bodyRecord, 'total_count') : null
+    return {
+      items: records,
+      ...(totalCount === null ? {} : { totalCount }),
+    }
   } catch {
     health.failedRequests += 1
     return null
