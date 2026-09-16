@@ -77,6 +77,19 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
   namespaces from the cloud snapshot; SQLite remains the local/single-server
   fallback. Product snapshots now key by immutable GitHub ID, protect writes
   with optimistic timestamps, and keep restored event IDs replay-safe.
+- A bounded GitHub scan that reaches its page ceiling is now reported as
+  **truncated** instead of failed, so a long-history repository records its
+  baseline and can earn XP. Previously every such repository reported `partial`,
+  the baseline was withheld indefinitely, and the account stayed at zero XP no
+  matter how often the user synced.
+- CI checks are read from merged pull request head and merge commits rather than
+  by walking the default branch, removing roughly ninety to two hundred requests
+  per repository. GitHub's `403` is now reported as a rate limit rather than as
+  revoked access, and an empty repository's `409` is treated as a successful
+  empty read.
+- `POST /api/github/sync` streams newline-delimited progress, so the `/github`
+  surface shows the repository being read out of a known total, a live request
+  counter, and a cancel control instead of an indefinite spinner.
 
 ### Known prototype mismatch
 
@@ -118,6 +131,14 @@ keys, optimistic writes, and replay-safe product IDs are now implemented.
 Deploy and exercise OAuth, repository selection, baselines, XP, cloud restore,
 a second device, account rename, revoked access, and a redeploy before calling
 the hosted path production-ready.
+
+The progress timezone described in [`PRODUCT.md`](PRODUCT.md) section 5 is **not
+implemented**: days and sessions are currently bucketed in UTC, so a commit made
+late in the local evening can land on the previous day for a user east of UTC.
+The sync window is also bounded by page ceilings, so only the newest page of each
+activity list is read; the sync reports this as truncation rather than claiming a
+complete catch-up. Repository pagination beyond the collection cap, and a first
+real Vercel plus Supabase deployment verification, remain open.
 
 ### 3. Complete public profile privacy and account lifecycle
 

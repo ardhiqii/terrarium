@@ -204,6 +204,17 @@ or is paused is cleared back to a fresh baseline before it can resume. If
 GitHub no longer exposes enough history to verify an event, Terrarium does not
 guess.
 
+A bounded sync reads only the newest page of each activity list. When a scan
+reaches the end of that window with the final page still full, the read is
+reported as **truncated** rather than failed: the baseline is still recorded and
+the sync reports that the scan window ended. Because every list is read
+newest-first, the unread material is older than the recorded baseline and can
+never be awarded anyway. A genuinely failed request is treated differently and
+still withholds the baseline, so activity that could be newer than the
+checkpoint is retried rather than skipped. The sync route streams newline-
+delimited progress, so a long read reports the repository it is currently
+reading out of the known total instead of appearing frozen.
+
 Commits are evidence of activity rather than unlimited direct XP. Empty and
 generated-only commits award no XP. Active days and work sessions are capped;
 merged pull requests, releases, linked issues, and successful CI produce stable
@@ -343,6 +354,12 @@ history.
 
 XP belongs to the active companion. The system may show a small account-level
 encounter meter internally, but it must not become a second prominent level bar.
+
+**Not yet implemented — see [`ROADMAP.md`](ROADMAP.md).** The paragraphs below
+describe the intended contract; the shipped code currently buckets days and
+sessions in UTC, so a commit made late in the local evening can land on the
+previous day for a user east of UTC. This is a known gap, not a shipped
+behaviour.
 
 Daily and session caps use one account-level **progress timezone**. It defaults
 to the browser timezone when the user starts, does not change automatically

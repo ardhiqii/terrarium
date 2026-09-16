@@ -173,6 +173,31 @@ use the activity date, not the sync date. Catch-up is summarized as one return
 update rather than replaying every reaction. Activity before approval or the
 initial baseline never awards retroactive XP; unavailable history is not guessed.
 
+A truncated bounded read is not a failed read. Every activity list is walked
+newest-first, so a scan that reaches its page ceiling has still read the most
+recent activity, and the material it could not reach is older than the baseline
+recorded for that sync and can never be awarded. A truncated read therefore
+records its baseline and reports the truncation separately, and the sync still
+reports `ok`. Treating truncation as a failure previously made every repository
+with a long history report `partial`, which withheld the baseline indefinitely
+and left the account unable to earn XP at all. A genuinely failed request keeps
+the opposite behaviour: the baseline is withheld so activity that may be newer
+than the checkpoint can be retried instead of being skipped permanently.
+
+GitHub's `403` is reported as a rate limit, not as revoked access. GitHub
+returns `403` both for a real permission problem and for an exhausted rate
+limit; conflating them told users to reconnect an account that was working
+correctly. Only `401` means the credential is no longer usable.
+
+CI checks are read from the head and merge commits of merged pull requests, not
+by walking the default branch. The normalizer only ever awards a check that
+matches a merged pull request, so the earlier walk spent roughly ninety to two
+hundred requests per repository discovering checks that were then discarded.
+
+A long sync reports streamed progress. The route answers with newline-delimited
+JSON so the client can show which repository is being read out of a known total
+and how many requests have completed, rather than an indefinite spinner.
+
 Commits are evidence of activity, not an unlimited per-commit XP faucet. Empty
 or generated-only commits do not award XP. Active days and work sessions are
 capped, while meaningful outcomes such as merged pull requests, releases, and
@@ -218,6 +243,9 @@ The first balance uses simple evidence-based events:
 - new notes and net-new words after the source baseline;
 - newly resolved links;
 - merged pull requests, releases, linked issues, and successful CI.
+
+**Not yet implemented — see [`ROADMAP.md`](ROADMAP.md).** The shipped code
+buckets days and sessions in UTC; the contract below is the target.
 
 Daily and session caps use one account-level progress timezone. It defaults to
 the browser timezone at first setup, does not change automatically while the
