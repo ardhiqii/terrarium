@@ -73,6 +73,14 @@ uses the soft accent surface for its “tracking” state; an available tile res
 on raised paper. This keeps long repository lists easy to scan in both themes
 without turning every item into a heavy card.
 
+The repository browser adds a text search across repository names and owner
+paths, plus segmented source filters for all, individual-owner, and organization
+repositories. Owner sections can collapse with an inline disclosure control;
+searching or changing the source scope reopens matching sections so results do
+not disappear inside a closed group. The individual-owner scope follows
+GitHub's owner type and is labeled separately from organization repositories.
+Empty filtered results explain how to return to the full source list.
+
 ---
 
 ## 2. Visual system
