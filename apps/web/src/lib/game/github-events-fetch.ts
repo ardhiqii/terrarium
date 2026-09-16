@@ -36,7 +36,19 @@ const MAX_PAGES = 3
 /** Minimum gap between streamed progress events, in milliseconds. */
 const PROGRESS_THROTTLE_MS = 250
 /** Upper bound on merged-PR SHAs we will look up check runs for, per repo. */
-const MAX_CHECK_RUN_COMMITS = 30
+const MAX_CHECK_RUN_COMMITS = 15
+/**
+ * Upper bound on commits whose detail endpoint we will call, per repository.
+ *
+ * GitHub returns `stats` only on the single-commit endpoint, so every commit
+ * costs one request. An unbounded walk fetched details for up to 180 commits per
+ * repository (2 attribution fields x 3 pages x 30), which made a 25-repository
+ * sync spend roughly 7,000 requests against GitHub's 5,000/hour budget and never
+ * finish. Only the newest activity can ever be awarded, because the baseline
+ * recorded for a sync is `now`, so the walk is bounded here and the shortfall is
+ * reported as truncation instead of being silently assumed complete.
+ */
+const MAX_COMMITS_PER_REPO = 30
 
 export interface FetchGitHubEventsOptions {
   /** GitHub login of the connected account, e.g. 'ardhiqi'. */
@@ -491,6 +503,12 @@ async function fetchUserCommits(
       const sha = stringField(item, 'sha')
       if (!sha || seenShas.has(sha) || !attributedCommitToLogin(item, login)) continue
       seenShas.add(sha)
+      // Bounded on the count of commits *encountered*, not on the count that
+      // produced a record: a commit that fails the stats or date check never
+      // increments the output, so capping on the output would leave the walk
+      // unbounded. `continue` stops the detail request without abandoning the
+      // walk, so a long history costs a ceiling of detail calls.
+      if (seenShas.size > MAX_COMMITS_PER_REPO) continue
       const detail = recordWithStats(item)
         ? item
         : await fetchJsonObject(

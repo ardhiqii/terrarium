@@ -371,6 +371,47 @@ describe('fetchGitHubEvents', () => {
     expect(result.status).toBe('unavailable')
   })
 
+  it('caps commit-detail requests per repository so a 25-repo sync can finish', async () => {
+    // GitHub returns `stats` only from the single-commit endpoint, so every
+    // commit costs one request. An uncapped walk issued up to 180 detail calls
+    // for one repository (2 attribution fields x 3 pages x 30), which let a
+    // 25-repository sync spend roughly 7,000 requests against GitHub's
+    // 5,000/hour budget and never converge.
+    const repo = 'widgets'
+    const page = Array.from({ length: 30 }, (_, index) => ({
+      sha: `sha-${index + 1}`,
+      author: { login: 'octo' },
+    }))
+    const routes: Record<string, unknown> = {
+      [`https://api.github.com/repos/${repo}/pulls?state=closed&per_page=30&page=1`]: [],
+      [`https://api.github.com/repos/${repo}/releases?per_page=30`]: [],
+      [`https://api.github.com/repos/${repo}/issues?state=closed&per_page=30&page=1`]: [],
+      [`https://api.github.com/repos/${repo}/commits?author=octo&per_page=30&page=1`]: page,
+      [`https://api.github.com/repos/${repo}/commits?author=octo&per_page=30&page=2`]: page,
+      [`https://api.github.com/repos/${repo}/commits?author=octo&per_page=30&page=3`]: page,
+      [`https://api.github.com/repos/${repo}/commits?committer=octo&per_page=30&page=1`]: page,
+      [`https://api.github.com/repos/${repo}/commits?committer=octo&per_page=30&page=2`]: page,
+      [`https://api.github.com/repos/${repo}/commits?committer=octo&per_page=30&page=3`]: page,
+    }
+    const urls: string[] = []
+    const recordingFetch = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      urls.push(url)
+      return new Response(JSON.stringify(routes[url] ?? []), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    await fetchGitHubEvents({ ...opts, repos: [repo], fetch: recordingFetch })
+
+    // Each attribution field exposes 90 commits, so without the ceiling this
+    // would be up to 180 detail requests for a single repository.
+    const detailCalls = urls.filter((url) => /\/commits\/sha-\d+$/u.test(url)).length
+    expect(detailCalls).toBeGreaterThan(0)
+    expect(detailCalls).toBeLessThanOrEqual(30)
+  })
+
   it('falls back to listing the user repos when no explicit repos are given', async () => {
     const routes: Record<string, unknown> = {
       'https://api.github.com/users/octo/repos?per_page=100&sort=updated': [
