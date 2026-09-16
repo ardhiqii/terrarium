@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { asCompanionId, asEventId, type NormalizedEvent } from '../game/events'
 import { PROTOTYPE_COMPANION_CATALOG } from '../game/companion-catalog'
 import { advanceEncounter, createEncounterState } from '../game/encounters'
@@ -18,8 +18,11 @@ import {
   validateProductSyncedSnapshot,
   type ProductSnapshot,
 } from './product-snapshot'
+import { productEventProofPayload } from './product-event-proof-payload'
+import { issueVerifiedEventProof, verifyVerifiedEventProof } from './verified-event-proof'
 
 const now = '2026-08-28T10:00:00.000Z'
+const githubId = 42
 
 function event(id: string, companionId = 'pikachu-family'): NormalizedEvent {
   return {
@@ -65,6 +68,8 @@ function snapshotWith(overrides: Partial<ProductSnapshot>): ProductSnapshot {
 }
 
 describe('product snapshot', () => {
+  afterEach(() => vi.unstubAllEnvs())
+
   it('exposes the versioned ProductSyncedSnapshot aliases without changing the legacy adapter', () => {
     const productSnapshot = buildProductSnapshot(state(), now)
     const syncedSnapshot = buildProductSyncedSnapshot(state(), now)
@@ -229,7 +234,50 @@ describe('product snapshot', () => {
     expect(replayed.companions.find((companion) => companion.companionId === 'pikachu-family')?.xp).toBe(10)
   })
 
-  it('restores the safe event fields while dropping opaque source hashes', () => {
+  it('reproduces a server-issued receipt after a build -> restore -> build round trip', () => {
+    vi.stubEnv('SESSION_SECRET', 's'.repeat(32))
+    const source: NormalizedEvent = {
+      eventId: asEventId('github:42:work-session:2026-08-28-04'),
+      companionId: asCompanionId('pikachu-family'),
+      source: 'github',
+      sourceId: 'github-account:42',
+      provenance: 'verified',
+      category: 'work-session',
+      occurredAt: now,
+      cap: { key: 'github:42:2026-08-28:work-session', limit: 2 },
+      metadata: {
+        activityCount: 2,
+        sessionBucket: '2026-08-28-04',
+        repositoryId: 'repo-1',
+        linkedPullRequestId: 'pr-1',
+      },
+    }
+    const firstPass = buildProductSnapshot(state([source]), now)
+    const proofs = Object.fromEntries(
+      firstPass.events.map((snapshotEvent): [string, string] => [
+        snapshotEvent.eventId,
+        issueVerifiedEventProof(snapshotEvent, githubId),
+      ]),
+    )
+    const cloud = buildProductSnapshot(state([source]), now, proofs)
+    const restored = restoreProductStateFromSnapshot(
+      cloud,
+      createGuestProfile({ guestId: 'fresh-browser', starterCompanionId: 'pikachu-family', now }),
+      PROTOTYPE_COMPANION_CATALOG,
+    )
+    const rebuilt = buildProductSnapshot(restored, now, proofs)
+    const cloudEvent = cloud.events[0]
+    const restoredEvent = rebuilt.events[0]
+
+    expect(restoredEvent.cap).toEqual(cloudEvent.cap)
+    expect(restoredEvent.metadata).toEqual(cloudEvent.metadata)
+    expect(productEventProofPayload(restoredEvent, githubId)).toBe(
+      productEventProofPayload(cloudEvent, githubId),
+    )
+    expect(verifyVerifiedEventProof(restoredEvent, githubId, restoredEvent.verifiedProof as string)).toBe(true)
+  })
+
+  it('restores the safe event fields and keeps opaque source hashes lossless', () => {
     const original = buildProductSnapshot(state([event('event-1')]), now)
     const cloud = {
       ...original,
@@ -257,6 +305,10 @@ describe('product snapshot', () => {
       cap: { key: 'cap-hash', limit: 1 },
       metadata: { activityCount: 1, bucket: 2, number: 3, sessionBucket: '2026-08-28-0' },
     })
-    expect(restored.ledger.events[0]?.metadata).not.toHaveProperty('repositoryIdHash')
+    expect(restored.ledger.events[0]?.metadata).toMatchObject({
+      repositoryIdHash: 'repo-hash',
+      linkedPullRequestIdHash: 'linked-pr-hash',
+      pullRequestIdHash: 'pr-hash',
+    })
   })
 })
