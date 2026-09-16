@@ -65,6 +65,12 @@ submissions, and exposes a live status for assistive technology. Read-only
 repository browsing remains still so the page does not turn every component
 into a loading surface.
 
+Repository browsing is grouped by owner, but each repository is presented as an
+individual source tile rather than a continuous divider list. A selected tile
+uses the soft accent surface for its “tracking” state; an available tile rests
+on raised paper. This keeps long repository lists easy to scan in both themes
+without turning every item into a heavy card.
+
 ---
 
 ## 2. Visual system
