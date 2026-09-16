@@ -33,6 +33,10 @@ const DEFAULT_API_BASE = 'https://api.github.com'
 const FETCH_TIMEOUT_MS = 10_000
 const DEFAULT_PAGE_SIZE = 30
 const MAX_PAGES = 3
+/** Minimum gap between streamed progress events, in milliseconds. */
+const PROGRESS_THROTTLE_MS = 250
+/** Upper bound on merged-PR SHAs we will look up check runs for, per repo. */
+const MAX_CHECK_RUN_COMMITS = 30
 
 export interface FetchGitHubEventsOptions {
   /** GitHub login of the connected account, e.g. 'ardhiqi'. */
@@ -50,6 +54,11 @@ export interface FetchGitHubEventsOptions {
   apiBase?: string
   /** Test-only: inject a fetch. */
   fetch?: typeof fetch
+  /**
+   * Called as each repository is read, so a long sync can stream progress to
+   * whoever is waiting on it instead of appearing frozen.
+   */
+  onProgress?: (progress: GitHubEventsProgress) => void
 }
 
 export interface GithubRepoRef {
@@ -64,11 +73,44 @@ export interface GitHubEventsFetchResult {
   /** The account login the events were attributed to. */
   login: string
   status: GithubEventsFetchStatus
+  /**
+   * True when a bounded scan reached its page ceiling with a full final page, so
+   * the adapter cannot honestly claim to have read the whole history.
+   *
+   * Truncation is deliberately NOT a failure. Every list is read newest-first,
+   * so a truncated scan still captured the most recent activity; only material
+   * older than that was missed, and the baseline recorded for this sync is
+   * `now`, which is newer still. Counting truncation as a failure made every
+   * repo with a long history report `partial`, which withheld the baseline and
+   * stranded the account at zero XP permanently.
+   */
+  truncated: boolean
+}
+
+/** Progress payload for a long-running sync, emitted between repository reads. */
+export interface GitHubEventsProgress {
+  /** 1-based index of the repository currently being read. */
+  repositoryIndex: number
+  repositoryCount: number
+  /** `owner/name` of the repository currently being read. */
+  repository: string
+  /** Monotonic count of completed HTTP requests, for a live activity read-out. */
+  requestsDone: number
 }
 
 interface FetchHealth {
   successfulRequests: number
   failedRequests: number
+  /**
+   * Bounded-scan truncations, tracked separately from `failedRequests`.
+   * A full third page is the ordinary state of any repository with a long
+   * history, so it must not be reported as an error.
+   */
+  truncatedScans: number
+  /** Monotonic HTTP request counter feeding {@link GitHubEventsProgress}. */
+  requestsDone: number
+  /** Invoked after every completed HTTP round trip. */
+  onRequest?: () => void
 }
 
 function withTimeout(client: typeof fetch, url: string, headers: Record<string, string>): Promise<Response> {
@@ -86,7 +128,7 @@ export async function fetchGitHubEvents(
   try {
     return await fetchGitHubEventsInner(options)
   } catch {
-    return { input: emptyInput(), login: options.login, status: 'unavailable' }
+    return { input: emptyInput(), login: options.login, status: 'unavailable', truncated: false }
   }
 }
 
@@ -100,8 +142,15 @@ async function fetchGitHubEventsInner(
   const token = options.token ?? process.env.GITHUB_TOKEN
   const apiBase = options.apiBase ?? DEFAULT_API_BASE
   const client = options.fetch ?? globalThis.fetch
-  if (typeof client !== 'function') return { input: emptyInput(), login: options.login, status: 'unavailable' }
-  const health: FetchHealth = { successfulRequests: 0, failedRequests: 0 }
+  if (typeof client !== 'function') {
+    return { input: emptyInput(), login: options.login, status: 'unavailable', truncated: false }
+  }
+  const health: FetchHealth = {
+    successfulRequests: 0,
+    failedRequests: 0,
+    truncatedScans: 0,
+    requestsDone: 0,
+  }
 
   const headers: Record<string, string> = {
     Accept: 'application/vnd.github+json',
@@ -126,14 +175,45 @@ async function fetchGitHubEventsInner(
   const ciChecks: GitHubCiCheckRecord[] = []
   const commits: GitHubCommitRecord[] = []
 
+  const repositoryCount = repoRefs.length
+  let repositoryIndex = 0
+  let currentRepository = repoRefs[0]?.fullName ?? ''
+  let lastEmitAt = 0
+  const emitProgress = (force = false): void => {
+    if (!options.onProgress) return
+    const now = Date.now()
+    // Progress exists for a human watching a long sync, so a burst of parallel
+    // requests must not flood the stream. Repo boundaries always emit.
+    if (!force && now - lastEmitAt < PROGRESS_THROTTLE_MS) return
+    lastEmitAt = now
+    options.onProgress({
+      repositoryIndex,
+      repositoryCount,
+      repository: currentRepository,
+      requestsDone: health.requestsDone,
+    })
+  }
+  health.onRequest = () => {
+    health.requestsDone += 1
+    emitProgress()
+  }
+
   // For each repo, pull the activity. A repo that fails is skipped, never fatal.
   for (const repo of repoRefs) {
-    const [repoCommits, prs, rels, issues, checks] = await Promise.all([
+    repositoryIndex += 1
+    currentRepository = repo.fullName
+    emitProgress(true)
+
+    // Pull requests are read first because CI checks are looked up from the SHAs
+    // of the merged PRs, not from a walk of every recent default-branch commit.
+    // The normalizer only ever awards a check that matches a merged PR, so the
+    // old walk spent ~90-190 requests per repo to discover CI it then discarded.
+    const prs = await fetchMergedPullRequests(client, apiBase, headers, repo, options.login, health)
+    const [repoCommits, rels, issues, checks] = await Promise.all([
       fetchUserCommits(client, apiBase, headers, repo, options.login, health),
-      fetchMergedPullRequests(client, apiBase, headers, repo, options.login, health),
       fetchReleases(client, apiBase, headers, repo, options.login, health),
       fetchClosedIssues(client, apiBase, headers, repo, options.login, health),
-      fetchCheckRuns(client, apiBase, headers, repo, health),
+      fetchCheckRuns(client, apiBase, headers, repo, health, mergedPullRequestShas(prs)),
     ])
     commits.push(...repoCommits)
     mergedPullRequests.push(...prs)
@@ -141,6 +221,7 @@ async function fetchGitHubEventsInner(
     linkedIssues.push(...issues)
     ciChecks.push(...checks)
   }
+  emitProgress(true)
 
   return {
     input: {
@@ -158,7 +239,26 @@ async function fetchGitHubEventsInner(
       : health.failedRequests === 0
         ? 'ok'
         : 'partial',
+    truncated: health.truncatedScans > 0,
   }
+}
+
+/**
+ * SHAs worth looking up check runs for: the merged PR's own head and the merge
+ * commit GitHub created for it. `normalizeGitHubEvents` matches a check to a PR
+ * by exactly these two fields, so any other SHA is unusable by design.
+ */
+function mergedPullRequestShas(prs: readonly GitHubMergedPullRequestRecord[]): string[] {
+  const shas: string[] = []
+  const seen = new Set<string>()
+  for (const pr of prs) {
+    for (const sha of [pr.headSha, pr.mergeCommitSha]) {
+      if (!sha || seen.has(sha)) continue
+      seen.add(sha)
+      shas.push(sha)
+    }
+  }
+  return shas
 }
 
 async function fetchUserRepos(
@@ -219,6 +319,9 @@ async function fetchMergedPullRequests(
       })
     }
     if (items.length < DEFAULT_PAGE_SIZE) break
+    // A full final page means GitHub may still hold more, so the bounded scan
+    // cannot claim completeness. That is truncation, not failure.
+    if (page === MAX_PAGES) health.truncatedScans += 1
   }
   return out
 }
@@ -281,6 +384,7 @@ async function fetchClosedIssues(
       })
     }
     if (items.length < DEFAULT_PAGE_SIZE) break
+    if (page === Math.min(MAX_PAGES, 1)) health.truncatedScans += 1
   }
   return out
 }
@@ -291,27 +395,15 @@ async function fetchCheckRuns(
   headers: Record<string, string>,
   repo: GithubRepoRef,
   health: FetchHealth,
+  commitShas: readonly string[],
 ): Promise<GitHubCiCheckRecord[]> {
   const out: GitHubCiCheckRecord[] = []
-  // We need merged PRs to tie CI checks to. Fetch recent check runs against
-  // the default branch's commits; map success back to a PR by head sha is
-  // approximate but keeps the check in the eligible set.
-  const commits: Record<string, unknown>[] = []
-  for (let page = 1; page <= MAX_PAGES; page += 1) {
-    const url = `${apiBase}/repos/${repoPath(repo)}/commits?per_page=${DEFAULT_PAGE_SIZE}${page === 1 ? '' : `&page=${page}`}`
-    const pageCommits = await fetchJsonPage(client, url, headers, health)
-    if (!pageCommits) break
-    commits.push(...pageCommits)
-    if (pageCommits.length < DEFAULT_PAGE_SIZE) break
-    if (page === MAX_PAGES) {
-      // The bounded adapter cannot claim completeness when every allowed page
-      // is full and GitHub may have another page of commits.
-      health.failedRequests += 1
-    }
-  }
-  for (const commit of commits) {
-    const commitSha = optionalString(stringField(commit, 'sha'))
-    if (!commitSha) continue
+  // CI checks are only ever awarded when they match a merged pull request, so
+  // they are looked up from the merged PRs' head and merge SHAs rather than by
+  // walking the default branch. The previous walk cost up to 3 commit pages and
+  // then up to 3 check-run pages for each of up to 90 commits, per repository,
+  // and the normalizer discarded every check that did not match a merged PR.
+  for (const commitSha of commitShas.slice(0, MAX_CHECK_RUN_COMMITS)) {
     let fetchedCheckCount = 0
     let reportedCheckCount: number | undefined
     for (let page = 1; page <= MAX_PAGES; page += 1) {
@@ -342,8 +434,10 @@ async function fetchCheckRuns(
     }
     if (reportedCheckCount !== undefined && fetchedCheckCount < reportedCheckCount) {
       // A bounded scan must not claim to be complete when GitHub reports more
-      // check runs than the adapter was able to read.
-      health.failedRequests += 1
+      // check runs than the adapter was able to read. This is truncation, not
+      // failure: the unread checks belong to older PRs and can never be
+      // awarded, because the baseline for this sync is `now`.
+      health.truncatedScans += 1
     }
   }
   return out
@@ -418,6 +512,7 @@ async function fetchUserCommits(
       })
       }
       if (items.length < DEFAULT_PAGE_SIZE) break
+      if (page === MAX_PAGES) health.truncatedScans += 1
     }
   }
   return out
@@ -431,7 +526,15 @@ async function fetchJsonPage(
 ): Promise<Array<Record<string, unknown>> | null> {
   try {
     const response = await withTimeout(client, url, headers)
+    health.onRequest?.()
     if (!response.ok) {
+      // An empty repository legitimately has no commits. GitHub answers 409
+      // "Git Repository is empty." for it; treating that as a failed read
+      // withheld the baseline for every brand-new repository.
+      if (response.status === 409) {
+        health.successfulRequests += 1
+        return []
+      }
       health.failedRequests += 1
       return null
     }
@@ -456,6 +559,7 @@ async function fetchJsonObject(
 ): Promise<Record<string, unknown> | null> {
   try {
     const response = await withTimeout(client, url, headers)
+    health.onRequest?.()
     if (!response.ok) {
       health.failedRequests += 1
       return null
@@ -485,7 +589,13 @@ async function fetchCheckRunsPage(
 ): Promise<CheckRunsPage | null> {
   try {
     const response = await withTimeout(client, url, headers)
+    health.onRequest?.()
     if (!response.ok) {
+      // No commits means no check runs; an empty repo is a successful empty read.
+      if (response.status === 409) {
+        health.successfulRequests += 1
+        return { items: [] }
+      }
       health.failedRequests += 1
       return null
     }
