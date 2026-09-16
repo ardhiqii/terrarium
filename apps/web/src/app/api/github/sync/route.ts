@@ -164,6 +164,9 @@ export async function POST(request: NextRequest): Promise<Response> {
     let events: ReturnType<typeof normalizeGitHubEvents> = []
     let fetchStatus: 'ok' | 'partial' | 'unavailable' = eligible.length === 0 ? 'ok' : 'unavailable'
     let truncated = false
+    // Aborted when the consumer stops reading, so the GitHub requests actually
+    // stop rather than continuing with nobody waiting for the result.
+    const abort = new AbortController()
 
     /**
      * Reads activity for every eligible repository. `onProgress` is optional so
@@ -182,6 +185,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         sourceId: String(session.githubId),
         repos: refs,
         token,
+        signal: abort.signal,
         ...(onProgress ? { onProgress } : {}),
       })
       fetchStatus = fetched.status
@@ -268,6 +272,12 @@ export async function POST(request: NextRequest): Promise<Response> {
     // caller can show real movement instead of an indefinite spinner.
     const encoder = new TextEncoder()
     const stream = new ReadableStream<Uint8Array>({
+      // A consumer that goes away must stop the GitHub reads, not merely the
+      // response. Abandoning the response alone kept up to 25 repositories
+      // being fetched against the account's hourly request budget.
+      cancel() {
+        abort.abort()
+      },
       start(controller) {
         let closed = false
         const close = (): void => {
@@ -297,6 +307,12 @@ export async function POST(request: NextRequest): Promise<Response> {
               repositoryNames: eligible.map((repository) => repository.fullName),
             })
             await readActivity((progress) => write({ type: 'progress', ...progress }))
+            // A cancelled read is not a result: it must never be presented as
+            // a completed sync, and no baseline may be implied from it.
+            if (abort.signal.aborted) {
+              write({ type: 'error', status: 499, error: 'Sync cancelled.' })
+              return
+            }
             if (fetchStatus === 'unavailable') {
               write({
                 type: 'error',

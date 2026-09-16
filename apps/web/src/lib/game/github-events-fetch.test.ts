@@ -323,6 +323,54 @@ describe('fetchGitHubEvents', () => {
     expect(progress.some((event) => event.repository === 'tools' && event.repositoryIndex === 2)).toBe(true)
   })
 
+  it('stops reading remaining repositories once the caller aborts', async () => {
+    // Cancelling used to abandon only the response while the server kept
+    // walking every remaining repository against the account's hourly request
+    // budget. A cancelled sync must actually stop requesting.
+    const controller = new AbortController()
+    const urls: string[] = []
+    const abortingFetch = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      urls.push(url)
+      if (url.includes('/repos/first/')) controller.abort()
+      return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }) as typeof fetch
+
+    await fetchGitHubEvents({
+      login: 'octo',
+      repos: ['first', 'second', 'third'],
+      fetch: abortingFetch,
+      signal: controller.signal,
+    })
+
+    expect(urls.some((url) => url.includes('/repos/first/'))).toBe(true)
+    expect(urls.some((url) => url.includes('/repos/second/'))).toBe(false)
+    expect(urls.some((url) => url.includes('/repos/third/'))).toBe(false)
+  })
+
+  it('makes no requests at all when handed an already-aborted signal', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    let requests = 0
+    const countingFetch = (async () => {
+      requests += 1
+      return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }) as typeof fetch
+
+    const result = await fetchGitHubEvents({
+      login: 'octo',
+      repos: ['first'],
+      fetch: countingFetch,
+      signal: controller.signal,
+    })
+
+    // The repository loop is never entered, so nothing is spent on a sync the
+    // caller has already given up on.
+    expect(requests).toBe(0)
+    // Nothing was readable, so the caller must withhold the baseline.
+    expect(result.status).toBe('unavailable')
+  })
+
   it('falls back to listing the user repos when no explicit repos are given', async () => {
     const routes: Record<string, unknown> = {
       'https://api.github.com/users/octo/repos?per_page=100&sort=updated': [

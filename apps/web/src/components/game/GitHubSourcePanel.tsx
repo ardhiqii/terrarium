@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   asCompanionId,
   asEventId,
@@ -38,6 +38,7 @@ import { productEventId } from '@/lib/sync/product-event-id'
 import { filterGithubRepositories, type RepositoryScope } from '@/lib/sync/github-repository-browser'
 import type { GithubRepository } from '@/lib/sync/github-repositories'
 import { CompanionSwitcher } from './CompanionSwitcher'
+import { SyncProgress } from './SyncProgress'
 import { EncounterReveal } from './EncounterReveal'
 import { ProductActivityPanel } from './ProductActivityPanel'
 import { GitHubRewardGuide } from './GitHubRewardGuide'
@@ -150,6 +151,117 @@ async function responseBody(response: Response): Promise<Record<string, unknown>
   return isRecord(body) ? body : {}
 }
 
+interface SyncProgressState {
+  repositoryIndex: number
+  repositoryCount: number
+  repository: string
+  requestsDone: number
+}
+
+/**
+ * Reads a streamed sync response.
+ *
+ * A sync reads up to 25 repositories back to back, so the route answers with
+ * newline-delimited JSON and reports each repository as it starts. Pre-flight
+ * failures and the no-repositories path still answer with ordinary JSON, and
+ * that is handled here so callers see one shape either way.
+ */
+async function readSyncResponse(
+  response: Response,
+  onProgress: (progress: SyncProgressState) => void,
+  signal: AbortSignal,
+): Promise<Record<string, unknown>> {
+  const contentType = response.headers.get('content-type') ?? ''
+  if (!contentType.includes('application/x-ndjson') || !response.body) {
+    return responseBody(response)
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  // Held in an object so the closure assignments below are not narrowed away.
+  const outcome: {
+    result: Record<string, unknown>
+    failure: string | null
+    /** True once a `result` or `error` line has been seen. */
+    sawTerminal: boolean
+  } = {
+    result: {},
+    failure: null,
+    sawTerminal: false,
+  }
+
+  const handleLine = (line: string): void => {
+    const trimmed = line.trim()
+    if (trimmed.length === 0) return
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(trimmed)
+    } catch {
+      // A corrupt or partial line must never take the whole sync down.
+      return
+    }
+    if (!isRecord(parsed)) return
+    if (parsed.type === 'progress') {
+      onProgress({
+        repositoryIndex: typeof parsed.repositoryIndex === 'number' ? parsed.repositoryIndex : 0,
+        repositoryCount: typeof parsed.repositoryCount === 'number' ? parsed.repositoryCount : 0,
+        repository: typeof parsed.repository === 'string' ? parsed.repository : '',
+        requestsDone: typeof parsed.requestsDone === 'number' ? parsed.requestsDone : 0,
+      })
+      return
+    }
+    if (parsed.type === 'result' && isRecord(parsed.payload)) {
+      outcome.result = parsed.payload
+      outcome.sawTerminal = true
+      return
+    }
+    if (parsed.type === 'error') {
+      outcome.sawTerminal = true
+      outcome.failure = typeof parsed.error === 'string'
+        ? parsed.error
+        : 'GitHub activity could not be synced.'
+    }
+  }
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      // A line split across two chunks stays buffered until its newline arrives.
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) handleLine(line)
+    }
+    // Flush the decoder. A multi-byte character split across the final chunk
+    // boundary is held back until the stream is explicitly drained, and losing
+    // it would corrupt the terminal line.
+    buffer += decoder.decode()
+    handleLine(buffer)
+  } finally {
+    if (signal.aborted) {
+      await reader.cancel().catch(() => undefined)
+    }
+    try {
+      reader.releaseLock()
+    } catch {
+      // A lock already released by cancel() must not mask the real outcome.
+    }
+  }
+
+  if (outcome.failure) throw new Error(outcome.failure)
+  // A stream that ends without a terminal line means the sync was cut off: a
+  // platform timeout, a proxy that rewrote the content type, or a corrupt line.
+  // Returning an empty body here would surface as a successful sync reporting
+  // "0 new verified events", which is precisely the false success this
+  // indicator exists to prevent. Fail loudly instead.
+  if (!outcome.sawTerminal) {
+    throw new Error('The sync ended before it finished. Nothing was awarded; try again.')
+  }
+  return outcome.result
+}
+
 function errorMessage(body: Record<string, unknown>, fallback: string): string {
   return typeof body.error === 'string' ? body.error : fallback
 }
@@ -243,6 +355,12 @@ export function GitHubSourcePanel() {
   const [status, setStatus] = useState<'loading' | 'ready' | 'signed-out' | 'error'>('loading')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
+  const [progress, setProgress] = useState<SyncProgressState | null>(null)
+  // Cancelling only makes sense while the GitHub read is still in flight. Once
+  // the result has arrived the remaining work is local and must finish, or the
+  // panel would claim a cancellation while still applying the events.
+  const [readingPhase, setReadingPhase] = useState(false)
+  const syncAbortRef = useRef<AbortController | null>(null)
   const [savingSettings, setSavingSettings] = useState(false)
   const [lastSyncSummary, setLastSyncSummary] = useState<string | null>(null)
   const [repositoryQuery, setRepositoryQuery] = useState('')
@@ -379,14 +497,36 @@ export function GitHubSourcePanel() {
     if (!productState) return
     setBusy(true)
     setMessage('')
+    setProgress(null)
+    setReadingPhase(true)
+    const controller = new AbortController()
+    syncAbortRef.current = controller
+    const cancelled = (): boolean => controller.signal.aborted
     try {
       if (settingsChanged && !(await saveSettings())) return
       const response = await fetch('/api/github/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ activeCompanionId: productState.profile.activeCompanionId }),
+        signal: controller.signal,
       })
-      const body = await responseBody(response)
+      let body: Record<string, unknown> = {}
+      try {
+        body = await readSyncResponse(response, setProgress, controller.signal)
+      } catch (error) {
+        // An aborted read is the user's own doing, not a failure.
+        if (cancelled()) {
+          setLastSyncSummary('Sync cancelled. No new activity was awarded.')
+          return
+        }
+        throw error
+      } finally {
+        setReadingPhase(false)
+      }
+      if (cancelled()) {
+        setLastSyncSummary('Sync cancelled. No new activity was awarded.')
+        return
+      }
       if (!response.ok) {
         setMessage(errorMessage(body, 'GitHub activity could not be synced.'))
         return
@@ -438,21 +578,33 @@ export function GitHubSourcePanel() {
       const baselineCount = Array.isArray(body.newBaselineRepositoryIds) ? body.newBaselineRepositoryIds.length : 0
       const skippedCount = typeof body.skippedRepositoryCount === 'number' ? body.skippedRepositoryCount : 0
       const limitNote = skippedCount > 0 ? ` ${skippedCount} more will stay pending; narrow the selection to sync them.` : ''
+      // Truncation is not a failure: the scan window ended before the oldest
+      // activity, and everything newer than the checkpoint was still awarded.
+      const truncatedNote = body.truncated === true
+        ? ' The scan window ended before the oldest activity; earlier history is not awarded.'
+        : ''
       const cloudNote = snapshotResponse.ok
         ? ' Condition saved.'
         : ` Local progress is safe, but cloud condition was not saved: ${errorMessage(snapshotBody, 'try again later')}`
       if (body.kind === 'baseline') {
-        setLastSyncSummary(`Baseline recorded for ${baselineCount} ${baselineCount === 1 ? 'repository' : 'repositories'} · no old history awarded.${limitNote}${cloudNote}`)
+        setLastSyncSummary(`Baseline recorded for ${baselineCount} ${baselineCount === 1 ? 'repository' : 'repositories'} · no old history awarded.${limitNote}${truncatedNote}${cloudNote}`)
       } else if (body.kind === 'partial' || body.syncStatus === 'partial') {
         setLastSyncSummary(`Checked ${count} tracked ${count === 1 ? 'repository' : 'repositories'} · ${eventCount} new verified events. Some activity could not be read completely; try again to catch up.${limitNote}${cloudNote}`)
       } else {
-        setLastSyncSummary(`Checked ${count} tracked ${count === 1 ? 'repository' : 'repositories'} · ${eventCount} new verified events.${limitNote}${cloudNote}`)
+        setLastSyncSummary(`Checked ${count} tracked ${count === 1 ? 'repository' : 'repositories'} · ${eventCount} new verified events.${truncatedNote}${limitNote}${cloudNote}`)
       }
       await loadRepositories()
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'GitHub activity could not be synced.')
+      if (cancelled()) {
+        setLastSyncSummary('Sync cancelled. No new activity was awarded.')
+      } else {
+        setMessage(error instanceof Error ? error.message : 'GitHub activity could not be synced.')
+      }
     } finally {
       setBusy(false)
+      setProgress(null)
+      setReadingPhase(false)
+      syncAbortRef.current = null
     }
   }, [accountNamespace, loadRepositories, productState, saveSettings, settingsChanged])
 
@@ -513,15 +665,37 @@ export function GitHubSourcePanel() {
             </p>
           </div>
           {status === 'ready' && (
-            <button
-              type="button"
-              onClick={() => void syncNow()}
-              disabled={sourceControlsDisabled || !productState}
-              className="ui-row font-ui shrink-0 border px-4 py-3 text-sm font-medium disabled:cursor-wait disabled:opacity-50"
-              style={{ borderColor: 'var(--accent)', color: 'var(--ink)' }}
-            >
-              {busy ? 'Syncing…' : 'Sync GitHub now'}
-            </button>
+            <div className="shrink-0 lg:w-72">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void syncNow()}
+                  disabled={sourceControlsDisabled || !productState}
+                  className="ui-row font-ui border px-4 py-3 text-sm font-medium transition-transform active:translate-y-[1px] disabled:cursor-wait disabled:opacity-50 motion-reduce:transition-none"
+                  style={{ borderColor: 'var(--accent)', color: 'var(--ink)' }}
+                >
+                  {busy ? 'Syncing…' : 'Sync GitHub now'}
+                </button>
+                {busy && readingPhase && (
+                  <button
+                    type="button"
+                    onClick={() => syncAbortRef.current?.abort()}
+                    className="ui-row font-ui border px-3 py-3 text-xs transition-transform active:translate-y-[1px] motion-reduce:transition-none"
+                    style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+              {busy && (
+                <SyncProgress
+                  repositoryIndex={progress?.repositoryIndex ?? 0}
+                  repositoryCount={progress?.repositoryCount ?? 0}
+                  repository={progress?.repository ?? ''}
+                  requestsDone={progress?.requestsDone ?? 0}
+                />
+              )}
+            </div>
           )}
         </div>
       </section>

@@ -59,6 +59,12 @@ export interface FetchGitHubEventsOptions {
    * whoever is waiting on it instead of appearing frozen.
    */
   onProgress?: (progress: GitHubEventsProgress) => void
+  /**
+   * Aborts the read. Cancelling a sync must actually stop the GitHub requests
+   * rather than only abandoning the response, otherwise a cancelled sync keeps
+   * burning the account's hourly request budget in the background.
+   */
+  signal?: AbortSignal
 }
 
 export interface GithubRepoRef {
@@ -141,10 +147,30 @@ async function fetchGitHubEventsInner(
 ): Promise<GitHubEventsFetchResult> {
   const token = options.token ?? process.env.GITHUB_TOKEN
   const apiBase = options.apiBase ?? DEFAULT_API_BASE
-  const client = options.fetch ?? globalThis.fetch
-  if (typeof client !== 'function') {
+  const rawClient = options.fetch ?? globalThis.fetch
+  if (typeof rawClient !== 'function') {
     return { input: emptyInput(), login: options.login, status: 'unavailable', truncated: false }
   }
+  // The caller's abort signal is merged in at the client boundary so that every
+  // request helper observes it without each one having to thread it through,
+  // and so the per-request timeout signal keeps working alongside it.
+  const externalSignal = options.signal
+  const client: typeof fetch = externalSignal
+    ? ((input: RequestInfo | URL, init?: RequestInit) => {
+        const timeoutSignal = init?.signal ?? null
+        const merged = new AbortController()
+        const forward = (): void => merged.abort()
+        if (timeoutSignal?.aborted || externalSignal.aborted) merged.abort()
+        else {
+          timeoutSignal?.addEventListener('abort', forward, { once: true })
+          externalSignal.addEventListener('abort', forward, { once: true })
+        }
+        return rawClient(input, { ...init, signal: merged.signal }).finally(() => {
+          timeoutSignal?.removeEventListener('abort', forward)
+          externalSignal.removeEventListener('abort', forward)
+        })
+      })
+    : rawClient
   const health: FetchHealth = {
     successfulRequests: 0,
     failedRequests: 0,
@@ -200,6 +226,9 @@ async function fetchGitHubEventsInner(
 
   // For each repo, pull the activity. A repo that fails is skipped, never fatal.
   for (const repo of repoRefs) {
+    // A cancelled sync stops reading immediately instead of walking every
+    // remaining repository against the account's hourly request budget.
+    if (options.signal?.aborted) break
     repositoryIndex += 1
     currentRepository = repo.fullName
     emitProgress(true)
