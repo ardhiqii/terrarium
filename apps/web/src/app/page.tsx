@@ -50,7 +50,7 @@ export default function HomePage() {
           </Link>
 
           <Link
-            href="/projects"
+            href="/notes#projects"
             className="px-4 py-2 border-l hover:opacity-70 transition-opacity"
             style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}
           >
