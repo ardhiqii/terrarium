@@ -66,7 +66,9 @@ repository browsing remains still so the page does not turn every component
 into a loading surface.
 
 Repository browsing is grouped by owner, but each repository is presented as an
-individual source tile rather than a continuous divider list. A selected tile
+individual source tile rather than a continuous divider list. The tiles form a
+single-column source register so a repository’s identity stays together with
+its tracking state and access status, even when names are long. A selected tile
 uses the soft accent surface for its “tracking” state; an available tile rests
 on raised paper. This keeps long repository lists easy to scan in both themes
 without turning every item into a heavy card.

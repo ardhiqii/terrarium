@@ -635,7 +635,7 @@ export function GitHubSourcePanel() {
                   </div>
                   <span className="font-data shrink-0 text-xs" style={{ color: 'var(--ink-muted)' }}>{ownerRepositories.length} repos</span>
                 </div>
-                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <div className="mt-3 grid gap-2">
                   {ownerRepositories.map((repository) => {
                     const autoTracked = repository.ownerType === 'User'
                       ? draftAutoPersonal
@@ -646,10 +646,10 @@ export function GitHubSourcePanel() {
                       <label
                         key={repository.id}
                         data-active={checked}
-                        className="ui-row github-source-tile group flex min-h-20 items-start gap-3 p-4"
+                        className="ui-row github-source-tile grid min-h-16 grid-cols-[auto_minmax(0,1fr)] items-center gap-3 p-3 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:gap-4 sm:p-4"
                         style={{ opacity: disabled || sourceControlsDisabled ? 0.55 : 1 }}
                       >
-                        <input type="checkbox" checked={checked} disabled={disabled || sourceControlsDisabled} onChange={() => toggleTracked(repository)} className="mt-1 shrink-0" />
+                        <input type="checkbox" checked={checked} disabled={disabled || sourceControlsDisabled} onChange={() => toggleTracked(repository)} className="shrink-0" />
                         <span className="min-w-0 flex-1">
                           <span className="flex flex-wrap items-center gap-2">
                             <span className="font-ui text-sm font-medium">{repository.name}</span>
@@ -657,7 +657,10 @@ export function GitHubSourcePanel() {
                             <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>{repository.private ? 'private' : 'public'}</span>
                             {repository.archived && <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>archived</span>}
                           </span>
-                          <span className="font-data mt-2 block truncate text-xs" style={{ color: 'var(--ink-muted)' }}>{repository.fullName} · {repository.canRead ? 'readable' : 'access paused'}</span>
+                          <span className="font-data mt-1 block truncate text-xs" style={{ color: 'var(--ink-muted)' }}>{repository.fullName}</span>
+                        </span>
+                        <span className="font-data hidden shrink-0 text-right text-[10px] uppercase tracking-wider sm:block" style={{ color: repository.canRead ? 'var(--ink-muted)' : 'var(--accent)' }}>
+                          {repository.canRead ? 'readable' : 'access paused'}
                         </span>
                       </label>
                     )
