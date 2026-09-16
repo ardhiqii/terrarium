@@ -63,6 +63,11 @@ async function availableRepositories(token: string): Promise<readonly GithubRepo
   if (result.status === 'unauthorized') {
     return json(401, { error: 'GitHub access was revoked or expired. Reconnect GitHub.' })
   }
+  if (result.status === 'rate-limited') {
+    // A rate limit is transient: reconnecting GitHub would not help, so the
+    // user is told to retry instead of being signed out.
+    return json(429, { error: 'GitHub rate limit reached. Try again once the limit resets.' })
+  }
   if (result.status !== 'ok') {
     return json(502, { error: 'GitHub could not be reached. Try again shortly.' })
   }

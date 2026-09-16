@@ -27,7 +27,7 @@ export interface GithubRepository {
   readonly canRead: boolean
 }
 
-export type GithubRepositoryFetchStatus = 'ok' | 'unauthorized' | 'unavailable'
+export type GithubRepositoryFetchStatus = 'ok' | 'unauthorized' | 'rate-limited' | 'unavailable'
 
 export interface GithubRepositoryFetchResult {
   readonly status: GithubRepositoryFetchStatus
@@ -114,8 +114,15 @@ export async function fetchGithubRepositories(
     for (let page = 1; page <= MAX_PAGES; page += 1) {
       const url = `${apiBase}/user/repos?affiliation=owner%2Ccollaborator%2Corganization_member&per_page=${PAGE_SIZE}&sort=updated&page=${page}`
       const response = await withTimeout(client, url, token)
-      if (response.status === 401 || response.status === 403) {
+      if (response.status === 401) {
         return { status: 'unauthorized', repositories: [] }
+      }
+      if (response.status === 403) {
+        // GitHub answers 403 both for a genuine permission problem and for an
+        // exhausted rate limit. Reporting a rate limit as revoked access told
+        // the user to reconnect an account that was working fine, so the two
+        // cases are separated and the caller can offer a retry instead.
+        return { status: 'rate-limited', repositories: [] }
       }
       if (!response.ok) return { status: 'unavailable', repositories: [] }
       const body: unknown = await response.json()

@@ -11,7 +11,7 @@
 
 import { NextRequest } from 'next/server'
 import { normalizeGitHubEvents, type GitHubEventNormalizationInput } from '@/lib/game/github-events'
-import { fetchGitHubEvents, type GithubRepoRef } from '@/lib/game/github-events-fetch'
+import { fetchGitHubEvents, type GitHubEventsProgress, type GithubRepoRef } from '@/lib/game/github-events-fetch'
 import { checkRateLimit } from '@/lib/game/api-cache'
 import { getGithubAccountStore, type GithubAccountSettings } from '@/lib/sync/github-account-store'
 import { fetchGithubRepositories, type GithubRepository } from '@/lib/sync/github-repositories'
@@ -22,6 +22,13 @@ import { issueVerifiedEventProof } from '@/lib/sync/verified-event-proof'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
+/**
+ * A sync reads up to {@link MAX_SYNC_REPOSITORIES} repositories and can run for
+ * a while. Vercel's default function ceiling would cut the read off mid-flight,
+ * and a truncated response is indistinguishable from a hang on the client.
+ * Vercel clamps this to the maximum its plan allows.
+ */
+export const maxDuration = 60
 const SYNC_PAYLOAD_LIMIT_BYTES = 16 * 1024
 const MAX_SYNC_REPOSITORIES = 25
 
@@ -122,6 +129,9 @@ export async function POST(request: NextRequest): Promise<Response> {
     if (repositoryResult.status === 'unauthorized') {
       return json(401, { error: 'GitHub access was revoked or expired. Reconnect GitHub.' })
     }
+    if (repositoryResult.status === 'rate-limited') {
+      return json(429, { error: 'GitHub rate limit reached. Try again once the limit resets.' })
+    }
     if (repositoryResult.status !== 'ok') {
       return json(502, { error: 'GitHub could not be reached. Try again shortly.' })
     }
@@ -153,7 +163,16 @@ export async function POST(request: NextRequest): Promise<Response> {
 
     let events: ReturnType<typeof normalizeGitHubEvents> = []
     let fetchStatus: 'ok' | 'partial' | 'unavailable' = eligible.length === 0 ? 'ok' : 'unavailable'
-    if (eligible.length > 0) {
+    let truncated = false
+
+    /**
+     * Reads activity for every eligible repository. `onProgress` is optional so
+     * the no-repositories path can reuse this without a stream to write to.
+     */
+    const readActivity = async (
+      onProgress?: (progress: GitHubEventsProgress) => void,
+    ): Promise<void> => {
+      if (eligible.length === 0) return
       const refs: GithubRepoRef[] = eligible.map((repository) => ({
         id: repository.id,
         fullName: repository.fullName,
@@ -163,9 +182,15 @@ export async function POST(request: NextRequest): Promise<Response> {
         sourceId: String(session.githubId),
         repos: refs,
         token,
+        ...(onProgress ? { onProgress } : {}),
       })
       fetchStatus = fetched.status
+      truncated = fetched.truncated === true
       if (fetched.status !== 'unavailable' && fetched.input.sourceId) {
+        // A truncated read is still a successful read: every list is walked
+        // newest-first, so the material it could not reach is older than the
+        // baseline `now` we record below and can never be awarded anyway.
+        // Only a genuine failure withholds the baseline.
         if (fetched.status === 'ok') {
           for (const repository of eligible) {
             if (baselineByRepositoryId[repository.id]) continue
@@ -181,49 +206,124 @@ export async function POST(request: NextRequest): Promise<Response> {
       }
     }
 
-    if (fetchStatus === 'unavailable') {
-      return json(502, { error: 'GitHub activity could not be read completely. No new baseline was recorded.' })
+    /**
+     * Receipt issuance is part of the same logical checkpoint as the baseline.
+     * If signing fails, the caller throws and the old baseline is left untouched
+     * so the activity can be retried instead of being silently consumed.
+     */
+    const buildBody = (): Record<string, unknown> => {
+      const verifiedEventProofs: Record<string, string> = {}
+      const snapshotEvents = events.map((event) => productSnapshotEvent(event))
+      for (const snapshotEvent of snapshotEvents) {
+        verifiedEventProofs[snapshotEvent.eventId] = issueVerifiedEventProof(snapshotEvent, session.githubId)
+      }
+
+      const nextSettings: GithubAccountSettings = {
+        ...settings,
+        trackedRepositoryIds: [...trackedRepositoryIds].sort(),
+        baselineByRepositoryId,
+        lastSyncedAt: fetchStatus === 'ok' ? now : settings.lastSyncedAt,
+      }
+      const checkpoint = issueGithubSyncCheckpoint({
+        githubId: session.githubId,
+        previousBaselineByRepositoryId: settings.baselineByRepositoryId,
+        nextBaselineByRepositoryId: nextSettings.baselineByRepositoryId,
+        nextLastSyncedAt: nextSettings.lastSyncedAt,
+        eventIds: snapshotEvents.map((event) => event.eventId),
+      })
+
+      return {
+        kind: fetchStatus === 'partial'
+          ? 'partial'
+          : events.length === 0 && newBaselineRepositoryIds.length > 0
+            ? 'baseline'
+            : 'synced',
+        events,
+        repositoryCount: eligible.length,
+        eligibleRepositoryCount: eligibleCandidates.length,
+        skippedRepositoryCount,
+        newBaselineRepositoryIds,
+        lastSyncedAt: now,
+        syncStatus: fetchStatus,
+        /**
+         * True when the bounded scan reached its page ceiling. Reported so the
+         * panel can say the window was reached instead of implying that every
+         * historical activity was read and rejected.
+         */
+        truncated,
+        summary: activitySummary(events),
+        verifiedEventProofs,
+        checkpoint,
+      }
     }
 
-    // Receipt issuance is part of the same logical checkpoint as the
-    // baseline. If signing fails, leave the old baseline untouched so the
-    // activity can be retried instead of being silently consumed.
-    const verifiedEventProofs: Record<string, string> = {}
-    const snapshotEvents = events.map((event) => productSnapshotEvent(event))
-    for (const snapshotEvent of snapshotEvents) {
-      verifiedEventProofs[snapshotEvent.eventId] = issueVerifiedEventProof(snapshotEvent, session.githubId)
+    // Nothing to read: answer directly, with no stream to maintain.
+    if (eligible.length === 0) {
+      await readActivity()
+      return json(200, buildBody())
     }
 
-    const nextSettings: GithubAccountSettings = {
-      ...settings,
-      trackedRepositoryIds: [...trackedRepositoryIds].sort(),
-      baselineByRepositoryId,
-      lastSyncedAt: fetchStatus === 'ok' ? now : settings.lastSyncedAt,
-    }
-    const checkpoint = issueGithubSyncCheckpoint({
-      githubId: session.githubId,
-      previousBaselineByRepositoryId: settings.baselineByRepositoryId,
-      nextBaselineByRepositoryId: nextSettings.baselineByRepositoryId,
-      nextLastSyncedAt: nextSettings.lastSyncedAt,
-      eventIds: snapshotEvents.map((event) => event.eventId),
+    // A sync can run for a long time, and a silent request is indistinguishable
+    // from a frozen one. Progress is streamed as newline-delimited JSON so the
+    // caller can show real movement instead of an indefinite spinner.
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        let closed = false
+        const close = (): void => {
+          if (closed) return
+          closed = true
+          try {
+            controller.close()
+          } catch {
+            // The consumer already went away; nothing left to close.
+          }
+        }
+        const write = (value: unknown): void => {
+          if (closed) return
+          try {
+            controller.enqueue(encoder.encode(`${JSON.stringify(value)}\n`))
+          } catch {
+            // A cancelled or errored stream must not take the sync down.
+            closed = true
+          }
+        }
+
+        void (async () => {
+          try {
+            write({
+              type: 'start',
+              repositoryCount: eligible.length,
+              repositoryNames: eligible.map((repository) => repository.fullName),
+            })
+            await readActivity((progress) => write({ type: 'progress', ...progress }))
+            if (fetchStatus === 'unavailable') {
+              write({
+                type: 'error',
+                status: 502,
+                error: 'GitHub activity could not be read completely. No new baseline was recorded.',
+              })
+              return
+            }
+            write({ type: 'result', payload: buildBody() })
+          } catch {
+            write({ type: 'error', status: 500, error: 'GitHub activity could not be synced.' })
+          } finally {
+            close()
+          }
+        })()
+      },
     })
 
-    return json(200, {
-      kind: fetchStatus === 'partial'
-        ? 'partial'
-        : events.length === 0 && newBaselineRepositoryIds.length > 0
-          ? 'baseline'
-          : 'synced',
-      events,
-      repositoryCount: eligible.length,
-      eligibleRepositoryCount: eligibleCandidates.length,
-      skippedRepositoryCount,
-      newBaselineRepositoryIds,
-      lastSyncedAt: now,
-      syncStatus: fetchStatus,
-      summary: activitySummary(events),
-      verifiedEventProofs,
-      checkpoint,
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/x-ndjson; charset=utf-8',
+        'Cache-Control': 'no-store, no-transform',
+        // A buffering proxy would hold every progress line until the end and
+        // make the indicator useless, so buffering is disabled explicitly.
+        'X-Accel-Buffering': 'no',
+      },
     })
   } catch {
     return json(500, { error: 'GitHub activity could not be synced.' })
