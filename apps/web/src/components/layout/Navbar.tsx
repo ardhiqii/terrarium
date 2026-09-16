@@ -9,7 +9,8 @@ import GardenMark from '../GardenMark'
 import { siteConfig } from '@/lib/site-config'
 
 /**
- * Eight flat items became six, and the order changed. What moved and why:
+ * The primary row keeps the working surfaces together, with GitHub visible as
+ * a source rather than hiding it inside the account menu.
  *
  * "Home" is gone. The wordmark beside it already links to `/`, so it was two
  * controls for one destination burning a scarce slot.
@@ -18,23 +19,18 @@ import { siteConfig } from '@/lib/site-config'
  * utility, not a place: `/search` reads the same corpus `/notes` does, so
  * giving it equal weight implied a content area that does not exist.
  *
- * "Garden" became "Write", and this was the worst label on the site. It had
- * no information scent at all: "garden" is the product's own metaphor, so as
- * a label it named everything and therefore nothing, and someone clicking it
- * expecting the garden got an OS folder picker. "Write" is a verb whose
- * outcome you can predict, and it sits next to Notes so the pair reads as
- * read/create. It stays in the primary row rather than moving behind the
- * account divider, deliberately: adding a note is the thing that must be
- * discoverable, and a menu is where discoverability goes to die.
+ * Writing is one destination now. Notes is the place where users browse
+ * notes, read written projects, and start a new note. The editor still lives
+ * at `/write`, but it is an action reached from the Notes workspace rather
+ * than a competing top-level destination.
  *
- * Guide and Graph are no longer adjacent. With Garden also in the row these
- * were three same-length G words in a block, and nav is scanned by word
- * shape, so they read as one blur.
+ * Graph, Companions, and Guide stay as separate discovery surfaces after the
+ * writing and GitHub areas. The order keeps the remote source distinct from
+ * the user's writing space without adding a second writing entry.
  */
 const BASE_NAV_LINKS = [
   { href: '/notes', label: 'Notes' },
-  { href: '/write', label: 'Write' },
-  { href: '/projects', label: 'Projects' },
+  { href: '/github', label: 'GitHub' },
   { href: '/graph', label: 'Graph' },
   { href: '/companions', label: 'Companions' },
   { href: '/guide', label: 'Guide' },
@@ -131,11 +127,19 @@ export default function Navbar() {
     window.location.reload()
   }, [])
 
-  // The same six links for everyone, signed in or not. Leaderboard and the
+  // The same writing and activity links for everyone, signed in or not. Leaderboard and the
   // profile used to be appended here when signed in, which made the nav row
   // reflow at sign in and pushed "Sign out" into a two-line wrap. They live in
   // the account menu now.
   const NAV_LINKS = BASE_NAV_LINKS
+
+  // Notes is the writing area, so its active state follows the user into the
+  // editor and the direct project route too. Those routes remain useful for
+  // bookmarks while the navbar communicates one coherent destination.
+  const isNotesArea =
+    pathname.startsWith('/notes') ||
+    pathname.startsWith('/write') ||
+    pathname.startsWith('/projects')
 
   // Rendered only once the session has resolved, so the header never flashes
   // a control that then changes.
@@ -191,7 +195,9 @@ export default function Navbar() {
           <nav aria-label="Main" className="hidden sm:flex items-center gap-1">
             {NAV_LINKS.map((link) => {
               const isActive =
-                link.href === '/'
+                link.href === '/notes'
+                  ? isNotesArea
+                  : link.href === '/'
                   ? pathname === '/'
                   : pathname.startsWith(link.href)
               return (
@@ -203,7 +209,7 @@ export default function Navbar() {
                   // Announces the current page to a screen reader. Previously
                   // the only signals were colour and font weight, neither of
                   // which is exposed to assistive tech at all.
-                  aria-current={isActive ? 'page' : undefined}
+                  aria-current={isActive ? (link.href === '/notes' && pathname !== '/notes' ? 'location' : 'page') : undefined}
                   style={{
                     color: isActive ? 'var(--ink)' : 'var(--ink-muted)',
                     // Weight plus the raised surface carry the active state.
@@ -270,7 +276,9 @@ export default function Navbar() {
                 alone in a vertical list has no affordance to lean on. */}
             {[...NAV_LINKS, { href: '/search', label: 'Search' }].map((link) => {
               const isActive =
-                link.href === '/'
+                link.href === '/notes'
+                  ? isNotesArea
+                  : link.href === '/'
                   ? pathname === '/'
                   : pathname.startsWith(link.href)
               return (
@@ -280,7 +288,7 @@ export default function Navbar() {
                   onClick={() => setOpen(false)}
                   className="ui-row font-ui px-3 py-2 text-sm rounded"
                   data-active={isActive}
-                  aria-current={isActive ? 'page' : undefined}
+                  aria-current={isActive ? (link.href === '/notes' && pathname !== '/notes' ? 'location' : 'page') : undefined}
                   style={{
                     color: isActive ? 'var(--ink)' : 'var(--ink-muted)',
                     fontWeight: isActive ? 500 : 400,

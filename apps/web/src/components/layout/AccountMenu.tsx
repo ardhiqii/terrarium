@@ -10,7 +10,7 @@
  * navigation changed width depending on who you were.
  *
  * So signed-in-only destinations live in here instead. The nav row is now the
- * same eight links for everyone, and everything account-shaped is one compact
+ * same source and content links for everyone, and everything account-shaped is one compact
  * control behind a divider. Nothing reflows at sign in.
  */
 
@@ -90,9 +90,6 @@ export default function AccountMenu({
     <>
       <Link href="/leaderboard" role="menuitem" className={ITEM_CLASS} style={{ color: 'var(--ink)' }}>
         Leaderboard
-      </Link>
-      <Link href="/github" role="menuitem" className={ITEM_CLASS} style={{ color: 'var(--ink)' }}>
-        GitHub source
       </Link>
       <Link href={`/u/${handle}`} role="menuitem" className={ITEM_CLASS} style={{ color: 'var(--ink)' }}>
         Your profile

@@ -117,6 +117,13 @@ GitHub token is sent to the browser. Applying the checked-in migration is part
 of deployment. Note contents and detailed note history remain on the user's
 device under the existing condition-only sync contract.
 
+Product snapshots are keyed by immutable GitHub account ID rather than the
+mutable login handle. Writes use an optimistic checkpoint so two devices do
+not silently replace one another's latest condition. GitHub activity receipts
+are issued by the server-side GitHub sync route and verified before a product
+upload can preserve `verified` provenance. A cloud restore keeps event IDs
+stable so the next provider delivery remains idempotent.
+
 ### 4.4 GitHub
 
 GitHub is the primary remote source for developer activity. A connected GitHub
@@ -126,9 +133,11 @@ selects or approves them. Terrarium must not automatically scan every
 repository the account can access.
 
 Repository access is chosen from GitHub's repository list rather than by typing
-repository names. The picker groups personal and organization repositories and
-shows visibility and permission state. Selecting all means all repositories
-currently shown; newly created repositories are not selected by default.
+repository names. The picker is a searchable browser with all, individual, and
+organization filters plus per-owner grouping, and it shows visibility and
+permission state alongside the approved and tracked counts. Selecting all means
+all repositories currently shown; newly created repositories are not selected
+by default.
 
 Users may opt in to automatic inclusion separately for future personal
 repositories and each approved organization. Automatic inclusion respects
@@ -187,8 +196,13 @@ may count eligible activity that happened since the last checkpoint, using the
 activity date for daily and session caps rather than the sync date. A catch-up
 is summarized as one returning update instead of replaying every reaction.
 Activity from before approval or the initial baseline never awards retroactive
-XP. If GitHub no longer exposes enough history to verify an event, Terrarium
-does not guess.
+XP. A sync returns a short-lived signed checkpoint, and the GitHub baseline is
+committed only after the derived product condition upload succeeds. This keeps
+an interrupted cloud write retryable; receipt or checkpoint validation failure
+does not consume eligible activity. A repository that disappears, is archived,
+or is paused is cleared back to a fresh baseline before it can resume. If
+GitHub no longer exposes enough history to verify an event, Terrarium does not
+guess.
 
 Commits are evidence of activity rather than unlimited direct XP. Empty and
 generated-only commits award no XP. Active days and work sessions are capped;

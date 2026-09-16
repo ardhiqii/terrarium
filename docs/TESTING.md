@@ -36,8 +36,11 @@ npx vitest run apps/web/src/lib/sync/supabase-client.test.ts apps/web/src/lib/sy
 ```
 
 The focused integration contracts cover adapter serialization, normalization,
-errors, product POST/GET/DELETE, replay-safe merging, guest conflicts, payload
-validation, and size limits. The latest run passed **6 files / 33 tests**.
+errors, product POST/GET/DELETE, optimistic writes, server-issued GitHub
+receipts, deferred checkpoint recovery, replay-safe merging, guest conflicts,
+payload validation, repository selection, browser receipt persistence, and size
+limits. Keep the focused command above scoped to the changed files when adding
+new sync hardening tests.
 The latest focused mutation run covered the Supabase adapters and cloud
 rehydration helper with **61.08% overall mutation score, 67.26% of covered
 mutants, 0 timeouts, and 0 errors**. Survivors are reported so they remain
@@ -165,7 +168,7 @@ Almost always the API base. Open the popup, check the API base URL setting, and 
 Not bugs, deliberate calls:
 
 - **This branch is not deployed.** The Vercel Supabase variables and schema are ready, but the adapter and cloud-restore changes remain uncommitted on `main-aufa`. A deployment verification is still required.
-- **Hosted sync is not fully hardened.** Account-rename migration, public-profile visibility enforcement, server-issued verified-event receipts, concurrent merge protection, and SQLite-to-Supabase data migration remain open.
+- **Hosted sync still has follow-up work.** Public-profile visibility enforcement, SQLite-to-Supabase data migration, and a real restart/redeploy end-to-end check remain open.
 - **Not on the Chrome Web Store.** Publishing distributes Pokemon sprites under your developer identity, which is a different posture from a personal project. The `SpriteSource` abstraction exists so swapping to original art is one file.
 - **Variant traits** (DESIGN.md 3.5) were dropped on purpose rather than half-built.
 - **`/graph` node labels overlap** on first render. Pre-existing, from the force-layout library settling.

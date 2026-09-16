@@ -16,6 +16,9 @@ import { checkRateLimit } from '@/lib/game/api-cache'
 import { getGithubAccountStore, type GithubAccountSettings } from '@/lib/sync/github-account-store'
 import { fetchGithubRepositories, type GithubRepository } from '@/lib/sync/github-repositories'
 import { getSessionProvider } from '@/lib/sync/session'
+import { productSnapshotEvent } from '@/lib/sync/product-snapshot'
+import { issueGithubSyncCheckpoint } from '@/lib/sync/github-sync-checkpoint'
+import { issueVerifiedEventProof } from '@/lib/sync/verified-event-proof'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -127,13 +130,25 @@ export async function POST(request: NextRequest): Promise<Response> {
     const eligibleCandidates = repositories.filter((repository) => repositoryIsTracked(repository, settings))
     const eligible = eligibleCandidates.slice(0, MAX_SYNC_REPOSITORIES)
     const skippedRepositoryCount = Math.max(0, eligibleCandidates.length - eligible.length)
+    // Keep explicit choices explicit. Auto-included repositories are selected
+    // by policy for this sync, but must not be written into the explicit list;
+    // otherwise turning auto-inclusion off would not actually stop tracking.
     const trackedRepositoryIds = new Set(
       settings.trackedRepositoryIds.filter((id) => !settings.excludedRepositoryIds.includes(id)),
     )
-    for (const repository of eligible) trackedRepositoryIds.add(repository.id)
 
     const now = new Date().toISOString()
     const baselineByRepositoryId = { ...settings.baselineByRepositoryId }
+    const repositoriesById = new Map(repositories.map((repository) => [repository.id, repository]))
+    for (const repositoryId of Object.keys(baselineByRepositoryId)) {
+      const repository = repositoriesById.get(repositoryId)
+      // A complete repository refresh is the access checkpoint. A missing,
+      // archived, or currently untracked repository must start fresh if it
+      // becomes eligible again; otherwise paused-time activity backfills XP.
+      if (!repository || !repositoryIsTracked(repository, settings)) {
+        delete baselineByRepositoryId[repositoryId]
+      }
+    }
     const newBaselineRepositoryIds: string[] = []
 
     let events: ReturnType<typeof normalizeGitHubEvents> = []
@@ -166,17 +181,32 @@ export async function POST(request: NextRequest): Promise<Response> {
       }
     }
 
+    if (fetchStatus === 'unavailable') {
+      return json(502, { error: 'GitHub activity could not be read completely. No new baseline was recorded.' })
+    }
+
+    // Receipt issuance is part of the same logical checkpoint as the
+    // baseline. If signing fails, leave the old baseline untouched so the
+    // activity can be retried instead of being silently consumed.
+    const verifiedEventProofs: Record<string, string> = {}
+    const snapshotEvents = events.map((event) => productSnapshotEvent(event))
+    for (const snapshotEvent of snapshotEvents) {
+      verifiedEventProofs[snapshotEvent.eventId] = issueVerifiedEventProof(snapshotEvent, session.githubId)
+    }
+
     const nextSettings: GithubAccountSettings = {
       ...settings,
       trackedRepositoryIds: [...trackedRepositoryIds].sort(),
       baselineByRepositoryId,
       lastSyncedAt: fetchStatus === 'ok' ? now : settings.lastSyncedAt,
     }
-    await store.saveSettings(session.githubId, nextSettings)
-
-    if (fetchStatus === 'unavailable') {
-      return json(502, { error: 'GitHub activity could not be read completely. No new baseline was recorded.' })
-    }
+    const checkpoint = issueGithubSyncCheckpoint({
+      githubId: session.githubId,
+      previousBaselineByRepositoryId: settings.baselineByRepositoryId,
+      nextBaselineByRepositoryId: nextSettings.baselineByRepositoryId,
+      nextLastSyncedAt: nextSettings.lastSyncedAt,
+      eventIds: snapshotEvents.map((event) => event.eventId),
+    })
 
     return json(200, {
       kind: fetchStatus === 'partial'
@@ -192,6 +222,8 @@ export async function POST(request: NextRequest): Promise<Response> {
       lastSyncedAt: now,
       syncStatus: fetchStatus,
       summary: activitySummary(events),
+      verifiedEventProofs,
+      checkpoint,
     })
   } catch {
     return json(500, { error: 'GitHub activity could not be synced.' })

@@ -46,7 +46,7 @@ export default async function ProjectPage({ params }: Props) {
       <nav className="font-ui mb-8 text-sm" style={{ color: 'var(--ink-muted)' }}>
         <Link href="/" className="hover:opacity-70 transition-opacity">Home</Link>
         <span className="mx-2">.</span>
-        <Link href="/projects" className="hover:opacity-70 transition-opacity">Projects</Link>
+        <Link href="/notes#projects" className="hover:opacity-70 transition-opacity">Projects</Link>
       </nav>
 
       <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_260px] lg:gap-16">

@@ -47,6 +47,13 @@ export interface GithubAccountStore {
   get(githubId: number): Promise<GithubAccountRecord | null>
   getSettings(githubId: number): Promise<GithubAccountSettings>
   saveSettings(githubId: number, settings: GithubAccountSettings): Promise<void>
+  /** Advance a sync baseline only if it is still the expected checkpoint. */
+  advanceBaseline(
+    githubId: number,
+    expectedBaselineByRepositoryId: Readonly<Record<string, string>>,
+    nextBaselineByRepositoryId: Readonly<Record<string, string>>,
+    lastSyncedAt: string | null,
+  ): Promise<boolean>
   remove(githubId: number): Promise<void>
 }
 
@@ -149,6 +156,17 @@ function cleanSettings(settings: GithubAccountSettings): GithubAccountSettings {
       ? settings.lastSyncedAt
       : null,
   }
+}
+
+function sameBaselineMap(
+  left: Readonly<Record<string, string>>,
+  right: Readonly<Record<string, string>>,
+): boolean {
+  const leftKeys = Object.keys(left).sort()
+  const rightKeys = Object.keys(right).sort()
+  return leftKeys.length === rightKeys.length && leftKeys.every((key, index) =>
+    key === rightKeys[index] && left[key] === right[key],
+  )
 }
 
 export class GithubAccountSqliteStore implements GithubAccountStore {
@@ -276,6 +294,46 @@ export class GithubAccountSqliteStore implements GithubAccountStore {
         clean.lastSyncedAt,
         githubId,
       )
+  }
+
+  async advanceBaseline(
+    githubId: number,
+    expectedBaselineByRepositoryId: Readonly<Record<string, string>>,
+    nextBaselineByRepositoryId: Readonly<Record<string, string>>,
+    lastSyncedAt: string | null,
+  ): Promise<boolean> {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const row = this.row(githubId)
+      if (!row) throw new Error('GitHub account credential not found')
+      const current = rowSettings(row)
+      if (sameBaselineMap(current.baselineByRepositoryId, nextBaselineByRepositoryId)) {
+        this.db.exec('COMMIT')
+        return true
+      }
+      if (!sameBaselineMap(current.baselineByRepositoryId, expectedBaselineByRepositoryId)) {
+        this.db.exec('COMMIT')
+        return false
+      }
+      const clean = cleanSettings({
+        ...current,
+        baselineByRepositoryId: nextBaselineByRepositoryId,
+        lastSyncedAt,
+      })
+      this.db
+        .prepare(
+          `UPDATE github_accounts SET
+             baseline_by_repository_id_json = ?,
+             last_synced_at = ?
+           WHERE github_id = ?`,
+        )
+        .run(JSON.stringify(clean.baselineByRepositoryId), clean.lastSyncedAt, githubId)
+      this.db.exec('COMMIT')
+      return true
+    } catch (error) {
+      try { this.db.exec('ROLLBACK') } catch { /* transaction already ended */ }
+      throw error
+    }
   }
 
   async remove(githubId: number): Promise<void> {

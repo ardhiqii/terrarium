@@ -132,6 +132,24 @@ button:disabled,
   background-color: var(--hover-surface-strong);
 }
 
+/* GitHub source tiles replace the old full-width divider list. The raised
+   paper gives each repository its own reading surface, while the soft accent
+   makes a tracked source legible without adding another colour or a heavy
+   border. */
+.github-source-tile {
+  background-color: var(--paper-raised);
+  transition: background-color 160ms ease, color 160ms ease;
+}
+.github-source-tile[data-active='true'] {
+  background-color: var(--accent-soft);
+}
+.github-source-tile[data-active='true']:hover {
+  background-color: var(--accent-soft);
+}
+.github-source-tile:hover {
+  background-color: var(--hover-surface-strong);
+}
+
 /* Reduced motion. The hover transitions above are the immediate reason this
    is here, but there was no global guard at all before, and `body` has
    carried an unconditional colour transition since the retheme. Sprite idle

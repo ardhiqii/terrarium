@@ -21,9 +21,11 @@ import {
   loadBrowserEncounters,
   loadBrowserLedger,
   loadRevealedDraws,
+  loadVerifiedEventProofs,
   saveBrowserEncounters,
   saveBrowserLedger,
   saveRevealedDraws,
+  saveVerifiedEventProofs,
 } from '@/lib/game/product-browser-storage'
 import { saveGuestProfile } from '@/lib/game/guest-profile'
 import {
@@ -32,23 +34,13 @@ import {
   mergeProductSnapshots,
   restoreProductStateFromSnapshot,
 } from '@/lib/sync/product-snapshot'
+import { productEventId } from '@/lib/sync/product-event-id'
+import { filterGithubRepositories, type RepositoryScope } from '@/lib/sync/github-repository-browser'
+import type { GithubRepository } from '@/lib/sync/github-repositories'
 import { CompanionSwitcher } from './CompanionSwitcher'
 import { EncounterReveal } from './EncounterReveal'
 import { ProductActivityPanel } from './ProductActivityPanel'
 import { GitHubRewardGuide } from './GitHubRewardGuide'
-
-interface GithubRepository {
-  id: string
-  name: string
-  fullName: string
-  ownerLogin: string
-  ownerType: 'User' | 'Organization'
-  private: boolean
-  visibility: string
-  defaultBranch: string | null
-  archived: boolean
-  canRead: boolean
-}
 
 interface GithubSettings {
   trackedRepositoryIds: string[]
@@ -132,6 +124,27 @@ function parseEvent(value: unknown): NormalizedEvent | null {
   return event
 }
 
+function parseVerifiedEventProofs(value: unknown): Record<string, string> {
+  if (!isRecord(value)) return {}
+  const proofs: Record<string, string> = {}
+  for (const [eventId, proof] of Object.entries(value)) {
+    if (/^event-[0-9a-f]{8}-[0-9a-f]{8}$/u.test(eventId) && typeof proof === 'string' && proof.length <= 128) {
+      proofs[eventId] = proof
+    }
+  }
+  return proofs
+}
+
+function proofsFromSnapshotEvents(
+  events: readonly { eventId: string; verifiedProof?: string }[],
+): Record<string, string> {
+  const proofs: Record<string, string> = {}
+  for (const event of events) {
+    if (event.verifiedProof) proofs[event.eventId] = event.verifiedProof
+  }
+  return proofs
+}
+
 async function responseBody(response: Response): Promise<Record<string, unknown>> {
   const body: unknown = await response.json().catch(() => ({}))
   return isRecord(body) ? body : {}
@@ -139,6 +152,10 @@ async function responseBody(response: Response): Promise<Record<string, unknown>
 
 function errorMessage(body: Record<string, unknown>, fallback: string): string {
   return typeof body.error === 'string' ? body.error : fallback
+}
+
+function repositoryOwnerId(owner: string): string {
+  return owner.toLowerCase().replace(/[^a-z0-9]+/gu, '-') || 'unknown'
 }
 
 function browserState(namespace?: string): ProductState {
@@ -171,6 +188,8 @@ async function restoreCloudProductState(
   namespace: string,
 ): Promise<{ state: ProductState; message?: string }> {
   try {
+    const storage = browserProductStorage()
+    const localProofs = loadVerifiedEventProofs(storage, namespace)
     const response = await fetch('/api/sync/product', { cache: 'no-store' })
     if (response.status === 401 || response.status === 404) return { state: local }
     const body = await responseBody(response)
@@ -186,14 +205,17 @@ async function restoreCloudProductState(
     }
 
     let restored: ProductState
+    let restoredProofs: Record<string, string>
     if (cloud.guestId === local.profile.guestId) {
-      const merged = mergeProductSnapshots(buildProductSnapshot(local), cloud)
+      const merged = mergeProductSnapshots(buildProductSnapshot(local, undefined, localProofs), cloud)
       restored = restoreProductStateFromSnapshot(merged, local.profile, PROTOTYPE_COMPANION_CATALOG)
+      restoredProofs = proofsFromSnapshotEvents(merged.events)
     } else if (isBlankAccountState(local)) {
       // A fresh browser has a new local guest ID. Adopt the account's cloud ID
       // so future POSTs can continue the recovered profile instead of hitting
       // the route's different-guest conflict guard.
       restored = restoreProductStateFromSnapshot(cloud, local.profile, PROTOTYPE_COMPANION_CATALOG)
+      restoredProofs = proofsFromSnapshotEvents(cloud.events)
     } else {
       return {
         state: local,
@@ -201,6 +223,7 @@ async function restoreCloudProductState(
       }
     }
     saveBrowserProductState(restored, namespace)
+    saveVerifiedEventProofs(storage, restoredProofs, restored.ledger.events.map((event) => productEventId(event.eventId)), namespace)
     return { state: restored, message: 'Cloud condition restored.' }
   } catch {
     return { state: local, message: 'Cloud condition could not be restored; local progress is safe.' }
@@ -220,7 +243,11 @@ export function GitHubSourcePanel() {
   const [status, setStatus] = useState<'loading' | 'ready' | 'signed-out' | 'error'>('loading')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
+  const [savingSettings, setSavingSettings] = useState(false)
   const [lastSyncSummary, setLastSyncSummary] = useState<string | null>(null)
+  const [repositoryQuery, setRepositoryQuery] = useState('')
+  const [repositoryScope, setRepositoryScope] = useState<RepositoryScope>('all')
+  const [collapsedOwners, setCollapsedOwners] = useState<string[]>([])
 
   const hydrateState = useCallback(() => {
     const state = browserState()
@@ -271,15 +298,29 @@ export function GitHubSourcePanel() {
     () => [...new Set(repositories.filter((repo) => repo.ownerType === 'Organization').map((repo) => repo.ownerLogin))].sort(),
     [repositories],
   )
+  const filteredRepositories = useMemo(() => {
+    return filterGithubRepositories(repositories, repositoryQuery, repositoryScope)
+  }, [repositories, repositoryQuery, repositoryScope])
   const groupedRepositories = useMemo(() => {
     const groups = new Map<string, GithubRepository[]>()
-    for (const repository of repositories) {
+    for (const repository of filteredRepositories) {
       const current = groups.get(repository.ownerLogin) ?? []
       current.push(repository)
       groups.set(repository.ownerLogin, current)
     }
     return [...groups.entries()].sort(([left], [right]) => left.localeCompare(right))
+  }, [filteredRepositories])
+  const repositoryCountsByOwner = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const repository of repositories) counts.set(repository.ownerLogin, (counts.get(repository.ownerLogin) ?? 0) + 1)
+    return counts
   }, [repositories])
+  const userRepositoryCount = useMemo(
+    () => repositories.filter((repository) => repository.ownerType === 'User').length,
+    [repositories],
+  )
+  const organizationRepositoryCount = repositories.length - userRepositoryCount
+  const repositoryFiltersActive = repositoryQuery.trim().length > 0 || repositoryScope !== 'all'
   const effectiveTrackedCount = useMemo(
     () => repositories.filter((repository) => {
       if (repository.archived || !repository.canRead || draftExcludedIds.includes(repository.id)) return false
@@ -296,32 +337,43 @@ export function GitHubSourcePanel() {
     settings.autoIncludePersonal !== draftAutoPersonal ||
     settings.autoIncludeOrganizations.join('|') !== [...draftOrganizations].sort().join('|')
   )
+  const sourceControlsDisabled = savingSettings || busy
 
   const saveSettings = useCallback(async (): Promise<boolean> => {
-    const response = await fetch('/api/github/repositories', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        trackedRepositoryIds: [...draftTrackedIds].sort(),
-        excludedRepositoryIds: [...draftExcludedIds].sort(),
-        autoIncludePersonal: draftAutoPersonal,
-        autoIncludeOrganizations: [...draftOrganizations].sort(),
-      }),
-    })
-    const body = await responseBody(response)
-    if (!response.ok) {
-      setMessage(errorMessage(body, 'Repository settings could not be saved.'))
+    if (savingSettings) return false
+    setSavingSettings(true)
+    setMessage('')
+    try {
+      const response = await fetch('/api/github/repositories', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trackedRepositoryIds: [...draftTrackedIds].sort(),
+          excludedRepositoryIds: [...draftExcludedIds].sort(),
+          autoIncludePersonal: draftAutoPersonal,
+          autoIncludeOrganizations: [...draftOrganizations].sort(),
+        }),
+      })
+      const body = await responseBody(response)
+      if (!response.ok) {
+        setMessage(errorMessage(body, 'Repository settings could not be saved.'))
+        return false
+      }
+      const data = body as unknown as RepositoryResponse
+      setRepositories(data.repositories)
+      setSettings(data.settings)
+      setDraftTrackedIds(data.settings.trackedRepositoryIds)
+      setDraftExcludedIds(data.settings.excludedRepositoryIds)
+      setDraftAutoPersonal(data.settings.autoIncludePersonal)
+      setDraftOrganizations(data.settings.autoIncludeOrganizations)
+      return true
+    } catch {
+      setMessage('Repository settings could not be saved. Try again.')
       return false
+    } finally {
+      setSavingSettings(false)
     }
-    const data = body as unknown as RepositoryResponse
-    setRepositories(data.repositories)
-    setSettings(data.settings)
-    setDraftTrackedIds(data.settings.trackedRepositoryIds)
-    setDraftExcludedIds(data.settings.excludedRepositoryIds)
-    setDraftAutoPersonal(data.settings.autoIncludePersonal)
-    setDraftOrganizations(data.settings.autoIncludeOrganizations)
-    return true
-  }, [draftAutoPersonal, draftOrganizations, draftTrackedIds])
+  }, [draftAutoPersonal, draftOrganizations, draftTrackedIds, savingSettings])
 
   const syncNow = useCallback(async () => {
     if (!productState) return
@@ -339,8 +391,12 @@ export function GitHubSourcePanel() {
         setMessage(errorMessage(body, 'GitHub activity could not be synced.'))
         return
       }
+      const verifiedEventProofs = parseVerifiedEventProofs(body.verifiedEventProofs)
       const incoming = Array.isArray(body.events)
-        ? body.events.map(parseEvent).filter((event): event is NormalizedEvent => event !== null)
+        ? body.events
+          .map(parseEvent)
+          .filter((event): event is NormalizedEvent => event !== null)
+          .filter((event) => Boolean(verifiedEventProofs[productEventId(event.eventId)]))
         : []
       const next = applyProductEvents(
         productState,
@@ -354,10 +410,27 @@ export function GitHubSourcePanel() {
       saveBrowserEncounters(storage, next.encounters, accountNamespace ?? undefined)
       setProductState(next)
 
+      const persistedProofs = {
+        ...loadVerifiedEventProofs(storage, accountNamespace ?? undefined),
+        ...verifiedEventProofs,
+      }
+      const uploadSnapshot = buildProductSnapshot(next, undefined, persistedProofs)
+      // Save receipts before the cloud upload. The signed checkpoint sent with
+      // the snapshot is committed server-side only after this upload succeeds,
+      // so a failed condition upload remains retryable.
+      saveVerifiedEventProofs(
+        storage,
+        proofsFromSnapshotEvents(uploadSnapshot.events),
+        uploadSnapshot.events.map((event) => event.eventId),
+        accountNamespace ?? undefined,
+      )
+      const checkpoint = typeof body.checkpoint === 'string' ? body.checkpoint : null
+      const snapshotHeaders: HeadersInit = { 'Content-Type': 'application/json' }
+      if (checkpoint) snapshotHeaders['x-github-sync-checkpoint'] = checkpoint
       const snapshotResponse = await fetch('/api/sync/product', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildProductSnapshot(next)),
+        headers: snapshotHeaders,
+        body: JSON.stringify(uploadSnapshot),
       })
       const snapshotBody = await responseBody(snapshotResponse)
       const count = typeof body.repositoryCount === 'number' ? body.repositoryCount : 0
@@ -401,6 +474,12 @@ export function GitHubSourcePanel() {
     setDraftOrganizations((current) => current.includes(login) ? current.filter((value) => value !== login) : [...current, login])
   }
 
+  const toggleOwner = (owner: string) => {
+    setCollapsedOwners((current) => current.includes(owner)
+      ? current.filter((value) => value !== owner)
+      : [...current, owner])
+  }
+
   const dismissDraw = (drawId: string) => {
     setRevealedDraws((current) => {
       const next = current.includes(drawId) ? current : [...current, drawId]
@@ -437,7 +516,7 @@ export function GitHubSourcePanel() {
             <button
               type="button"
               onClick={() => void syncNow()}
-              disabled={busy || !productState}
+              disabled={sourceControlsDisabled || !productState}
               className="ui-row font-ui shrink-0 border px-4 py-3 text-sm font-medium disabled:cursor-wait disabled:opacity-50"
               style={{ borderColor: 'var(--accent)', color: 'var(--ink)' }}
             >
@@ -477,6 +556,37 @@ export function GitHubSourcePanel() {
 
       {status === 'ready' && settings && (
         <>
+          <section
+            aria-label="GitHub source status"
+            className="mt-6 grid gap-px border sm:grid-cols-3"
+            style={{ borderColor: 'var(--rule)', background: 'var(--rule)' }}
+          >
+            <div className="bg-[color:var(--paper)] px-5 py-4">
+              <p className="font-data text-[10px] uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Connection</p>
+              <p className="font-ui mt-1 text-sm font-medium">GitHub account linked</p>
+              <p className="font-prose mt-1 text-xs" style={{ color: 'var(--ink-muted)' }}>Private activity stays owner-only.</p>
+            </div>
+            <div className="bg-[color:var(--paper)] px-5 py-4">
+              <p className="font-data text-[10px] uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Tracking</p>
+              <p className="font-ui mt-1 text-sm font-medium">{effectiveTrackedCount} of {repositories.length} repositories</p>
+              <p className="font-prose mt-1 text-xs" style={{ color: 'var(--ink-muted)' }}>Only selected sources move XP.</p>
+            </div>
+            <div className="bg-[color:var(--paper)] px-5 py-4">
+              <p className="font-data text-[10px] uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Last checkpoint</p>
+              <p className="font-ui mt-1 text-sm font-medium">{settings.lastSyncedAt ? new Date(settings.lastSyncedAt).toLocaleDateString() : 'Not synced yet'}</p>
+              <p className="font-prose mt-1 text-xs" style={{ color: 'var(--ink-muted)' }}>Sync again when you want fresh receipts.</p>
+            </div>
+          </section>
+
+          {effectiveTrackedCount === 0 && (
+            <section className="mt-6 border-l-2 px-5 py-4" style={{ borderColor: 'var(--accent)', background: 'var(--paper-raised)' }}>
+              <p className="font-ui text-sm font-medium">Choose a repository before your companion can follow GitHub work.</p>
+              <p className="font-prose mt-1 max-w-2xl text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
+                Start with one project, or select all available repositories below. The first sync records a clean baseline; it will not award old history.
+              </p>
+            </section>
+          )}
+
           <section className="mt-6 border p-5 sm:p-6" style={{ borderColor: 'var(--rule)' }}>
             <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
               <div>
@@ -494,61 +604,178 @@ export function GitHubSourcePanel() {
 
             <div className="mt-6 grid gap-3 border-t pt-5 sm:grid-cols-2" style={{ borderColor: 'var(--rule)' }}>
               <label className="flex items-start gap-3 text-sm">
-                <input type="checkbox" checked={draftAutoPersonal} onChange={(event) => setDraftAutoPersonal(event.target.checked)} className="mt-1" />
+                <input type="checkbox" checked={draftAutoPersonal} disabled={sourceControlsDisabled} onChange={(event) => setDraftAutoPersonal(event.target.checked)} className="mt-1" />
                 <span><span className="font-ui block">Auto-include personal repos</span><span className="font-prose text-xs" style={{ color: 'var(--ink-muted)' }}>Future personal repositories get a fresh baseline.</span></span>
               </label>
               {organizations.map((organization) => (
                 <label key={organization} className="flex items-start gap-3 text-sm">
-                  <input type="checkbox" checked={draftOrganizations.includes(organization.toLowerCase())} onChange={() => toggleOrganization(organization.toLowerCase())} className="mt-1" />
+                  <input type="checkbox" checked={draftOrganizations.includes(organization.toLowerCase())} disabled={sourceControlsDisabled} onChange={() => toggleOrganization(organization.toLowerCase())} className="mt-1" />
                   <span><span className="font-ui block">Auto-include {organization}</span><span className="font-prose text-xs" style={{ color: 'var(--ink-muted)' }}>New repos in this approved organization start fresh.</span></span>
                 </label>
               ))}
             </div>
 
             <div className="mt-5 flex flex-wrap gap-3">
-              <button type="button" onClick={() => { setDraftTrackedIds(repositories.filter((repo) => repo.canRead && !repo.archived).map((repo) => repo.id)); setDraftExcludedIds([]) }} className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider" style={{ borderColor: 'var(--rule)' }}>
+              <button type="button" disabled={sourceControlsDisabled} onClick={() => { setDraftTrackedIds(repositories.filter((repo) => repo.canRead && !repo.archived).map((repo) => repo.id)); setDraftExcludedIds([]) }} className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50" style={{ borderColor: 'var(--rule)' }}>
                 Select all available
               </button>
-              <button type="button" onClick={() => { setDraftTrackedIds([]); setDraftExcludedIds(repositories.filter((repo) => !repo.archived && repo.canRead && (repo.ownerType === 'User' ? draftAutoPersonal : draftOrganizations.includes(repo.ownerLogin.toLowerCase()))).map((repo) => repo.id)) }} className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider" style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}>
+              <button type="button" disabled={sourceControlsDisabled} onClick={() => { setDraftTrackedIds([]); setDraftExcludedIds(repositories.filter((repo) => !repo.archived && repo.canRead && (repo.ownerType === 'User' ? draftAutoPersonal : draftOrganizations.includes(repo.ownerLogin.toLowerCase()))).map((repo) => repo.id)) }} className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50" style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}>
                 Clear tracking
               </button>
-              <button type="button" onClick={() => void saveSettings()} disabled={!settingsChanged || busy} className="ui-row font-ui border px-3 py-2 text-sm disabled:opacity-50" style={{ borderColor: 'var(--accent)' }}>
-                {settingsChanged ? 'Save repository choices' : 'Choices saved'}
+              <button
+                type="button"
+                onClick={() => void saveSettings()}
+                disabled={!settingsChanged || sourceControlsDisabled}
+                aria-busy={savingSettings}
+                className="ui-row font-ui inline-flex items-center gap-2 border px-3 py-2 text-sm disabled:cursor-wait disabled:opacity-50"
+                style={{ borderColor: 'var(--accent)' }}
+              >
+                {savingSettings && <span aria-hidden="true" className="inline-block h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: 'var(--accent)' }} />}
+                {savingSettings ? 'Saving choices...' : settingsChanged ? 'Save repository choices' : 'Choices saved'}
               </button>
+              {savingSettings && (
+                <span role="status" aria-live="polite" className="font-data self-center text-xs uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>
+                  Saving repository choices
+                </span>
+              )}
             </div>
           </section>
 
-          <section className="mt-6 grid gap-4">
-            {groupedRepositories.map(([owner, ownerRepositories]) => (
-              <div key={owner} className="border" style={{ borderColor: 'var(--rule)' }}>
-                <div className="flex items-center justify-between border-b px-5 py-3" style={{ borderColor: 'var(--rule)', background: 'var(--paper-raised)' }}>
-                  <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>{owner}</p>
-                  <span className="font-data text-xs" style={{ color: 'var(--ink-muted)' }}>{ownerRepositories.length} repos</span>
-                </div>
-                <div className="divide-y" style={{ borderColor: 'var(--rule)' }}>
-                  {ownerRepositories.map((repository) => {
-                    const autoTracked = repository.ownerType === 'User'
-                      ? draftAutoPersonal
-                      : draftOrganizations.includes(repository.ownerLogin.toLowerCase())
-                    const checked = draftTrackedIds.includes(repository.id) || (autoTracked && !draftExcludedIds.includes(repository.id))
-                    const disabled = repository.archived || !repository.canRead
-                    return (
-                      <label key={repository.id} className="flex items-start gap-3 px-5 py-4" style={{ opacity: disabled ? 0.55 : 1 }}>
-                        <input type="checkbox" checked={checked} disabled={disabled} onChange={() => toggleTracked(repository)} className="mt-1" />
-                        <span className="min-w-0 flex-1">
-                          <span className="flex flex-wrap items-center gap-2">
-                            <span className="font-ui text-sm font-medium">{repository.name}</span>
-                            <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>{repository.private ? 'private' : 'public'}</span>
-                            {repository.archived && <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>archived</span>}
-                          </span>
-                          <span className="font-data mt-1 block truncate text-xs" style={{ color: 'var(--ink-muted)' }}>{repository.fullName} · {repository.canRead ? 'readable' : 'access paused'}</span>
-                        </span>
-                      </label>
-                    )
-                  })}
-                </div>
+          <section aria-label="Repository browser" className="mt-8">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Repository browser</p>
+                <h2 className="font-ui mt-2 text-2xl font-semibold tracking-tight">Find a source</h2>
               </div>
-            ))}
+              <p className="font-data text-xs" style={{ color: 'var(--ink-muted)' }}>
+                {filteredRepositories.length} of {repositories.length} visible
+              </p>
+            </div>
+
+            <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center">
+              <form role="search" aria-label="Find a repository" onSubmit={(event) => event.preventDefault()} className="relative min-w-0 flex-1">
+                <label htmlFor="github-repository-search" className="sr-only">Find a repository or owner</label>
+                <input
+                  id="github-repository-search"
+                  type="search"
+                  value={repositoryQuery}
+                  onChange={(event) => { setRepositoryQuery(event.target.value); setCollapsedOwners([]) }}
+                  placeholder="Find a repository or owner"
+                  className="font-ui w-full border bg-[color:var(--paper)] px-3 py-2.5 pr-16 text-sm"
+                  style={{ borderColor: 'var(--rule)', color: 'var(--ink)' }}
+                />
+                {repositoryQuery && (
+                  <button
+                    type="button"
+                    onClick={() => { setRepositoryQuery(''); setCollapsedOwners([]) }}
+                    className="ui-row font-data absolute right-1 top-1/2 -translate-y-1/2 px-2 py-1 text-[10px] uppercase tracking-wider"
+                    style={{ color: 'var(--ink-muted)' }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </form>
+
+              <div role="group" aria-label="Repository source filter" className="flex flex-wrap gap-2">
+                {([
+                  ['all', 'All sources'],
+                  ['user', 'Individual owners'],
+                  ['organization', 'Organizations'],
+                ] as const).map(([scope, label]) => (
+                  <button
+                    key={scope}
+                    type="button"
+                    aria-pressed={repositoryScope === scope}
+                    data-active={repositoryScope === scope}
+                    onClick={() => { setRepositoryScope(scope); setCollapsedOwners([]) }}
+                    className="ui-segment font-data border px-3 py-2 text-[10px] uppercase tracking-wider"
+                    style={{ borderColor: repositoryScope === scope ? 'var(--accent)' : 'var(--rule)', color: repositoryScope === scope ? 'var(--ink)' : 'var(--ink-muted)' }}
+                  >
+                    {label}
+                    <span className="ml-1" style={{ color: 'var(--ink-muted)' }}>
+                      {scope === 'all' ? repositories.length : scope === 'user' ? userRepositoryCount : organizationRepositoryCount}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {repositoryFiltersActive && (
+              <p role="status" aria-live="polite" className="font-data mt-3 text-xs uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>
+                Showing {filteredRepositories.length} matching {filteredRepositories.length === 1 ? 'source' : 'sources'}
+              </p>
+            )}
+          </section>
+
+          <section className="mt-8 space-y-8">
+            {groupedRepositories.map(([owner, ownerRepositories]) => {
+              const ownerKey = repositoryOwnerId(owner)
+              const totalOwnerRepositories = repositoryCountsByOwner.get(owner) ?? ownerRepositories.length
+              const collapsed = collapsedOwners.includes(owner)
+              return (
+                <section key={owner} aria-labelledby={`github-owner-${ownerKey}`}>
+                  <button
+                    type="button"
+                    aria-expanded={!collapsed}
+                    aria-controls={`github-owner-content-${ownerKey}`}
+                    onClick={() => toggleOwner(owner)}
+                    className="ui-row flex w-full items-center justify-between gap-4 border-l-2 px-4 py-3 text-left"
+                    style={{ borderColor: 'var(--accent)' }}
+                  >
+                    <span className="min-w-0">
+                      <span id={`github-owner-${ownerKey}`} className="font-data block truncate text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>{owner}</span>
+                      <span className="font-prose mt-1 block text-sm" style={{ color: 'var(--ink-muted)' }}>Repository sources</span>
+                    </span>
+                    <span className="flex shrink-0 items-center gap-3">
+                      <span className="font-data text-xs" style={{ color: 'var(--ink-muted)' }}>
+                        {ownerRepositories.length === totalOwnerRepositories ? `${totalOwnerRepositories} repos` : `${ownerRepositories.length} of ${totalOwnerRepositories}`}
+                      </span>
+                      <span aria-hidden="true" className="font-data text-lg leading-none" style={{ color: 'var(--accent)' }}>{collapsed ? '+' : '−'}</span>
+                    </span>
+                  </button>
+                  <div id={`github-owner-content-${ownerKey}`} hidden={collapsed} className="mt-3 grid gap-2">
+                      {ownerRepositories.map((repository) => {
+                        const autoTracked = repository.ownerType === 'User'
+                          ? draftAutoPersonal
+                          : draftOrganizations.includes(repository.ownerLogin.toLowerCase())
+                        const checked = draftTrackedIds.includes(repository.id) || (autoTracked && !draftExcludedIds.includes(repository.id))
+                        const disabled = repository.archived || !repository.canRead
+                        return (
+                          <label
+                            key={repository.id}
+                            data-active={checked}
+                            className="ui-row github-source-tile grid min-h-16 grid-cols-[auto_minmax(0,1fr)] items-center gap-3 p-3 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:gap-4 sm:p-4"
+                            style={{ opacity: disabled || sourceControlsDisabled ? 0.55 : 1 }}
+                          >
+                            <input type="checkbox" checked={checked} disabled={disabled || sourceControlsDisabled} onChange={() => toggleTracked(repository)} className="shrink-0" />
+                            <span className="min-w-0 flex-1">
+                              <span className="flex flex-wrap items-center gap-2">
+                                <span className="font-ui text-sm font-medium">{repository.name}</span>
+                                <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: checked ? 'var(--accent)' : 'var(--ink-muted)' }}>{checked ? 'tracking' : 'available'}</span>
+                                <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>{repository.private ? 'private' : 'public'}</span>
+                                {repository.archived && <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>archived</span>}
+                              </span>
+                              <span className="font-data mt-1 block truncate text-xs" style={{ color: 'var(--ink-muted)' }}>{repository.fullName}</span>
+                            </span>
+                            <span className="font-data hidden shrink-0 text-right text-[10px] uppercase tracking-wider sm:block" style={{ color: repository.canRead ? 'var(--ink-muted)' : 'var(--accent)' }}>
+                              {repository.canRead ? 'readable' : 'access paused'}
+                            </span>
+                          </label>
+                        )
+                      })}
+                  </div>
+                </section>
+              )
+            })}
+            {repositories.length > 0 && filteredRepositories.length === 0 && (
+              <section className="border-l-2 px-5 py-4" style={{ borderColor: 'var(--accent)', background: 'var(--paper-raised)' }}>
+                <p className="font-ui text-sm font-medium">No repositories match this view.</p>
+                <p className="font-prose mt-1 text-sm" style={{ color: 'var(--ink-muted)' }}>Try a different name or source filter.</p>
+                <button type="button" onClick={() => { setRepositoryQuery(''); setRepositoryScope('all'); setCollapsedOwners([]) }} className="ui-row font-data mt-4 border px-3 py-2 text-xs uppercase tracking-wider" style={{ borderColor: 'var(--rule)' }}>
+                  Show all repositories
+                </button>
+              </section>
+            )}
             {repositories.length === 0 && (
               <p className="font-prose border p-5 text-sm" style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}>
                 GitHub returned no repositories this account can read.

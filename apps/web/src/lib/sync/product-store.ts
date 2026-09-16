@@ -47,15 +47,30 @@ function ensureDir(dbPath: string): void {
 }
 
 interface Row {
+  github_id: number | null
   handle: string
   snapshot_json: string
   updated_at: string
 }
 
+export interface ProductSnapshotRecord {
+  readonly githubId: number
+  readonly handle: string
+  readonly snapshot: ProductSnapshot
+  readonly updatedAt: string
+}
+
 export interface ProductStore {
-  put(handle: string, snapshot: ProductSnapshot, updatedAt: string): Promise<void>
-  get(handle: string): Promise<ProductSnapshot | null>
-  remove(handle: string): Promise<void>
+  put(
+    githubId: number,
+    handle: string,
+    snapshot: ProductSnapshot,
+    updatedAt: string,
+    expectedUpdatedAt: string | null,
+  ): Promise<boolean>
+  get(githubId: number, handle?: string): Promise<ProductSnapshot | null>
+  getRecord(githubId: number, handle?: string): Promise<ProductSnapshotRecord | null>
+  remove(githubId: number, handle?: string): Promise<void>
 }
 
 export class ProductSqliteStore implements ProductStore {
@@ -66,42 +81,100 @@ export class ProductSqliteStore implements ProductStore {
     this.db = new DatabaseSync(dbPath)
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS product_snapshots (
-        handle TEXT PRIMARY KEY,
+        github_id INTEGER UNIQUE,
+        handle TEXT NOT NULL,
         snapshot_json TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
     `)
+    try {
+      this.db.exec('ALTER TABLE product_snapshots ADD COLUMN github_id INTEGER')
+    } catch {
+      // The column already exists on new or previously migrated databases.
+    }
+    this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS product_snapshots_github_id_idx ON product_snapshots (github_id) WHERE github_id IS NOT NULL')
   }
 
-  /** Persist (or update) the product snapshot for a handle. */
-  async put(handle: string, snapshot: ProductSnapshot, updatedAt: string): Promise<void> {
+  private row(githubId: number, handle?: string): Row | undefined {
+    const byId = this.db
+      .prepare('SELECT github_id, handle, snapshot_json, updated_at FROM product_snapshots WHERE github_id = ?')
+      .get(githubId) as Row | undefined
+    if (byId || !handle) return byId
+    return this.db
+      .prepare('SELECT github_id, handle, snapshot_json, updated_at FROM product_snapshots WHERE handle = ? AND github_id IS NULL')
+      .get(handle.toLowerCase()) as Row | undefined
+  }
+
+  private migrateLegacyHandle(row: Row, githubId: number): Row {
+    if (row.github_id === null) {
+      this.db
+        .prepare('UPDATE product_snapshots SET github_id = ? WHERE handle = ? AND github_id IS NULL')
+        .run(githubId, row.handle)
+      return { ...row, github_id: githubId }
+    }
+    return row
+  }
+
+  /** Persist only if the row is still at the version the caller read. */
+  async put(
+    githubId: number,
+    handle: string,
+    snapshot: ProductSnapshot,
+    updatedAt: string,
+    expectedUpdatedAt: string | null,
+  ): Promise<boolean> {
     const normalizedHandle = handle.toLowerCase()
     const json = serializeProductSnapshot(snapshot)
-    this.db
-      .prepare(
-        `INSERT INTO product_snapshots (handle, snapshot_json, updated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(handle) DO UPDATE SET
-           snapshot_json = excluded.snapshot_json,
-           updated_at = excluded.updated_at`
-      )
-      .run(normalizedHandle, json, updatedAt)
+    if (expectedUpdatedAt === null) {
+      const existing = this.db
+        .prepare('SELECT github_id FROM product_snapshots WHERE github_id = ?')
+        .get(githubId) as Pick<Row, 'github_id'> | undefined
+      if (existing) return false
+      try {
+        const result = this.db
+          .prepare('INSERT INTO product_snapshots (github_id, handle, snapshot_json, updated_at) VALUES (?, ?, ?, ?)')
+          .run(githubId, normalizedHandle, json, updatedAt) as { changes?: number }
+        return Number(result.changes ?? 0) === 1
+      } catch (error) {
+        if (error instanceof Error && /unique|constraint/i.test(error.message)) return false
+        throw error
+      }
+    }
+    // An unchanged timestamp is not a successful optimistic write. Without
+    // this guard two writers that happen to share a millisecond version could
+    // both pass the WHERE clause and silently overwrite one another.
+    if (updatedAt === expectedUpdatedAt) return false
+    const result = this.db
+      .prepare('UPDATE product_snapshots SET handle = ?, snapshot_json = ?, updated_at = ? WHERE github_id = ? AND updated_at = ?')
+      .run(normalizedHandle, json, updatedAt, githubId, expectedUpdatedAt) as { changes?: number }
+    return Number(result.changes ?? 0) === 1
   }
 
-  /** The stored snapshot for a handle, or null when it has never synced. */
-  async get(handle: string): Promise<ProductSnapshot | null> {
-    const row = this.db
-      .prepare('SELECT snapshot_json FROM product_snapshots WHERE handle = ?')
-      .get(handle.toLowerCase()) as Pick<Row, 'snapshot_json'> | undefined
-    if (!row) return null
-    return deserializeProductSnapshot(row.snapshot_json)
+  async getRecord(githubId: number, handle?: string): Promise<ProductSnapshotRecord | null> {
+    const found = this.row(githubId, handle)
+    if (!found) return null
+    const row = this.migrateLegacyHandle(found, githubId)
+    const snapshot = deserializeProductSnapshot(row.snapshot_json)
+    return snapshot
+      ? { githubId, handle: row.handle, snapshot, updatedAt: row.updated_at }
+      : null
   }
 
-  /** Forget a handle's product snapshot entirely (opt-out). */
-  async remove(handle: string): Promise<void> {
+  /** The stored snapshot for an immutable GitHub identity, or null when absent. */
+  async get(githubId: number, handle?: string): Promise<ProductSnapshot | null> {
+    return (await this.getRecord(githubId, handle))?.snapshot ?? null
+  }
+
+  /** Forget a GitHub identity's product snapshot entirely (opt-out). */
+  async remove(githubId: number, handle?: string): Promise<void> {
     this.db
-      .prepare('DELETE FROM product_snapshots WHERE handle = ?')
-      .run(handle.toLowerCase())
+      .prepare('DELETE FROM product_snapshots WHERE github_id = ?')
+      .run(githubId)
+    if (handle) {
+      this.db
+        .prepare('DELETE FROM product_snapshots WHERE github_id IS NULL AND handle = ?')
+        .run(handle.toLowerCase())
+    }
   }
 }
 

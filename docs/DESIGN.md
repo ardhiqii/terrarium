@@ -37,6 +37,50 @@ Notes are **observations**. Projects are **field studies**. The creature is a **
 
 Game UI never intrudes on a reading surface. This is not negotiable; it is the thing that makes the concept work.
 
+The GitHub source is a primary working surface, not an account-only setting.
+It stays separate in the main navigation because it represents remote
+development activity, while Notes is the single writing destination. Notes
+contains the published note collection, written projects, and the action that
+opens the mounted-folder editor. The account menu remains for identity,
+profile, leaderboard, and sign-out actions.
+
+### Unified writing surface
+
+Notes is one destination for the user's writing activity. The `/notes` page
+shows the published notes and written projects together, with a single `New
+note` action. `/write` remains the focused mounted-folder editor, but it is
+reached as an action from Notes rather than exposed as a competing primary
+navigation item. The current static Notes index does not claim to mirror a
+mounted folder; live local-file indexing remains a separate follow-up.
+
+The default Notes layout uses a wide notes list beside a narrower written
+projects list on desktop, then stacks those collections on smaller screens.
+Rows stay editorial and readable instead of becoming dashboard cards. Empty,
+loading, permission, local-save, and sync states must remain contextual to the
+collection or editor state.
+
+Repository choices use a focused mutation state: only the save control changes
+to “Saving choices...” while the server request is in flight, prevents duplicate
+submissions, and exposes a live status for assistive technology. Read-only
+repository browsing remains still so the page does not turn every component
+into a loading surface.
+
+Repository browsing is grouped by owner, but each repository is presented as an
+individual source tile rather than a continuous divider list. The tiles form a
+single-column source register so a repository’s identity stays together with
+its tracking state and access status, even when names are long. A selected tile
+uses the soft accent surface for its “tracking” state; an available tile rests
+on raised paper. This keeps long repository lists easy to scan in both themes
+without turning every item into a heavy card.
+
+The repository browser adds a text search across repository names and owner
+paths, plus segmented source filters for all, individual-owner, and organization
+repositories. Owner sections can collapse with an inline disclosure control;
+searching or changing the source scope reopens matching sections so results do
+not disappear inside a closed group. The individual-owner scope follows
+GitHub's owner type and is labeled separately from organization repositories.
+Empty filtered results explain how to return to the full source list.
+
 ---
 
 ## 2. Visual system
