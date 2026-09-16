@@ -133,9 +133,11 @@ selects or approves them. Terrarium must not automatically scan every
 repository the account can access.
 
 Repository access is chosen from GitHub's repository list rather than by typing
-repository names. The picker groups personal and organization repositories and
-shows visibility and permission state. Selecting all means all repositories
-currently shown; newly created repositories are not selected by default.
+repository names. The picker is a searchable browser with all, individual, and
+organization filters plus per-owner grouping, and it shows visibility and
+permission state alongside the approved and tracked counts. Selecting all means
+all repositories currently shown; newly created repositories are not selected
+by default.
 
 Users may opt in to automatic inclusion separately for future personal
 repositories and each approved organization. Automatic inclusion respects
