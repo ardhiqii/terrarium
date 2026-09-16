@@ -38,10 +38,26 @@ Notes are **observations**. Projects are **field studies**. The creature is a **
 Game UI never intrudes on a reading surface. This is not negotiable; it is the thing that makes the concept work.
 
 The GitHub source is a primary working surface, not an account-only setting.
-It stays visible in the main navigation beside Projects so a developer can
-move from what they built to the remote activity that can grow the companion.
-The account menu remains for identity, profile, leaderboard, and sign-out
-actions.
+It stays separate in the main navigation because it represents remote
+development activity, while Notes is the single writing destination. Notes
+contains the published note collection, written projects, and the action that
+opens the mounted-folder editor. The account menu remains for identity,
+profile, leaderboard, and sign-out actions.
+
+### Unified writing surface
+
+Notes is one destination for the user's writing activity. The `/notes` page
+shows the published notes and written projects together, with a single `New
+note` action. `/write` remains the focused mounted-folder editor, but it is
+reached as an action from Notes rather than exposed as a competing primary
+navigation item. The current static Notes index does not claim to mirror a
+mounted folder; live local-file indexing remains a separate follow-up.
+
+The default Notes layout uses a wide notes list beside a narrower written
+projects list on desktop, then stacks those collections on smaller screens.
+Rows stay editorial and readable instead of becoming dashboard cards. Empty,
+loading, permission, local-save, and sync states must remain contextual to the
+collection or editor state.
 
 Repository choices use a focused mutation state: only the save control changes
 to “Saving choices...” while the server request is in flight, prevents duplicate
