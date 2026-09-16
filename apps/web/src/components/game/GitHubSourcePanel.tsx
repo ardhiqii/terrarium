@@ -35,23 +35,12 @@ import {
   restoreProductStateFromSnapshot,
 } from '@/lib/sync/product-snapshot'
 import { productEventId } from '@/lib/sync/product-event-id'
+import { filterGithubRepositories, type RepositoryScope } from '@/lib/sync/github-repository-browser'
+import type { GithubRepository } from '@/lib/sync/github-repositories'
 import { CompanionSwitcher } from './CompanionSwitcher'
 import { EncounterReveal } from './EncounterReveal'
 import { ProductActivityPanel } from './ProductActivityPanel'
 import { GitHubRewardGuide } from './GitHubRewardGuide'
-
-interface GithubRepository {
-  id: string
-  name: string
-  fullName: string
-  ownerLogin: string
-  ownerType: 'User' | 'Organization'
-  private: boolean
-  visibility: string
-  defaultBranch: string | null
-  archived: boolean
-  canRead: boolean
-}
 
 interface GithubSettings {
   trackedRepositoryIds: string[]
@@ -165,6 +154,10 @@ function errorMessage(body: Record<string, unknown>, fallback: string): string {
   return typeof body.error === 'string' ? body.error : fallback
 }
 
+function repositoryOwnerId(owner: string): string {
+  return owner.toLowerCase().replace(/[^a-z0-9]+/gu, '-') || 'unknown'
+}
+
 function browserState(namespace?: string): ProductState {
   const storage = browserProductStorage()
   const profile = ensureBrowserGuestProfile(storage, PROTOTYPE_COMPANION_CATALOG.list()[0].id, namespace)
@@ -252,6 +245,9 @@ export function GitHubSourcePanel() {
   const [busy, setBusy] = useState(false)
   const [savingSettings, setSavingSettings] = useState(false)
   const [lastSyncSummary, setLastSyncSummary] = useState<string | null>(null)
+  const [repositoryQuery, setRepositoryQuery] = useState('')
+  const [repositoryScope, setRepositoryScope] = useState<RepositoryScope>('all')
+  const [collapsedOwners, setCollapsedOwners] = useState<string[]>([])
 
   const hydrateState = useCallback(() => {
     const state = browserState()
@@ -302,15 +298,29 @@ export function GitHubSourcePanel() {
     () => [...new Set(repositories.filter((repo) => repo.ownerType === 'Organization').map((repo) => repo.ownerLogin))].sort(),
     [repositories],
   )
+  const filteredRepositories = useMemo(() => {
+    return filterGithubRepositories(repositories, repositoryQuery, repositoryScope)
+  }, [repositories, repositoryQuery, repositoryScope])
   const groupedRepositories = useMemo(() => {
     const groups = new Map<string, GithubRepository[]>()
-    for (const repository of repositories) {
+    for (const repository of filteredRepositories) {
       const current = groups.get(repository.ownerLogin) ?? []
       current.push(repository)
       groups.set(repository.ownerLogin, current)
     }
     return [...groups.entries()].sort(([left], [right]) => left.localeCompare(right))
+  }, [filteredRepositories])
+  const repositoryCountsByOwner = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const repository of repositories) counts.set(repository.ownerLogin, (counts.get(repository.ownerLogin) ?? 0) + 1)
+    return counts
   }, [repositories])
+  const userRepositoryCount = useMemo(
+    () => repositories.filter((repository) => repository.ownerType === 'User').length,
+    [repositories],
+  )
+  const organizationRepositoryCount = repositories.length - userRepositoryCount
+  const repositoryFiltersActive = repositoryQuery.trim().length > 0 || repositoryScope !== 'all'
   const effectiveTrackedCount = useMemo(
     () => repositories.filter((repository) => {
       if (repository.archived || !repository.canRead || draftExcludedIds.includes(repository.id)) return false
@@ -462,6 +472,12 @@ export function GitHubSourcePanel() {
 
   const toggleOrganization = (login: string) => {
     setDraftOrganizations((current) => current.includes(login) ? current.filter((value) => value !== login) : [...current, login])
+  }
+
+  const toggleOwner = (owner: string) => {
+    setCollapsedOwners((current) => current.includes(owner)
+      ? current.filter((value) => value !== owner)
+      : [...current, owner])
   }
 
   const dismissDraw = (drawId: string) => {
@@ -625,49 +641,141 @@ export function GitHubSourcePanel() {
             </div>
           </section>
 
+          <section aria-label="Repository browser" className="mt-8">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Repository browser</p>
+                <h2 className="font-ui mt-2 text-2xl font-semibold tracking-tight">Find a source</h2>
+              </div>
+              <p className="font-data text-xs" style={{ color: 'var(--ink-muted)' }}>
+                {filteredRepositories.length} of {repositories.length} visible
+              </p>
+            </div>
+
+            <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center">
+              <form role="search" aria-label="Find a repository" onSubmit={(event) => event.preventDefault()} className="relative min-w-0 flex-1">
+                <label htmlFor="github-repository-search" className="sr-only">Find a repository or owner</label>
+                <input
+                  id="github-repository-search"
+                  type="search"
+                  value={repositoryQuery}
+                  onChange={(event) => { setRepositoryQuery(event.target.value); setCollapsedOwners([]) }}
+                  placeholder="Find a repository or owner"
+                  className="font-ui w-full border bg-[color:var(--paper)] px-3 py-2.5 pr-16 text-sm"
+                  style={{ borderColor: 'var(--rule)', color: 'var(--ink)' }}
+                />
+                {repositoryQuery && (
+                  <button
+                    type="button"
+                    onClick={() => { setRepositoryQuery(''); setCollapsedOwners([]) }}
+                    className="ui-row font-data absolute right-1 top-1/2 -translate-y-1/2 px-2 py-1 text-[10px] uppercase tracking-wider"
+                    style={{ color: 'var(--ink-muted)' }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </form>
+
+              <div role="group" aria-label="Repository source filter" className="flex flex-wrap gap-2">
+                {([
+                  ['all', 'All sources'],
+                  ['user', 'Individual owners'],
+                  ['organization', 'Organizations'],
+                ] as const).map(([scope, label]) => (
+                  <button
+                    key={scope}
+                    type="button"
+                    aria-pressed={repositoryScope === scope}
+                    data-active={repositoryScope === scope}
+                    onClick={() => { setRepositoryScope(scope); setCollapsedOwners([]) }}
+                    className="ui-segment font-data border px-3 py-2 text-[10px] uppercase tracking-wider"
+                    style={{ borderColor: repositoryScope === scope ? 'var(--accent)' : 'var(--rule)', color: repositoryScope === scope ? 'var(--ink)' : 'var(--ink-muted)' }}
+                  >
+                    {label}
+                    <span className="ml-1" style={{ color: 'var(--ink-muted)' }}>
+                      {scope === 'all' ? repositories.length : scope === 'user' ? userRepositoryCount : organizationRepositoryCount}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {repositoryFiltersActive && (
+              <p role="status" aria-live="polite" className="font-data mt-3 text-xs uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>
+                Showing {filteredRepositories.length} matching {filteredRepositories.length === 1 ? 'source' : 'sources'}
+              </p>
+            )}
+          </section>
+
           <section className="mt-8 space-y-8">
-            {groupedRepositories.map(([owner, ownerRepositories]) => (
-              <section key={owner} aria-labelledby={`github-owner-${owner}`}>
-                <div className="flex items-end justify-between gap-4 border-l-2 pl-4" style={{ borderColor: 'var(--accent)' }}>
-                  <div>
-                    <p id={`github-owner-${owner}`} className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>{owner}</p>
-                    <p className="font-prose mt-1 text-sm" style={{ color: 'var(--ink-muted)' }}>Repository sources</p>
+            {groupedRepositories.map(([owner, ownerRepositories]) => {
+              const ownerKey = repositoryOwnerId(owner)
+              const totalOwnerRepositories = repositoryCountsByOwner.get(owner) ?? ownerRepositories.length
+              const collapsed = collapsedOwners.includes(owner)
+              return (
+                <section key={owner} aria-labelledby={`github-owner-${ownerKey}`}>
+                  <button
+                    type="button"
+                    aria-expanded={!collapsed}
+                    aria-controls={`github-owner-content-${ownerKey}`}
+                    onClick={() => toggleOwner(owner)}
+                    className="ui-row flex w-full items-center justify-between gap-4 border-l-2 px-4 py-3 text-left"
+                    style={{ borderColor: 'var(--accent)' }}
+                  >
+                    <span className="min-w-0">
+                      <span id={`github-owner-${ownerKey}`} className="font-data block truncate text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>{owner}</span>
+                      <span className="font-prose mt-1 block text-sm" style={{ color: 'var(--ink-muted)' }}>Repository sources</span>
+                    </span>
+                    <span className="flex shrink-0 items-center gap-3">
+                      <span className="font-data text-xs" style={{ color: 'var(--ink-muted)' }}>
+                        {ownerRepositories.length === totalOwnerRepositories ? `${totalOwnerRepositories} repos` : `${ownerRepositories.length} of ${totalOwnerRepositories}`}
+                      </span>
+                      <span aria-hidden="true" className="font-data text-lg leading-none" style={{ color: 'var(--accent)' }}>{collapsed ? '+' : '−'}</span>
+                    </span>
+                  </button>
+                  <div id={`github-owner-content-${ownerKey}`} hidden={collapsed} className="mt-3 grid gap-2">
+                      {ownerRepositories.map((repository) => {
+                        const autoTracked = repository.ownerType === 'User'
+                          ? draftAutoPersonal
+                          : draftOrganizations.includes(repository.ownerLogin.toLowerCase())
+                        const checked = draftTrackedIds.includes(repository.id) || (autoTracked && !draftExcludedIds.includes(repository.id))
+                        const disabled = repository.archived || !repository.canRead
+                        return (
+                          <label
+                            key={repository.id}
+                            data-active={checked}
+                            className="ui-row github-source-tile grid min-h-16 grid-cols-[auto_minmax(0,1fr)] items-center gap-3 p-3 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:gap-4 sm:p-4"
+                            style={{ opacity: disabled || sourceControlsDisabled ? 0.55 : 1 }}
+                          >
+                            <input type="checkbox" checked={checked} disabled={disabled || sourceControlsDisabled} onChange={() => toggleTracked(repository)} className="shrink-0" />
+                            <span className="min-w-0 flex-1">
+                              <span className="flex flex-wrap items-center gap-2">
+                                <span className="font-ui text-sm font-medium">{repository.name}</span>
+                                <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: checked ? 'var(--accent)' : 'var(--ink-muted)' }}>{checked ? 'tracking' : 'available'}</span>
+                                <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>{repository.private ? 'private' : 'public'}</span>
+                                {repository.archived && <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>archived</span>}
+                              </span>
+                              <span className="font-data mt-1 block truncate text-xs" style={{ color: 'var(--ink-muted)' }}>{repository.fullName}</span>
+                            </span>
+                            <span className="font-data hidden shrink-0 text-right text-[10px] uppercase tracking-wider sm:block" style={{ color: repository.canRead ? 'var(--ink-muted)' : 'var(--accent)' }}>
+                              {repository.canRead ? 'readable' : 'access paused'}
+                            </span>
+                          </label>
+                        )
+                      })}
                   </div>
-                  <span className="font-data shrink-0 text-xs" style={{ color: 'var(--ink-muted)' }}>{ownerRepositories.length} repos</span>
-                </div>
-                <div className="mt-3 grid gap-2">
-                  {ownerRepositories.map((repository) => {
-                    const autoTracked = repository.ownerType === 'User'
-                      ? draftAutoPersonal
-                      : draftOrganizations.includes(repository.ownerLogin.toLowerCase())
-                    const checked = draftTrackedIds.includes(repository.id) || (autoTracked && !draftExcludedIds.includes(repository.id))
-                    const disabled = repository.archived || !repository.canRead
-                    return (
-                      <label
-                        key={repository.id}
-                        data-active={checked}
-                        className="ui-row github-source-tile grid min-h-16 grid-cols-[auto_minmax(0,1fr)] items-center gap-3 p-3 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:gap-4 sm:p-4"
-                        style={{ opacity: disabled || sourceControlsDisabled ? 0.55 : 1 }}
-                      >
-                        <input type="checkbox" checked={checked} disabled={disabled || sourceControlsDisabled} onChange={() => toggleTracked(repository)} className="shrink-0" />
-                        <span className="min-w-0 flex-1">
-                          <span className="flex flex-wrap items-center gap-2">
-                            <span className="font-ui text-sm font-medium">{repository.name}</span>
-                            <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: checked ? 'var(--accent)' : 'var(--ink-muted)' }}>{checked ? 'tracking' : 'available'}</span>
-                            <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>{repository.private ? 'private' : 'public'}</span>
-                            {repository.archived && <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>archived</span>}
-                          </span>
-                          <span className="font-data mt-1 block truncate text-xs" style={{ color: 'var(--ink-muted)' }}>{repository.fullName}</span>
-                        </span>
-                        <span className="font-data hidden shrink-0 text-right text-[10px] uppercase tracking-wider sm:block" style={{ color: repository.canRead ? 'var(--ink-muted)' : 'var(--accent)' }}>
-                          {repository.canRead ? 'readable' : 'access paused'}
-                        </span>
-                      </label>
-                    )
-                  })}
-                </div>
+                </section>
+              )
+            })}
+            {repositories.length > 0 && filteredRepositories.length === 0 && (
+              <section className="border-l-2 px-5 py-4" style={{ borderColor: 'var(--accent)', background: 'var(--paper-raised)' }}>
+                <p className="font-ui text-sm font-medium">No repositories match this view.</p>
+                <p className="font-prose mt-1 text-sm" style={{ color: 'var(--ink-muted)' }}>Try a different name or source filter.</p>
+                <button type="button" onClick={() => { setRepositoryQuery(''); setRepositoryScope('all'); setCollapsedOwners([]) }} className="ui-row font-data mt-4 border px-3 py-2 text-xs uppercase tracking-wider" style={{ borderColor: 'var(--rule)' }}>
+                  Show all repositories
+                </button>
               </section>
-            ))}
+            )}
             {repositories.length === 0 && (
               <p className="font-prose border p-5 text-sm" style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}>
                 GitHub returned no repositories this account can read.
