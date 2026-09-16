@@ -444,7 +444,14 @@ async function fetchCheckRuns(
   // walking the default branch. The previous walk cost up to 3 commit pages and
   // then up to 3 check-run pages for each of up to 90 commits, per repository,
   // and the normalizer discarded every check that did not match a merged PR.
-  for (const commitSha of commitShas.slice(0, MAX_CHECK_RUN_COMMITS)) {
+  // Looked up concurrently: awaiting one SHA at a time added a full round trip
+  // of latency per merged pull request, which on its own could exceed the window
+  // a serverless function is given.
+  const perCommit = await mapWithConcurrency(
+    commitShas.slice(0, MAX_CHECK_RUN_COMMITS),
+    DETAIL_CONCURRENCY,
+    async (commitSha) => {
+    const checks: GitHubCiCheckRecord[] = []
     let fetchedCheckCount = 0
     let reportedCheckCount: number | undefined
     for (let page = 1; page <= MAX_PAGES; page += 1) {
@@ -460,28 +467,66 @@ async function fetchCheckRuns(
         const completedAt = stringField(check, 'completed_at')
         if (conclusion?.toLowerCase() !== 'success') continue
         if (!completedAt) continue
-        out.push({
+        checks.push({
           id: stringField(check, 'node_id') ?? String(numberField(check, 'id') ?? 0),
           repositoryId: repositoryId(repo),
           completedAt,
           conclusion,
           status,
-          commitSha: commitSha,
+          commitSha,
           ...(checkName ? { name: checkName } : {}),
         })
       }
       if (checksPage.items.length < DEFAULT_PAGE_SIZE) break
       if (reportedCheckCount !== undefined && fetchedCheckCount >= reportedCheckCount) break
     }
-    if (reportedCheckCount !== undefined && fetchedCheckCount < reportedCheckCount) {
+    return {
+      checks,
       // A bounded scan must not claim to be complete when GitHub reports more
       // check runs than the adapter was able to read. This is truncation, not
       // failure: the unread checks belong to older PRs and can never be
       // awarded, because the baseline for this sync is `now`.
-      health.truncatedScans += 1
+      truncated: reportedCheckCount !== undefined && fetchedCheckCount < reportedCheckCount,
     }
+  })
+
+  for (const result of perCommit) {
+    out.push(...result.checks)
+    if (result.truncated) health.truncatedScans += 1
   }
   return out
+}
+
+/** Upper bound on in-flight GitHub requests for one repository's details. */
+const DETAIL_CONCURRENCY = 6
+
+/**
+ * Runs `worker` over `items` with a bounded number of requests in flight.
+ *
+ * The commit-detail lookup is inherently one request per commit, and awaiting
+ * them one at a time costs roughly 200ms each: thirty commits across twenty-five
+ * repositories is over two minutes of pure round-trip latency, well beyond the
+ * window a serverless function is allowed to run. The bound keeps the burst
+ * polite enough not to trip GitHub's secondary abuse limits.
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let cursor = 0
+  const runnerCount = Math.max(1, Math.min(limit, items.length))
+  const runners = Array.from({ length: runnerCount }, async () => {
+    for (;;) {
+      const index = cursor
+      cursor += 1
+      if (index >= items.length) return
+      results[index] = await worker(items[index] as T)
+    }
+  })
+  await Promise.all(runners)
+  return results
 }
 
 async function fetchUserCommits(
@@ -494,29 +539,48 @@ async function fetchUserCommits(
 ): Promise<GitHubCommitRecord[]> {
   const out: GitHubCommitRecord[] = []
   const seenShas = new Set<string>()
+  // Pass one: collect the commits worth reading. Listing is cheap; the detail
+  // endpoint is the expensive part, because GitHub only returns `stats` there,
+  // so one request per commit is unavoidable.
+  const candidates: Array<{ sha: string; item: Record<string, unknown> }> = []
   for (const attributionField of ['author', 'committer'] as const) {
     for (let page = 1; page <= MAX_PAGES; page += 1) {
       const url = `${apiBase}/repos/${repoPath(repo)}/commits?${attributionField}=${encodeURIComponent(login)}&per_page=${DEFAULT_PAGE_SIZE}&page=${page}`
       const items = await fetchJsonPage(client, url, headers, health)
       if (!items) break
       for (const item of items) {
-      const sha = stringField(item, 'sha')
-      if (!sha || seenShas.has(sha) || !attributedCommitToLogin(item, login)) continue
-      seenShas.add(sha)
-      // Bounded on the count of commits *encountered*, not on the count that
-      // produced a record: a commit that fails the stats or date check never
-      // increments the output, so capping on the output would leave the walk
-      // unbounded. `continue` stops the detail request without abandoning the
-      // walk, so a long history costs a ceiling of detail calls.
-      if (seenShas.size > MAX_COMMITS_PER_REPO) continue
-      const detail = recordWithStats(item)
-        ? item
-        : await fetchJsonObject(
-            client,
-            `${apiBase}/repos/${repoPath(repo)}/commits/${encodeURIComponent(sha)}`,
-            headers,
-            health,
-          )
+        const sha = stringField(item, 'sha')
+        if (!sha || seenShas.has(sha) || !attributedCommitToLogin(item, login)) continue
+        seenShas.add(sha)
+        // Bounded on the count of commits *encountered*, not the count that
+        // produced a record: a commit failing the stats or date check never
+        // reaches the output, so capping on the output would leave the walk
+        // unbounded. The ceiling costs nothing that could have been awarded,
+        // because the baseline recorded for a sync is `now`.
+        if (candidates.length >= MAX_COMMITS_PER_REPO) continue
+        candidates.push({ sha, item })
+      }
+      if (items.length < DEFAULT_PAGE_SIZE) break
+      if (page === MAX_PAGES) health.truncatedScans += 1
+    }
+  }
+
+  // Pass two: fetch details with bounded concurrency rather than one await at a
+  // time, which was the dominant wall-clock cost of a whole sync.
+  const details = await mapWithConcurrency(candidates, DETAIL_CONCURRENCY, ({ sha, item }) =>
+    recordWithStats(item)
+      ? Promise.resolve(item)
+      : fetchJsonObject(
+          client,
+          `${apiBase}/repos/${repoPath(repo)}/commits/${encodeURIComponent(sha)}`,
+          headers,
+          health,
+        ),
+  )
+
+  for (let index = 0; index < candidates.length; index += 1) {
+      const sha = (candidates[index] as { sha: string }).sha
+      const detail = details[index]
       if (!detail) continue
       const commit = itemRecord(detail.commit)
       const author = commit ? itemRecord(commit.author) : null
@@ -524,7 +588,7 @@ async function fetchUserCommits(
       const occurredAt =
         stringField(author ?? {}, 'date') ??
         stringField(committer ?? {}, 'date') ??
-        stringField(item, 'created_at')
+        stringField(detail, 'created_at')
       if (!occurredAt) continue
       const stats = itemRecord(detail.stats)
       // Without GitHub's detail stats we cannot distinguish a meaningful
@@ -557,10 +621,6 @@ async function fetchUserCommits(
         isEmpty: hasZeroStats,
         contentChanged: !hasZeroStats,
       })
-      }
-      if (items.length < DEFAULT_PAGE_SIZE) break
-      if (page === MAX_PAGES) health.truncatedScans += 1
-    }
   }
   return out
 }
