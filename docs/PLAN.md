@@ -169,13 +169,21 @@ Add optional GitHub sign-in and derived-state sync:
 
 ### Feature A slice currently implemented
 
-- GitHub OAuth requests the repository/org permissions needed to discover the
-  connected user's personal and organization repositories;
+- GitHub OAuth is scope-free: `/api/auth/login` sends only `client_id`,
+  `state`, and `redirect_uri`, and identity comes back from `GET /user`.
+  Repository discovery is bounded by the GitHub App's fine-grained read
+  permissions and by where the app is installed rather than by an OAuth scope,
+  and the classic `repo` scope is deliberately never requested. The explicit
+  install/permission-request flow remains open work;
 - the OAuth token is encrypted in the server-side account store and never
   placed in the browser session cookie or API response;
-- `/github` lists the repositories GitHub makes available, keeps approved and
-  tracked state distinct, and supports explicit selection plus automatic
-  inclusion for future personal repositories or selected organizations;
+- `/github` lists the repositories GitHub makes available in a searchable
+  browser with all/individual/organization filters and per-owner grouping,
+  keeps approved and tracked state distinct, and supports explicit selection
+  plus automatic inclusion for future personal repositories or selected
+  organizations. Re-enabling a repository that was untracked or excluded
+  clears its baseline, so activity from the paused window is never awarded
+  retroactively;
 - `/api/github/sync` reads only tracked, non-archived repositories, records a
   first-use baseline per stable repository ID, filters old activity, and
   returns verified provider-neutral events for the active companion; manual
@@ -194,8 +202,10 @@ permissions for metadata, contents, pull requests, issues, checks/actions, and
 the required organization approval. It deliberately does not request the
 classic `repo` scope, which grants broader write-capable access. Before
 production, keep `SUPABASE_URL` and the server-only `SUPABASE_SECRET_KEY` in the
-deployment secret store and apply `supabase/migrations/20260914000000_initial_sync.sql`.
-The migration enables RLS and grants access only to the server role.
+deployment secret store and apply both
+`supabase/migrations/20260914000000_initial_sync.sql` and
+`supabase/migrations/20260914000001_harden_product_identity.sql`. The
+migrations enable RLS and grant access only to the server role.
 
 The Supabase adapter covers the public sync snapshot, GitHub account/settings,
 and product snapshot stores. The browser restores a blank account namespace

@@ -6,7 +6,7 @@ This is the execution status for the product described in
 remain useful as historical implementation notes, but they are not the current
 product contract.
 
-Last reviewed: **2026-09-14**
+Last reviewed: **2026-09-16**
 
 ## Product direction
 
@@ -66,6 +66,12 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
 - The `/github` source screen now explains the XP map and shows recent verified
   receipts. A live smoke test awarded 50 XP from a post-baseline release and
   active-workday event, then kept XP at 50 on a repeated sync.
+- The `/github` picker is a searchable repository browser with
+  all/individual/organization filters, per-owner grouping, and approved versus
+  tracked counts. Tracks come from GitHub's fetched list rather than typed
+  names, an organization must be opted into individually, and re-enabling a
+  paused repository resets its baseline so paused activity is never awarded
+  retroactively.
 - Supabase project/schema and server-only adapters now provide a durable hosted
   storage path for Vercel; signed-in GitHub browsers can hydrate blank account
   namespaces from the cloud snapshot; SQLite remains the local/single-server
@@ -89,7 +95,7 @@ collection is considered final.
 | 2 | Event ledger and basic XP | **partial, Markdown and GitHub wired; broader surfaces pending** |
 | 3 | Companion catalog, forms, and encounters | **partial, engine and PokeAPI bridge shipped** |
 | 4 | Recursive Markdown and Obsidian mounting | partial, needs upgrade |
-| 5 | GitHub verification and guest sync merge | **partial, Feature A and hosted hardening shipped; deployment and profile migration pending** |
+| 5 | GitHub verification and guest sync merge | **partial, Feature A, repository browser, and hosted hardening shipped; Vercel/Supabase deploy verification and profile migration pending** |
 | 6 | Collection UI, profiles, extension integration | **partial, extension adapter shipped; surfaces pending** |
 | 7 | Licensed marketplace providers and original art | future |
 
