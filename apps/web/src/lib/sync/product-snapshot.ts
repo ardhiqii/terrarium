@@ -219,9 +219,19 @@ function assertEnum<T extends string>(value: unknown, values: readonly T[], fiel
   }
 }
 
-/** A deterministic opaque ID suitable for sync while remaining stable across devices. */
+const OPAQUE_ID_SUFFIX = /^[0-9a-f]{8}-[0-9a-f]{8}$/u
+
+/**
+ * A deterministic opaque ID suitable for sync while remaining stable across devices.
+ *
+ * Idempotent by design, like `productEventId`: a restored snapshot only carries
+ * the opaque value, so re-snapshotting it must reproduce the exact same string
+ * (the server receipt signs the cap key, and a second hash would break it).
+ */
 function opaqueId(value: string, prefix: string): string {
   if (prefix === 'event') return productEventId(value)
+  const marker = `${prefix}-`
+  if (value.startsWith(marker) && OPAQUE_ID_SUFFIX.test(value.slice(marker.length))) return value
   let first = 2166136261
   let second = 2246822519
   for (let index = 0; index < value.length; index += 1) {
@@ -238,11 +248,19 @@ function safeMetadata(metadata: Readonly<Record<string, EventMetadataValue>> | u
   if (typeof metadata.activityCount === 'number') result.activityCount = metadata.activityCount
   if (typeof metadata.bucket === 'number') result.bucket = metadata.bucket
   if (typeof metadata.number === 'number') result.number = metadata.number
-  if (typeof metadata.repositoryId === 'string') result.repositoryIdHash = opaqueId(metadata.repositoryId, 'repo')
-  if (typeof metadata.linkedPullRequestId === 'string') {
+  if (typeof metadata.repositoryIdHash === 'string') {
+    result.repositoryIdHash = metadata.repositoryIdHash
+  } else if (typeof metadata.repositoryId === 'string') {
+    result.repositoryIdHash = opaqueId(metadata.repositoryId, 'repo')
+  }
+  if (typeof metadata.linkedPullRequestIdHash === 'string') {
+    result.linkedPullRequestIdHash = metadata.linkedPullRequestIdHash
+  } else if (typeof metadata.linkedPullRequestId === 'string') {
     result.linkedPullRequestIdHash = opaqueId(metadata.linkedPullRequestId, 'pr')
   }
-  if (typeof metadata.pullRequestId === 'string') {
+  if (typeof metadata.pullRequestIdHash === 'string') {
+    result.pullRequestIdHash = metadata.pullRequestIdHash
+  } else if (typeof metadata.pullRequestId === 'string') {
     result.pullRequestIdHash = opaqueId(metadata.pullRequestId, 'pr')
   }
   if (typeof metadata.sessionBucket === 'string' && /^\d{4}-\d{2}-\d{2}-\d+$/u.test(metadata.sessionBucket)) {
@@ -635,6 +653,11 @@ function toNormalizedEvent(event: ProductSnapshotEvent): NormalizedEvent {
   if (event.metadata?.bucket !== undefined) metadata.bucket = event.metadata.bucket
   if (event.metadata?.number !== undefined) metadata.number = event.metadata.number
   if (event.metadata?.sessionBucket !== undefined) metadata.sessionBucket = event.metadata.sessionBucket
+  if (event.metadata?.repositoryIdHash !== undefined) metadata.repositoryIdHash = event.metadata.repositoryIdHash
+  if (event.metadata?.linkedPullRequestIdHash !== undefined) {
+    metadata.linkedPullRequestIdHash = event.metadata.linkedPullRequestIdHash
+  }
+  if (event.metadata?.pullRequestIdHash !== undefined) metadata.pullRequestIdHash = event.metadata.pullRequestIdHash
   return {
     eventId: asEventId(event.eventId),
     companionId: asCompanionId(event.companionId),
