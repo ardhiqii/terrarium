@@ -625,14 +625,17 @@ export function GitHubSourcePanel() {
             </div>
           </section>
 
-          <section className="mt-6 grid gap-4">
+          <section className="mt-8 space-y-8">
             {groupedRepositories.map(([owner, ownerRepositories]) => (
-              <div key={owner} className="border" style={{ borderColor: 'var(--rule)' }}>
-                <div className="flex items-center justify-between border-b px-5 py-3" style={{ borderColor: 'var(--rule)', background: 'var(--paper-raised)' }}>
-                  <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>{owner}</p>
-                  <span className="font-data text-xs" style={{ color: 'var(--ink-muted)' }}>{ownerRepositories.length} repos</span>
+              <section key={owner} aria-labelledby={`github-owner-${owner}`}>
+                <div className="flex items-end justify-between gap-4 border-l-2 pl-4" style={{ borderColor: 'var(--accent)' }}>
+                  <div>
+                    <p id={`github-owner-${owner}`} className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>{owner}</p>
+                    <p className="font-prose mt-1 text-sm" style={{ color: 'var(--ink-muted)' }}>Repository sources</p>
+                  </div>
+                  <span className="font-data shrink-0 text-xs" style={{ color: 'var(--ink-muted)' }}>{ownerRepositories.length} repos</span>
                 </div>
-                <div className="divide-y" style={{ borderColor: 'var(--rule)' }}>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
                   {ownerRepositories.map((repository) => {
                     const autoTracked = repository.ownerType === 'User'
                       ? draftAutoPersonal
@@ -640,21 +643,27 @@ export function GitHubSourcePanel() {
                     const checked = draftTrackedIds.includes(repository.id) || (autoTracked && !draftExcludedIds.includes(repository.id))
                     const disabled = repository.archived || !repository.canRead
                     return (
-                      <label key={repository.id} className="flex items-start gap-3 px-5 py-4" style={{ opacity: disabled || sourceControlsDisabled ? 0.55 : 1 }}>
-                        <input type="checkbox" checked={checked} disabled={disabled || sourceControlsDisabled} onChange={() => toggleTracked(repository)} className="mt-1" />
+                      <label
+                        key={repository.id}
+                        data-active={checked}
+                        className="ui-row github-source-tile group flex min-h-20 items-start gap-3 p-4"
+                        style={{ opacity: disabled || sourceControlsDisabled ? 0.55 : 1 }}
+                      >
+                        <input type="checkbox" checked={checked} disabled={disabled || sourceControlsDisabled} onChange={() => toggleTracked(repository)} className="mt-1 shrink-0" />
                         <span className="min-w-0 flex-1">
                           <span className="flex flex-wrap items-center gap-2">
                             <span className="font-ui text-sm font-medium">{repository.name}</span>
+                            <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: checked ? 'var(--accent)' : 'var(--ink-muted)' }}>{checked ? 'tracking' : 'available'}</span>
                             <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>{repository.private ? 'private' : 'public'}</span>
                             {repository.archived && <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>archived</span>}
                           </span>
-                          <span className="font-data mt-1 block truncate text-xs" style={{ color: 'var(--ink-muted)' }}>{repository.fullName} · {repository.canRead ? 'readable' : 'access paused'}</span>
+                          <span className="font-data mt-2 block truncate text-xs" style={{ color: 'var(--ink-muted)' }}>{repository.fullName} · {repository.canRead ? 'readable' : 'access paused'}</span>
                         </span>
                       </label>
                     )
                   })}
                 </div>
-              </div>
+              </section>
             ))}
             {repositories.length === 0 && (
               <p className="font-prose border p-5 text-sm" style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}>
