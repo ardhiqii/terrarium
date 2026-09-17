@@ -254,7 +254,14 @@ export class SupabaseGithubAccountStore implements GithubAccountStore {
         last_synced_at: cleanNext.lastSyncedAt,
       })
       .eq('github_id', githubId)
-      .eq('baseline_by_repository_id_json', current.settings.baselineByRepositoryId)
+      // THE GUARD MUST BE SENT AS JSON TEXT. `baseline_by_repository_id_json`
+      // is a jsonb column, and supabase-js turns a filter value that is not a
+      // string into `String(value)` — so passing the object itself produced
+      // `[object Object]` and Postgres rejected the whole statement with
+      // "invalid input syntax for type json". The update threw, the route
+      // answered a bodyless 500, and the baseline was never committed, which is
+      // why every sync re-baselined and no XP was ever awarded.
+      .eq('baseline_by_repository_id_json', JSON.stringify(current.settings.baselineByRepositoryId))
       .select('github_id')
       .maybeSingle()
     if (error) throwDatabaseError('github_accounts.advanceBaseline', error)
