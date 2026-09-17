@@ -40,6 +40,7 @@ import {
   restoreProductStateFromSnapshot,
 } from '@/lib/sync/product-snapshot'
 import { productEventId } from '@/lib/sync/product-event-id'
+import { loginHrefFor } from '@/lib/sync/oauth-return-path'
 import {
   addSyncRequestUsage,
   MAX_SYNC_REPOSITORIES,
@@ -912,7 +913,7 @@ export function GitHubSourcePanel() {
           <p className="font-prose mt-3 max-w-xl text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
             Terrarium asks GitHub for repository access so it can list personal and organization repositories. You approve the list; only tracked repositories affect progression.
           </p>
-          <a href="/api/auth/login" className="ui-row font-ui mt-5 inline-block border px-4 py-2 text-sm" style={{ borderColor: 'var(--ink)', color: 'var(--ink)' }}>
+          <a href={loginHrefFor('/github')} className="ui-row font-ui mt-5 inline-block border px-4 py-2 text-sm" style={{ borderColor: 'var(--ink)', color: 'var(--ink)' }}>
             Sign in with GitHub
           </a>
         </section>
