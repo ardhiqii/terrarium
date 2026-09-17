@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
-import { verifyGithubSyncCheckpoint } from '@/lib/sync/github-sync-checkpoint'
+import { MAX_CHECKPOINT_EVENT_IDS, verifyGithubSyncCheckpoint } from '@/lib/sync/github-sync-checkpoint'
+import { MAX_SYNC_REPOSITORIES } from '@/lib/sync/sync-schedule'
 
 const mocks = vi.hoisted(() => ({
   settings: {
@@ -285,6 +286,152 @@ describe('POST /api/github/sync', () => {
     const second = await POST(request())
     expect(second.status).toBe(200)
     expect((await second.json()).repositoryCount).toBe(0)
+  })
+
+  it('reads the derived window and baselines every repository without stranding one', async () => {
+    // REGRESSION: a hard ceiling of 25 repositories stranded 19 of a
+    // 44-repository account -- those repositories could never be baselined, so
+    // none of their activity could ever award XP. The window is now derived
+    // (hourly request budget and checkpoint event capacity), which makes it
+    // smaller, but its ordering reads repositories without a baseline first,
+    // so every repository is covered within a few syncs. Nothing is stranded.
+    const many = Array.from({ length: 44 }, (_, index) => ({
+      ...repository,
+      id: String(2000 + index),
+      name: `repo-${index}`,
+      fullName: `octo/repo-${index}`,
+    }))
+    mocks.settings = {
+      trackedRepositoryIds: [],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: true,
+      autoIncludeOrganizations: [],
+      baselineByRepositoryId: {},
+      lastSyncedAt: null,
+    }
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', repositories: many })
+
+    const baselined = new Set<string>()
+    for (let round = 0; round < 4 && baselined.size < many.length; round += 1) {
+      const events = await readSyncEvents(await POST(request()))
+      const body = events.find((event) => event.type === 'result')?.payload as Record<string, unknown>
+
+      expect(events[0]).toMatchObject({ type: 'start', repositoryCount: MAX_SYNC_REPOSITORIES })
+      expect(body.repositoryCount).toBe(MAX_SYNC_REPOSITORIES)
+      expect(body.skippedRepositoryCount).toBe(many.length - MAX_SYNC_REPOSITORIES)
+      const checkpoint = verifyGithubSyncCheckpoint(body.checkpoint as string, 9001)
+      expect(checkpoint).not.toBeNull()
+      for (const id of Object.keys(checkpoint?.nextBaselineByRepositoryId ?? {})) baselined.add(id)
+      // Stand in for the client's product upload, which is what actually
+      // commits the deferred baseline before the next sync runs.
+      mocks.settings.baselineByRepositoryId = { ...(checkpoint?.nextBaselineByRepositoryId ?? {}) }
+    }
+
+    expect(baselined.size).toBe(many.length)
+  })
+
+  it('never builds a checkpoint its own validator rejects, however heavy the activity', async () => {
+    // REGRESSION: the read window used to come from the hourly request budget
+    // alone (222 repositories) while the checkpoint accepted 5,000 event IDs.
+    // A heavy repository produces up to 300 events, so a wide window could
+    // build a checkpoint that `issueGithubSyncCheckpoint` itself rejected: the
+    // throw happened inside the response stream and the route wrote
+    // { type: 'error', status: 500 } at HTTP 200 -- nothing awarded, no
+    // baseline, and every retry re-read the same activity forever. The window
+    // is now bounded by the checkpoint's capacity, so a full window always
+    // fits.
+    const heavy = Array.from({ length: 44 }, (_, index) => ({
+      ...repository,
+      id: String(4000 + index),
+      name: `heavy-${index}`,
+      fullName: `octo/heavy-${index}`,
+    }))
+    mocks.settings = {
+      trackedRepositoryIds: [],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: true,
+      autoIncludeOrganizations: [],
+      // Every repository is already baselined, so the fetched activity is not
+      // withheld from normalization: this is a catch-up sync, the heaviest
+      // case for the checkpoint.
+      baselineByRepositoryId: Object.fromEntries(
+        heavy.map((entry) => [entry.id, '2026-01-01T00:00:00.000Z']),
+      ),
+      lastSyncedAt: null,
+    }
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', repositories: heavy })
+    // The real fetcher only returns activity for the repositories it was asked
+    // to read; the mock honours the request so the window is actually exercised.
+    mocks.fetchEvents.mockImplementation(async (options: { repos: Array<{ id: string }> }) => {
+      const requested = new Set(options.repos.map((ref) => ref.id))
+      const mergedPullRequests: Array<Record<string, unknown>> = []
+      const releases: Array<Record<string, unknown>> = []
+      for (const entry of heavy.filter((repo) => requested.has(repo.id))) {
+        // The fetcher's own ceilings: 3 x 30 merged pull requests and 30 releases.
+        for (let number = 0; number < 90; number += 1) {
+          mergedPullRequests.push({
+            id: `${entry.id}-pr-${number}`,
+            repositoryId: entry.id,
+            number,
+            mergedAt: '2026-09-12T10:00:00Z',
+          })
+        }
+        for (let number = 0; number < 30; number += 1) {
+          releases.push({
+            id: `${entry.id}-release-${number}`,
+            repositoryId: entry.id,
+            tagName: `v${number}`,
+            publishedAt: '2026-09-12T11:00:00Z',
+            draft: false,
+            published: true,
+          })
+        }
+      }
+      return {
+        login: 'octo',
+        input: { sourceId: '9001', companionId: 'octo', mergedPullRequests, releases },
+        status: 'ok',
+        truncated: false,
+      }
+    })
+
+    const events = await readSyncEvents(await POST(request()))
+
+    expect(events.some((event) => event.type === 'error')).toBe(false)
+    const body = events.find((event) => event.type === 'result')?.payload as Record<string, unknown>
+    const checkpoint = verifyGithubSyncCheckpoint(body.checkpoint as string, 9001)
+    expect(checkpoint).not.toBeNull()
+    // The unwindowed account would emit 44 x 120 = 5,280 events, past the old
+    // 5,000 boundary; the derived window keeps what a sync emits inside the
+    // checkpoint's capacity (120 repository-scoped events per windowed
+    // repository, plus the one account-wide qualifying-active-day event).
+    expect(44 * 120).toBeGreaterThan(MAX_CHECKPOINT_EVENT_IDS)
+    expect(checkpoint?.eventIds.length).toBeGreaterThanOrEqual(MAX_SYNC_REPOSITORIES * 120)
+    expect(checkpoint?.eventIds.length).toBeLessThanOrEqual(MAX_CHECKPOINT_EVENT_IDS)
+  })
+
+  it('reads repositories that still need a baseline before already-baselined ones', async () => {
+    // A repository without a baseline can never award anything, so if the read
+    // window ever truncates, the material it drops must be an already-tracked
+    // repository rather than one still waiting for its baseline.
+    const known = { ...repository, id: '101', name: 'garden', fullName: 'octo/garden' }
+    const fresh = { ...repository, id: '202', name: 'new-garden', fullName: 'octo/new-garden' }
+    mocks.settings = {
+      trackedRepositoryIds: ['101', '202'],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+      baselineByRepositoryId: { '101': '2026-01-01T00:00:00.000Z' },
+      lastSyncedAt: null,
+    }
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', repositories: [known, fresh] })
+
+    const events = await readSyncEvents(await POST(request()))
+
+    expect(events[0]).toMatchObject({
+      type: 'start',
+      repositoryNames: ['octo/new-garden', 'octo/garden'],
+    })
   })
 
   it('clears a baseline when a complete repository refresh no longer exposes it', async () => {

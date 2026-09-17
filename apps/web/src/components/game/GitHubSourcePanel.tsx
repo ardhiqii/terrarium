@@ -17,14 +17,19 @@ import {
 import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
 import {
   browserProductStorage,
+  DEFAULT_STORED_SYNC_SCHEDULE,
   ensureBrowserGuestProfile,
   loadBrowserEncounters,
   loadBrowserLedger,
   loadRevealedDraws,
+  loadSyncRequestUsage,
+  loadSyncScheduleState,
   loadVerifiedEventProofs,
   saveBrowserEncounters,
   saveBrowserLedger,
   saveRevealedDraws,
+  saveSyncRequestUsage,
+  saveSyncScheduleState,
   saveVerifiedEventProofs,
 } from '@/lib/game/product-browser-storage'
 import { saveGuestProfile } from '@/lib/game/guest-profile'
@@ -35,6 +40,18 @@ import {
   restoreProductStateFromSnapshot,
 } from '@/lib/sync/product-snapshot'
 import { productEventId } from '@/lib/sync/product-event-id'
+import {
+  addSyncRequestUsage,
+  MAX_SYNC_REPOSITORIES,
+  mergeSyncRequestUsage,
+  parseSyncSchedule,
+  scheduleIntervalMs,
+  scheduleTick,
+  SYNC_SCHEDULE_OPTIONS,
+  syncScheduleLabel,
+  type SyncRequestUsageEntry,
+  type SyncScheduleInterval,
+} from '@/lib/sync/sync-schedule'
 import { filterGithubRepositories, type RepositoryScope } from '@/lib/sync/github-repository-browser'
 import type { GithubRepository } from '@/lib/sync/github-repositories'
 import { CompanionSwitcher } from './CompanionSwitcher'
@@ -157,6 +174,13 @@ interface SyncProgressState {
   repository: string
   requestsDone: number
 }
+
+/**
+ * How often the scheduler re-checks the cadence. It is much shorter than any
+ * interval option so a tab that was closed through its due time syncs soon
+ * after it reopens, and short enough that the pause notice is not stale.
+ */
+const SCHEDULE_TICK_MS = 30 * 1000
 
 /**
  * Reads a streamed sync response.
@@ -363,6 +387,25 @@ export function GitHubSourcePanel() {
   const syncAbortRef = useRef<AbortController | null>(null)
   const [savingSettings, setSavingSettings] = useState(false)
   const [lastSyncSummary, setLastSyncSummary] = useState<string | null>(null)
+  // Automatic-sync cadence. The default comes from the product docs (every 15
+  // minutes) and the choice is per browser profile, because a schedule only runs
+  // while this page is open.
+  const [schedule, setSchedule] = useState<SyncScheduleInterval>(DEFAULT_STORED_SYNC_SCHEDULE.interval)
+  const [scheduleNotice, setScheduleNotice] = useState('')
+  const [nextSyncLabel, setNextSyncLabel] = useState('')
+  // GitHub requests are counted over a rolling hour. Every attempt records what
+  // its progress stream actually spent, and the schedule pauses before the
+  // account's hourly ceiling is reached instead of running into a hard limit.
+  const syncUsageRef = useRef<SyncRequestUsageEntry[]>([])
+  const lastAttemptAtRef = useRef<number | null>(null)
+  const lastObservedRequestsRef = useRef<number | null>(null)
+  const requestsThisSyncRef = useRef(0)
+  // Read through a ref so an in-flight sync records against the cadence the
+  // user has now, not the one that was selected when the sync started.
+  const scheduleRef = useRef(schedule)
+  useEffect(() => {
+    scheduleRef.current = schedule
+  }, [schedule])
   const [repositoryQuery, setRepositoryQuery] = useState('')
   const [repositoryScope, setRepositoryScope] = useState<RepositoryScope>('all')
   const [collapsedOwners, setCollapsedOwners] = useState<string[]>([])
@@ -371,6 +414,10 @@ export function GitHubSourcePanel() {
     const state = browserState()
     setProductState(state)
     setRevealedDraws(loadRevealedDraws(browserProductStorage()))
+    const stored = loadSyncScheduleState(browserProductStorage())
+    setSchedule(stored.interval)
+    lastAttemptAtRef.current = stored.lastAttemptAt
+    syncUsageRef.current = loadSyncRequestUsage(browserProductStorage())
     return state
   }, [])
 
@@ -395,6 +442,10 @@ export function GitHubSourcePanel() {
       setDraftOrganizations(data.settings.autoIncludeOrganizations)
       const namespace = `github-${data.githubId}`
       setAccountNamespace(namespace)
+      const storedSchedule = loadSyncScheduleState(browserProductStorage(), namespace)
+      setSchedule(storedSchedule.interval)
+      lastAttemptAtRef.current = storedSchedule.lastAttemptAt
+      syncUsageRef.current = loadSyncRequestUsage(browserProductStorage(), namespace)
       const localState = browserState(namespace)
       const hydrated = await restoreCloudProductState(localState, namespace)
       setProductState(hydrated.state)
@@ -499,6 +550,7 @@ export function GitHubSourcePanel() {
     setMessage('')
     setProgress(null)
     setReadingPhase(true)
+    requestsThisSyncRef.current = 0
     const controller = new AbortController()
     syncAbortRef.current = controller
     const cancelled = (): boolean => controller.signal.aborted
@@ -512,7 +564,12 @@ export function GitHubSourcePanel() {
       })
       let body: Record<string, unknown> = {}
       try {
-        body = await readSyncResponse(response, setProgress, controller.signal)
+        body = await readSyncResponse(response, (next) => {
+          // The progress stream is the only honest measure of what this sync
+          // cost the account's hourly GitHub request budget.
+          requestsThisSyncRef.current = Math.max(requestsThisSyncRef.current, next.requestsDone)
+          setProgress(next)
+        }, controller.signal)
       } catch (error) {
         // An aborted read is the user's own doing, not a failure.
         if (cancelled()) {
@@ -565,19 +622,26 @@ export function GitHubSourcePanel() {
         accountNamespace ?? undefined,
       )
       const checkpoint = typeof body.checkpoint === 'string' ? body.checkpoint : null
-      const snapshotHeaders: HeadersInit = { 'Content-Type': 'application/json' }
-      if (checkpoint) snapshotHeaders['x-github-sync-checkpoint'] = checkpoint
+      // The checkpoint travels in the BODY. A real account's signed checkpoint
+      // is tens of kilobytes (measured ~21 KB at 500 events), far beyond the
+      // request-header budget of the platform in front of the function, where
+      // it was rejected upstream as a bodyless 500 and the baseline was never
+      // committed. A body has a megabyte-scale allowance instead.
       const snapshotResponse = await fetch('/api/sync/product', {
         method: 'POST',
-        headers: snapshotHeaders,
-        body: JSON.stringify(uploadSnapshot),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(checkpoint
+          ? { snapshot: uploadSnapshot, checkpoint }
+          : uploadSnapshot),
       })
       const snapshotBody = await responseBody(snapshotResponse)
       const count = typeof body.repositoryCount === 'number' ? body.repositoryCount : 0
       const eventCount = Math.max(0, next.ledger.events.length - productState.ledger.events.length)
       const baselineCount = Array.isArray(body.newBaselineRepositoryIds) ? body.newBaselineRepositoryIds.length : 0
       const skippedCount = typeof body.skippedRepositoryCount === 'number' ? body.skippedRepositoryCount : 0
-      const limitNote = skippedCount > 0 ? ` ${skippedCount} more will stay pending; narrow the selection to sync them.` : ''
+      const limitNote = skippedCount > 0
+        ? ` ${skippedCount} more will be read by the next sync; repositories without a baseline go first.`
+        : ''
       // Truncation is not a failure: the scan window ended before the oldest
       // activity, and everything newer than the checkpoint was still awarded.
       const truncatedNote = body.truncated === true
@@ -601,12 +665,116 @@ export function GitHubSourcePanel() {
         setMessage(error instanceof Error ? error.message : 'GitHub activity could not be synced.')
       }
     } finally {
+      // The panel's own state is restored first and unconditionally: a browser
+      // storage write can be refused (private mode, quota), and a write must
+      // never leave the panel busy or the scheduler blocked on a dead abort
+      // controller. Persistence is best-effort after that.
       setBusy(false)
       setProgress(null)
       setReadingPhase(false)
       syncAbortRef.current = null
+
+      // A cancelled or failed attempt still spent requests against the account's
+      // hourly ceiling, so the budget counts what was really issued.
+      const attemptedAt = Date.now()
+      lastAttemptAtRef.current = attemptedAt
+      if (requestsThisSyncRef.current > 0) {
+        lastObservedRequestsRef.current = requestsThisSyncRef.current
+        syncUsageRef.current = addSyncRequestUsage(
+          syncUsageRef.current,
+          attemptedAt,
+          requestsThisSyncRef.current,
+        )
+      }
+      try {
+        const storage = browserProductStorage()
+        // `saveSyncRequestUsage` merges a peer tab's entries; it returns the
+        // merged record even when the storage write itself is refused.
+        syncUsageRef.current = saveSyncRequestUsage(
+          storage,
+          syncUsageRef.current,
+          accountNamespace ?? undefined,
+          attemptedAt,
+        )
+        saveSyncScheduleState(
+          storage,
+          { interval: scheduleRef.current, lastAttemptAt: attemptedAt },
+          accountNamespace ?? undefined,
+        )
+      } catch {
+        // Browser storage is unavailable; the in-memory cadence still holds.
+      }
     }
   }, [accountNamespace, loadRepositories, productState, saveSettings, settingsChanged])
+
+  const changeSchedule = useCallback((next: SyncScheduleInterval) => {
+    setSchedule(next)
+    setScheduleNotice('')
+    setNextSyncLabel('')
+    saveSyncScheduleState(
+      browserProductStorage(),
+      { interval: next, lastAttemptAt: lastAttemptAtRef.current },
+      accountNamespace ?? undefined,
+    )
+  }, [accountNamespace])
+
+  // The latest `syncNow` is reached through a ref so the ticker below does not
+  // have to be torn down every time product state changes.
+  const syncNowRef = useRef(syncNow)
+  useEffect(() => {
+    syncNowRef.current = syncNow
+  }, [syncNow])
+
+  /**
+   * The scheduled sync runs only while this page is open -- that is the whole
+   * contract in the product docs, and it is why the cadence lives in the panel
+   * rather than in a server cron. One ticker owns every automatic decision, so
+   * two intervals can never double a sync.
+   */
+  useEffect(() => {
+    if (status !== 'ready') return
+    // A manual cadence has no ticker at all; the rendered copy for `manual`
+    // above ignores any notice left over from a previous cadence.
+    if (scheduleIntervalMs(schedule) === null) return
+
+    const tick = (): void => {
+      const now = Date.now()
+      try {
+        // A peer tab may have spent requests we have not seen; fold its record
+        // in before deciding, or two tabs each think the whole budget is free.
+        syncUsageRef.current = mergeSyncRequestUsage(
+          syncUsageRef.current,
+          loadSyncRequestUsage(browserProductStorage(), accountNamespace ?? undefined, now),
+        )
+      } catch {
+        // Storage unavailable: decide from the in-memory record.
+      }
+      const result = scheduleTick({
+        interval: schedule,
+        now,
+        lastAttemptAt: lastAttemptAtRef.current,
+        usage: syncUsageRef.current,
+        // The estimate must match what a sync actually reads: the window, not
+        // the whole tracked set, or a 5-minute cadence would pause forever for
+        // an account whose window costs far less than its total.
+        trackedRepositoryCount: Math.min(effectiveTrackedCount, MAX_SYNC_REPOSITORIES),
+        lastObservedRequests: lastObservedRequestsRef.current,
+        busy: syncAbortRef.current !== null,
+      })
+      syncUsageRef.current = [...result.usage]
+      setScheduleNotice(result.notice)
+      setNextSyncLabel(result.nextLabel)
+      if (result.run) {
+        // The scheduler must never reject into the timer; syncNow reports its
+        // own failures through the panel's message state.
+        void syncNowRef.current().catch(() => undefined)
+      }
+    }
+
+    tick()
+    const timer = window.setInterval(tick, SCHEDULE_TICK_MS)
+    return () => window.clearInterval(timer)
+  }, [accountNamespace, effectiveTrackedCount, schedule, status])
 
   const toggleTracked = (repository: GithubRepository) => {
     const autoTracked = repository.ownerType === 'User'
@@ -695,6 +863,37 @@ export function GitHubSourcePanel() {
                   requestsDone={progress?.requestsDone ?? 0}
                 />
               )}
+              <label
+                htmlFor="github-sync-schedule"
+                className="font-data mt-4 block text-[10px] uppercase tracking-wider"
+                style={{ color: 'var(--ink-muted)' }}
+              >
+                Automatic sync
+                <select
+                  id="github-sync-schedule"
+                  value={schedule}
+                  disabled={sourceControlsDisabled}
+                  onChange={(event) => changeSchedule(parseSyncSchedule(event.target.value))}
+                  className="font-ui mt-1.5 w-full border bg-[color:var(--paper)] px-2 py-2 text-xs"
+                  style={{ borderColor: 'var(--rule)', color: 'var(--ink)' }}
+                >
+                  {SYNC_SCHEDULE_OPTIONS.map((option) => (
+                    <option key={option} value={option}>{syncScheduleLabel(option)}</option>
+                  ))}
+                </select>
+              </label>
+              <p
+                role={scheduleNotice ? 'status' : undefined}
+                aria-live={scheduleNotice ? 'polite' : undefined}
+                className="font-prose mt-2 text-xs leading-relaxed"
+                style={{ color: 'var(--ink-muted)' }}
+              >
+                {schedule === 'manual'
+                  ? 'Automatic sync is off. Use Sync GitHub now.'
+                  : scheduleNotice
+                    || nextSyncLabel
+                    || 'Runs while this page is open. It pauses before your hourly GitHub request limit is spent.'}
+              </p>
             </div>
           )}
         </div>

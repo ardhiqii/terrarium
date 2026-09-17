@@ -18,19 +18,23 @@ import { fetchGithubRepositories, type GithubRepository } from '@/lib/sync/githu
 import { getSessionProvider } from '@/lib/sync/session'
 import { productSnapshotEvent } from '@/lib/sync/product-snapshot'
 import { issueGithubSyncCheckpoint } from '@/lib/sync/github-sync-checkpoint'
+import {
+  MAX_SYNC_REPOSITORIES,
+} from '@/lib/sync/sync-schedule'
 import { issueVerifiedEventProof } from '@/lib/sync/verified-event-proof'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 /**
- * A sync reads up to {@link MAX_SYNC_REPOSITORIES} repositories and can run for
- * a while. Vercel's default function ceiling would cut the read off mid-flight,
- * and a truncated response is indistinguishable from a hang on the client.
- * Vercel clamps this to the maximum its plan allows.
+ * A sync reads a window of repositories and can run for a while. A function
+ * ceiling in front of it would cut the read off mid-flight, and a truncated
+ * response is indistinguishable from a hang on the client. `maxDuration` is a
+ * deployment hint for Vercel only; this app is served by the docker-compose
+ * node server behind a Cloudflare tunnel, where it is inert, so it is kept as
+ * an upper hint rather than relied on for correctness.
  */
 export const maxDuration = 60
 const SYNC_PAYLOAD_LIMIT_BYTES = 16 * 1024
-const MAX_SYNC_REPOSITORIES = 25
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -138,7 +142,17 @@ export async function POST(request: NextRequest): Promise<Response> {
 
     const repositories = repositoryResult.repositories
     const eligibleCandidates = repositories.filter((repository) => repositoryIsTracked(repository, settings))
-    const eligible = eligibleCandidates.slice(0, MAX_SYNC_REPOSITORIES)
+    // Repositories without a baseline come first. A new repository cannot award
+    // anything until its baseline is recorded, so the window (derived in
+    // `sync-schedule.ts` from the hourly request budget and the checkpoint's
+    // event capacity) drops an already-tracked repository rather than stranding
+    // one that is still awaiting its baseline. The earlier fixed ceiling of 25
+    // stranded 19 of a 44-repository account forever because it had no such
+    // ordering and no way to cover the remainder.
+    const eligible = [
+      ...eligibleCandidates.filter((repository) => !settings.baselineByRepositoryId[repository.id]),
+      ...eligibleCandidates.filter((repository) => Boolean(settings.baselineByRepositoryId[repository.id])),
+    ].slice(0, MAX_SYNC_REPOSITORIES)
     const skippedRepositoryCount = Math.max(0, eligibleCandidates.length - eligible.length)
     // Keep explicit choices explicit. Auto-included repositories are selected
     // by policy for this sync, but must not be written into the explicit list;
@@ -273,7 +287,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     const encoder = new TextEncoder()
     const stream = new ReadableStream<Uint8Array>({
       // A consumer that goes away must stop the GitHub reads, not merely the
-      // response. Abandoning the response alone kept up to 25 repositories
+      // response. Abandoning the response alone kept every remaining repository
       // being fetched against the account's hourly request budget.
       cancel() {
         abort.abort()

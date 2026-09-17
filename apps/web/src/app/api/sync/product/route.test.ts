@@ -11,6 +11,10 @@ import {
   buildProductSnapshot,
   type ProductSnapshot,
 } from '@/lib/sync/product-snapshot'
+import {
+  issueGithubSyncCheckpoint,
+  MAX_CHECKPOINT_TOKEN_LENGTH,
+} from '@/lib/sync/github-sync-checkpoint'
 
 function request(method: string, body?: string, headers?: HeadersInit): NextRequest {
   return new NextRequest('http://localhost/api/sync/product', {
@@ -46,6 +50,42 @@ function snapshot(eventIds: readonly string[] = [], guestId = 'guest-1'): Produc
     ),
     now,
   )
+}
+
+/**
+ * Seed the account row so a deferred checkpoint can actually advance a
+ * baseline. Uses the real SQLite account store; nothing here reaches GitHub.
+ */
+async function seedGithubAccount(handle: string): Promise<number> {
+  vi.stubEnv('SESSION_SECRET', 's'.repeat(32))
+  const { resetGithubAccountStoreForTests, getGithubAccountStore } = await import('@/lib/sync/github-account-store')
+  resetGithubAccountStoreForTests(':memory:')
+  const githubId = fakeGithubId(handle)
+  const store = getGithubAccountStore()
+  await store.putCredential({ githubId, handle, avatarUrl: null }, 'server-token', ['repo'])
+  await store.saveSettings(githubId, {
+    trackedRepositoryIds: [],
+    excludedRepositoryIds: [],
+    autoIncludePersonal: true,
+    autoIncludeOrganizations: [],
+    baselineByRepositoryId: {},
+    lastSyncedAt: null,
+  })
+  return githubId
+}
+
+function checkpointFor(
+  githubId: number,
+  value: ProductSnapshot,
+  nextBaselineByRepositoryId: Record<string, string> = {},
+): string {
+  return issueGithubSyncCheckpoint({
+    githubId,
+    previousBaselineByRepositoryId: {},
+    nextBaselineByRepositoryId,
+    nextLastSyncedAt: '2026-08-28T10:05:00.000Z',
+    eventIds: value.events.map((event) => event.eventId),
+  })
 }
 
 describe('POST/GET/DELETE /api/sync/product', () => {
@@ -117,8 +157,8 @@ describe('POST/GET/DELETE /api/sync/product', () => {
     expect((await POST(request('POST', '{bad json'))).status).toBe(400)
     expect((await POST(request('POST', JSON.stringify({ ...valid, privateNote: 'secret' })))).status).toBe(400)
     expect((await POST(request('POST', JSON.stringify({ ...valid, schemaVersion: 99 })))).status).toBe(400)
-    expect((await POST(request('POST', 'x'.repeat(512 * 1024 + 1), {
-      'content-length': String(512 * 1024 + 1),
+    expect((await POST(request('POST', 'x'.repeat(2 * 1024 * 1024 + 1), {
+      'content-length': String(2 * 1024 * 1024 + 1),
     }))).status).toBe(413)
     expect((await GET()).status).toBe(404)
   })
@@ -178,6 +218,73 @@ describe('POST/GET/DELETE /api/sync/product', () => {
     expect(body.events).toEqual([])
     expect(body.companions[0].xp).toBe(0)
     expect((await store.getRecord(record.githubId, record.handle))?.snapshot.events[0].provenance).toBe('verified')
+  })
+
+  it('accepts the signed checkpoint in the body and commits the baseline', async () => {
+    // REGRESSION: the checkpoint used to travel only in a request header. A real
+    // account's checkpoint is tens of kilobytes, which a request-header budget
+    // rejects upstream as a bodyless 500 before this route runs, so the
+    // computed baseline was never persisted. The body is the transport now.
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const githubId = await seedGithubAccount('octocat')
+    const { POST } = await import('./route')
+    const { getGithubAccountStore } = await import('@/lib/sync/github-account-store')
+    const value = snapshot(['event-1'])
+    const checkpoint = checkpointFor(githubId, value, { '101': '2026-08-28T10:05:00.000Z' })
+
+    const response = await POST(request('POST', JSON.stringify({ snapshot: value, checkpoint })))
+
+    expect(response.status).toBe(200)
+    const settings = await getGithubAccountStore().getSettings(githubId)
+    expect(settings.baselineByRepositoryId).toEqual({ '101': '2026-08-28T10:05:00.000Z' })
+    expect(settings.lastSyncedAt).toBe('2026-08-28T10:05:00.000Z')
+    expect((await response.json()).events).toHaveLength(1)
+  })
+
+  it('rejects a body checkpoint whose issued events are missing from the snapshot', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const githubId = await seedGithubAccount('octocat')
+    const { POST } = await import('./route')
+    const checkpoint = issueGithubSyncCheckpoint({
+      githubId,
+      previousBaselineByRepositoryId: {},
+      nextBaselineByRepositoryId: { '101': '2026-08-28T10:05:00.000Z' },
+      nextLastSyncedAt: null,
+      eventIds: ['event-12345678-abcdef12'],
+    })
+
+    const response = await POST(request('POST', JSON.stringify({
+      snapshot: snapshot(['event-1']),
+      checkpoint,
+    })))
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({ error: expect.stringMatching(/missing from the product snapshot/i) })
+  })
+
+  it('rejects a forged, non-string, or oversized body checkpoint without storing it', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const githubId = await seedGithubAccount('octocat')
+    const { POST } = await import('./route')
+    const { getGithubAccountStore } = await import('@/lib/sync/github-account-store')
+    const value = snapshot(['event-1'])
+    const forged = `${checkpointFor(githubId, value)}x`
+
+    const forgedResponse = await POST(request('POST', JSON.stringify({ snapshot: value, checkpoint: forged })))
+    expect(forgedResponse.status).toBe(400)
+    expect(await forgedResponse.json()).toMatchObject({ error: expect.stringMatching(/invalid or expired/i) })
+
+    const typed = await POST(request('POST', JSON.stringify({ snapshot: value, checkpoint: 7 })))
+    expect(typed.status).toBe(400)
+    expect(await typed.json()).toMatchObject({ error: expect.stringMatching(/signed token/i) })
+
+    const oversized = await POST(request('POST', JSON.stringify({
+      snapshot: value,
+      checkpoint: 'x'.repeat(MAX_CHECKPOINT_TOKEN_LENGTH + 1),
+    })))
+    expect(oversized.status).toBe(413)
+
+    expect((await getGithubAccountStore().getSettings(githubId)).baselineByRepositoryId).toEqual({})
   })
 
   it('drops legacy local GitHub events instead of preserving unverified XP', async () => {
