@@ -41,6 +41,23 @@ receipts, deferred checkpoint recovery, replay-safe merging, guest conflicts,
 payload validation, repository selection, browser receipt persistence, and size
 limits. Keep the focused command above scoped to the changed files when adding
 new sync hardening tests.
+
+The large-account baseline path has its own end-to-end contract:
+`apps/web/src/app/api/sync/product/github-sync-roundtrip.test.ts` drives both
+real routes and both SQLite stores with only the GitHub providers mocked. It
+pins the failures that made a 44-repository account unable to bank XP: the
+whole tracked set is baselined window by window with no repository stranded, a
+checkpoint over more than 500 event IDs is issued and committed, and the
+checkpoint reaches `/api/sync/product` in the request body rather than a request
+header. `apps/web/src/lib/sync/sync-schedule.test.ts` pins the automatic-sync
+cadence and its GitHub request budget (a window's worth of repositories, not the
+whole tracked set, so the documented choices stay affordable) and the derived
+window invariant (`MAX_SYNC_REPOSITORIES` x `MAX_EVENTS_PER_REPOSITORY` must fit
+inside `MAX_CHECKPOINT_EVENT_IDS`);
+`apps/web/src/app/api/github/sync/route.test.ts` proves a heavy full window is
+never rejected by the checkpoint validator. `apps/web/src/lib/sync/github-sync-checkpoint.test.ts`
+proves a full window of worst-case events plus 500-entry baseline maps still fits
+the signed-token bound.
 The latest focused mutation run covered the Supabase adapters and cloud
 rehydration helper with **61.08% overall mutation score, 67.26% of covered
 mutants, 0 timeouts, and 0 errors**. Survivors are reported so they remain

@@ -90,6 +90,25 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
 - `POST /api/github/sync` streams newline-delimited progress, so the `/github`
   surface shows the repository being read out of a known total, a live request
   counter, and a cancel control instead of an indefinite spinner.
+- Every tracked repository is reachable. The old ceiling of 25 repositories left
+  19 of a 44-repository account permanently unbaselined, so none of their
+  activity could ever award XP; the window is now derived from GitHub's hourly
+  request budget and the checkpoint's event capacity, and repositories that
+  still need a baseline are read first, so the whole set is covered a window at
+  a time.
+- A large account's sync can commit its baseline again. The signed checkpoint
+  rejected more than 500 event IDs at *issuance*, which failed the whole sync
+  in-band, and it was delivered in a request header that tens of kilobytes
+  cannot fit -- the `/api/sync/product` call that commits the deferred baseline
+  came back as a bodyless 500. The checkpoint's event bound is now the sync
+  window's own worst case (derived, so the route cannot build a list its own
+  validator rejects) and it travels with the snapshot in the request body, still
+  HMAC-signed, account-bound, and checked against the stored baseline.
+- The `/github` panel offers the documented automatic-sync cadence (manual,
+  5, 15, and 30 minutes; 15 is the default) while the page is open, and budgets
+  the GitHub requests each cycle actually reported so a cadence that would
+  overdraw the account's hourly ceiling pauses with an explanation and resumes
+  when the rolling hour window clears.
 
 ### Known prototype mismatch
 

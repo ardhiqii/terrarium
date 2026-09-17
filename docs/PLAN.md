@@ -245,8 +245,11 @@ restart/redeploy end-to-end test.
 - local-note sync is opt-in and uploads only a private condition snapshot and
   sync checkpoint;
 - support manual sync or scheduled scan-then-sync while the website is open,
-  with a 15-minute default interval and 5-minute/30-minute alternatives;
-- skip scheduled cloud writes when a scan produces no relevant derived changes;
+  with a 15-minute default interval and 5-minute/30-minute alternatives; the
+  GitHub source implements this schedule today (browser-local cadence, timer
+  only while the page is open, paused by a rolling hourly request budget);
+- skip scheduled cloud writes when a scan produces no relevant derived changes
+  (local-note cloud sync only; GitHub cycles are a full activity read);
 - make clear that a closed browser cannot scan or sync a mounted folder;
 - first sign-in imports the current companion condition when no server state
   exists;

@@ -382,10 +382,37 @@ server receives only a private condition snapshot and sync checkpoint, so the
 same local progress is not counted twice without exposing note activity details.
 Users can keep sync off, run it manually, or enable a schedule while the
 website is open. The default schedule is every 15 minutes, with manual,
-5-minute, and 30-minute choices. Each scheduled cycle scans first and skips the
-cloud write when no relevant derived state changed. A new device can restore
+5-minute, and 30-minute choices.
+
+The implemented schedule is the GitHub source's automatic sync. It lives in the
+`/github` panel, persists per browser profile, and runs only while the page is
+open -- that is the documented contract, and it is why the cadence is browser
+state rather than a server cron. Every cycle is the same read a manual sync
+performs; there is no separate "scan first" step for GitHub. A cadence that has
+never recorded an attempt waits one full interval after the page opens instead
+of firing an unsolicited sync on load. A cycle reads a window of repositories
+derived from both sides of the same limit -- GitHub's hourly request budget and
+the deferred checkpoint's event capacity -- and the planner budgets the
+requests each cycle actually reported, pausing a cycle that would push the
+rolling hour past 4,000 of GitHub's 5,000 requests and telling the user why
+instead of failing or silently skipping. Each open tab folds its recorded spend
+into the shared browser record, so two tabs do not erase each other. The local
+note cloud-write schedule (scan first, skip the write when no relevant derived
+state changed) is still tied to folder mounting and is not part of this schedule.
+A new device can restore
 the synced companion condition and verified GitHub activity, but cannot restore
 local note history that was never synced or exported.
+
+A deferred baseline checkpoint travels in the product upload's request body,
+not in a request header. The checkpoint carries every event ID the sync issued
+plus both baseline maps, which for a 44-repository account is tens of kilobytes
+(measured about 21 KB at 500 events). Request headers have a small platform
+budget, so the header form was rejected upstream as a bodyless 500 before the
+route ran and the computed baseline was never committed. The token is still
+HMAC-signed and account-bound, the events it names must all be present in the
+submitted snapshot, and the stored baseline must still match the checkpoint, so
+moving the transport does not weaken the tamper-proof property. The old request
+header is still accepted for compatibility.
 
 ## Hosted sync storage
 
