@@ -32,7 +32,7 @@ import {
   saveSyncScheduleState,
   saveVerifiedEventProofs,
 } from '@/lib/game/product-browser-storage'
-import { saveGuestProfile } from '@/lib/game/guest-profile'
+import { saveGuestProfile, type GuestProfile } from '@/lib/game/guest-profile'
 import {
   clearGithubRepositoryCache,
   decideFailedListingRefresh,
@@ -40,10 +40,24 @@ import {
   saveGithubRepositoryCache,
 } from '@/lib/game/github-repository-browser-cache'
 import {
+  adoptAccountGuestIdentity,
+  canRunGuestIdentityAction,
+  describeGuestIdentityConflict,
+  describeGuestIdentitySide,
+  guestIdentityActionPlan,
+  guestIdentityActionSummary,
+  isGuestIdentityConflict,
+  summarizeGuestSnapshot,
+  type GuestIdentityConflictAction,
+  type GuestIdentityConflictView,
+  type GuestIdentitySideSummary,
+} from '@/lib/game/guest-identity-conflict'
+import {
   buildProductSnapshot,
   deserializeProductSnapshot,
   mergeProductSnapshots,
   restoreProductStateFromSnapshot,
+  type ProductSnapshot,
 } from '@/lib/sync/product-snapshot'
 import { productEventId } from '@/lib/sync/product-event-id'
 import { loginHrefFor } from '@/lib/sync/oauth-return-path'
@@ -420,6 +434,93 @@ async function restoreCloudProductState(
   }
 }
 
+interface ProductUploadResult {
+  readonly ok: boolean
+  readonly status: number
+  readonly body: Record<string, unknown>
+}
+
+/** Upload one product snapshot, carrying the signed checkpoint when the sync issued one. */
+async function uploadProductSnapshot(snapshot: ProductSnapshot, checkpoint: string | null): Promise<ProductUploadResult> {
+  const response = await fetch('/api/sync/product', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(checkpoint ? { snapshot, checkpoint } : snapshot),
+  })
+  return { ok: response.ok, status: response.status, body: await responseBody(response) }
+}
+
+/**
+ * Read the account's cloud snapshot so the identity chooser can describe it.
+ * Returns null when the copy cannot be read; the chooser then says so instead
+ * of inventing an identity to adopt.
+ */
+async function readAccountSnapshot(): Promise<ProductSnapshot | null> {
+  try {
+    const response = await fetch('/api/sync/product', { cache: 'no-store' })
+    if (!response.ok) return null
+    return deserializeProductSnapshot(JSON.stringify(await responseBody(response)))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Persist and display the merged snapshot a successful upload returned, so the
+ * browser copy is the same union the server now holds.
+ */
+function adoptUploadedSnapshot(
+  body: Record<string, unknown>,
+  fallbackProfile: GuestProfile,
+  namespace: string,
+): ProductState | null {
+  const snapshot = deserializeProductSnapshot(JSON.stringify(body))
+  if (!snapshot) return null
+  const state = restoreProductStateFromSnapshot(snapshot, fallbackProfile, PROTOTYPE_COMPANION_CATALOG)
+  try {
+    const storage = browserProductStorage()
+    saveBrowserProductState(state, namespace)
+    saveVerifiedEventProofs(
+      storage,
+      proofsFromSnapshotEvents(snapshot.events),
+      state.ledger.events.map((event) => productEventId(event.eventId)),
+      namespace,
+    )
+  } catch {
+    // A refused storage write (private mode, quota) must not undo an upload
+    // that already succeeded server-side.
+  }
+  return state
+}
+
+/** One side of the identity chooser: what this copy actually holds. */
+function GuestIdentitySideCard({ label, summary }: { label: string; summary: GuestIdentitySideSummary }) {
+  const description = describeGuestIdentitySide(summary)
+  return (
+    <div className="bg-[color:var(--paper)] px-5 py-4">
+      <p className="font-data text-[10px] uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>{label}</p>
+      <p className="font-ui mt-1 text-sm font-medium">{description.events} · {description.companions}</p>
+      <p className="font-prose mt-1 text-xs" style={{ color: 'var(--ink-muted)' }}>{description.xp} · {description.guestIdShort}</p>
+      {description.createdAt && (
+        <p className="font-data mt-1 text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>
+          Created {new Date(description.createdAt).toLocaleDateString()}
+        </p>
+      )}
+      {description.emptinessNote && (
+        <p className="font-prose mt-1 text-xs" style={{ color: 'var(--ink-muted)' }}>{description.emptinessNote}</p>
+      )}
+    </div>
+  )
+}
+
+interface PendingGuestConflict {
+  readonly view: GuestIdentityConflictView
+  /** The account copy the chooser described; the restore action writes it locally. */
+  readonly cloudSnapshot: ProductSnapshot | null
+  /** The refused sync's signed checkpoint, so its GitHub baseline can still commit. */
+  readonly checkpoint: string | null
+}
+
 export function GitHubSourcePanel() {
   const [repositories, setRepositories] = useState<GithubRepository[]>([])
   const [settings, setSettings] = useState<GithubSettings | null>(null)
@@ -474,6 +575,20 @@ export function GitHubSourcePanel() {
   const [refreshingList, setRefreshingList] = useState(false)
   const [disconnectStage, setDisconnectStage] = useState<'idle' | 'confirm'>('idle')
   const [disconnecting, setDisconnecting] = useState(false)
+  // The identity guard's 409 leaves a choice, not a dead end: both copies are
+  // described here and each action reports its outcome in the sync summary.
+  const guestConflictRef = useRef<PendingGuestConflict | null>(null)
+  const [guestConflict, setGuestConflict] = useState<PendingGuestConflict | null>(null)
+  const [guestConflictStage, setGuestConflictStage] = useState<'idle' | GuestIdentityConflictAction>('idle')
+  const [resolvingGuestConflict, setResolvingGuestConflict] = useState<GuestIdentityConflictAction | null>(null)
+  const showGuestConflict = useCallback((next: PendingGuestConflict | null) => {
+    // The ref is set in the same tick as the state so `loadRepositories` can
+    // tell that its generic "different local guest profile" hydration note
+    // would duplicate (and contradict) the chooser now on screen.
+    guestConflictRef.current = next
+    setGuestConflict(next)
+    setGuestConflictStage('idle')
+  }, [])
   // The GitHub account id of the last successful response. A stored listing is
   // only painted for that account once it is known; null means "not confirmed
   // yet", which is the first paint of a session.
@@ -630,7 +745,7 @@ export function GitHubSourcePanel() {
       const localState = browserState(namespace)
       const hydrated = await restoreCloudProductState(localState, namespace)
       setProductState(hydrated.state)
-      if (hydrated.message) setMessage(hydrated.message)
+      if (hydrated.message && !guestConflictRef.current) setMessage(hydrated.message)
       setRevealedDraws(loadRevealedDraws(browserProductStorage(), namespace))
       setStatus('ready')
     } catch (error) {
@@ -696,7 +811,7 @@ export function GitHubSourcePanel() {
   useEffect(() => {
     unsavedDraftRef.current = settingsChanged
   }, [settingsChanged])
-  const sourceControlsDisabled = savingSettings || busy
+  const sourceControlsDisabled = savingSettings || busy || resolvingGuestConflict !== null
   const listControlsDisabled = sourceControlsDisabled || refreshingList
   const listFreshnessLabel = repositoryListFreshnessLabel(listFetchedAt, listStale)
 
@@ -823,14 +938,8 @@ export function GitHubSourcePanel() {
       // request-header budget of the platform in front of the function, where
       // it was rejected upstream as a bodyless 500 and the baseline was never
       // committed. A body has a megabyte-scale allowance instead.
-      const snapshotResponse = await fetch('/api/sync/product', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(checkpoint
-          ? { snapshot: uploadSnapshot, checkpoint }
-          : uploadSnapshot),
-      })
-      const snapshotBody = await responseBody(snapshotResponse)
+      const upload = await uploadProductSnapshot(uploadSnapshot, checkpoint)
+      const snapshotBody = upload.body
       const count = typeof body.repositoryCount === 'number' ? body.repositoryCount : 0
       const eventCount = Math.max(0, next.ledger.events.length - productState.ledger.events.length)
       const baselineCount = Array.isArray(body.newBaselineRepositoryIds) ? body.newBaselineRepositoryIds.length : 0
@@ -843,9 +952,30 @@ export function GitHubSourcePanel() {
       const truncatedNote = body.truncated === true
         ? ' The scan window ended before the oldest activity; earlier history is not awarded.'
         : ''
-      const cloudNote = snapshotResponse.ok
+      let cloudNote = upload.ok
         ? ' Condition saved.'
         : ` Local progress is safe, but cloud condition was not saved: ${errorMessage(snapshotBody, 'try again later')}`
+      // The identity guard is the one refusal that needs a decision rather than
+      // a retry: the account already stores a different guest profile, so both
+      // copies are described and the user chooses instead of dead-ending the
+      // backup. Any other 409 keeps its own retryable explanation.
+      let nextConflict: PendingGuestConflict | null = null
+      if (!upload.ok && isGuestIdentityConflict(upload.status, snapshotBody)) {
+        const localSummary = summarizeGuestSnapshot(uploadSnapshot)
+        const cloudSnapshot = await readAccountSnapshot()
+        const cloudSummary = cloudSnapshot ? summarizeGuestSnapshot(cloudSnapshot) : null
+        if (localSummary && !cancelled()) {
+          nextConflict = {
+            view: describeGuestIdentityConflict(localSummary, cloudSummary),
+            cloudSnapshot,
+            checkpoint,
+          }
+          cloudNote += ' Choose how to continue in the box above.'
+        }
+      }
+      // A successful upload clears any earlier choice; a new conflict replaces
+      // the displayed one with the state that just came back from the server.
+      showGuestConflict(nextConflict)
       if (body.kind === 'baseline') {
         setLastSyncSummary(`Baseline recorded for ${baselineCount} ${baselineCount === 1 ? 'repository' : 'repositories'} · no old history awarded.${limitNote}${truncatedNote}${cloudNote}`)
       } else if (body.kind === 'partial' || body.syncStatus === 'partial') {
@@ -901,7 +1031,163 @@ export function GitHubSourcePanel() {
         // Browser storage is unavailable; the in-memory cadence still holds.
       }
     }
-  }, [accountNamespace, loadRepositories, productState, saveSettings, settingsChanged])
+  }, [accountNamespace, loadRepositories, productState, saveSettings, settingsChanged, showGuestConflict])
+
+  /**
+   * Resolve the identity choice the 409 left open.
+   *
+   * The panel only wires the buttons; whether an action may run — including
+   * the mandatory confirm step for the destructive one — comes from the pure
+   * helper, so a single click can never delete an account's copy or replace
+   * local progression on its own.
+   */
+  const resolveGuestConflict = useCallback(async (
+    action: GuestIdentityConflictAction,
+    confirmed: boolean,
+  ): Promise<void> => {
+    const pending = guestConflict
+    const state = productState
+    const namespace = accountNamespace
+    if (!pending || !state || !namespace || resolvingGuestConflict) return
+    const plan = guestIdentityActionPlan(pending.view, action)
+    if (!plan || !plan.available) return
+    if (!canRunGuestIdentityAction(pending.view, action, confirmed)) {
+      // The first click moves the destructive choice into its confirm step.
+      setGuestConflictStage(action)
+      return
+    }
+
+    setResolvingGuestConflict(action)
+    setMessage('')
+    try {
+      const storage = browserProductStorage()
+
+      if (action === 'use-browser') {
+        const deletion = await fetch('/api/sync/product', { method: 'DELETE' })
+        if (!deletion.ok) {
+          setLastSyncSummary(guestIdentityActionSummary(action, {
+            result: 'failed',
+            step: 'delete-cloud',
+            detail: errorMessage(await responseBody(deletion), `try again (HTTP ${deletion.status})`),
+          }))
+          return
+        }
+        // The account's row is gone, so the guard cannot refuse the retry. The
+        // chooser closes even if the upload itself fails, because an ordinary
+        // sync can retry that upload.
+        showGuestConflict(null)
+        const upload = await uploadProductSnapshot(
+          buildProductSnapshot(state, undefined, loadVerifiedEventProofs(storage, namespace)),
+          pending.checkpoint,
+        )
+        setLastSyncSummary(guestIdentityActionSummary(action, upload.ok
+          ? { result: 'succeeded' }
+          : { result: 'failed', step: 'upload', detail: errorMessage(upload.body, 'try again with Sync GitHub now') }))
+        return
+      }
+
+      if (action === 'keep-both') {
+        if (!pending.cloudSnapshot) {
+          setLastSyncSummary(guestIdentityActionSummary(action, {
+            result: 'failed',
+            step: 'read-cloud',
+            detail: 'try Sync GitHub now again so the account copy can be read',
+          }))
+          return
+        }
+        // Adopt the account's guest identity and keep this browser's ledger,
+        // encounters, and XP. The account's starter reference is reused so the
+        // next merge unions one starter entry, not two.
+        const accountStarterReferenceId = pending.cloudSnapshot.collection.find(
+          (reference) => reference.acquisition === 'starter',
+        )?.referenceId ?? null
+        const adopted = createProductState(
+          adoptAccountGuestIdentity(state.profile, pending.cloudSnapshot.guestId, new Date().toISOString(), accountStarterReferenceId),
+          state.ledger,
+          state.encounters,
+          PROTOTYPE_COMPANION_CATALOG,
+        )
+        try {
+          saveBrowserProductState(adopted, namespace)
+        } catch {
+          setLastSyncSummary(guestIdentityActionSummary(action, {
+            result: 'failed',
+            step: 'adopt-identity',
+            detail: 'browser storage refused the change',
+          }))
+          return
+        }
+        setProductState(adopted)
+        const upload = await uploadProductSnapshot(
+          buildProductSnapshot(adopted, undefined, loadVerifiedEventProofs(storage, namespace)),
+          pending.checkpoint,
+        )
+        if (!upload.ok) {
+          setLastSyncSummary(guestIdentityActionSummary(action, {
+            result: 'failed',
+            step: 'upload',
+            detail: errorMessage(upload.body, 'try again later'),
+          }))
+          return
+        }
+        const merged = adoptUploadedSnapshot(upload.body, adopted.profile, namespace)
+        if (merged) setProductState(merged)
+        showGuestConflict(null)
+        setLastSyncSummary(guestIdentityActionSummary(action, { result: 'succeeded' }))
+        return
+      }
+
+      if (!pending.cloudSnapshot) {
+        setLastSyncSummary(guestIdentityActionSummary(action, {
+          result: 'failed',
+          step: 'read-cloud',
+          detail: 'try Sync GitHub now again so the account copy can be read',
+        }))
+        return
+      }
+      // Follow the account: replace this namespace's local product state with
+      // the cloud snapshot and adopt its guest identity.
+      let restored: ProductState
+      try {
+        restored = restoreProductStateFromSnapshot(pending.cloudSnapshot, state.profile, PROTOTYPE_COMPANION_CATALOG)
+        saveBrowserProductState(restored, namespace)
+        saveVerifiedEventProofs(
+          storage,
+          proofsFromSnapshotEvents(pending.cloudSnapshot.events),
+          restored.ledger.events.map((event) => productEventId(event.eventId)),
+          namespace,
+        )
+      } catch {
+        setLastSyncSummary(guestIdentityActionSummary(action, {
+          result: 'failed',
+          step: 'replace-local',
+          detail: 'browser storage refused the change',
+        }))
+        return
+      }
+      setProductState(restored)
+      // The checkpoint belongs to the GitHub window whose events the local
+      // ledger just gave up, so it is dropped: the next sync re-reads that
+      // window and awards it against the account's copy.
+      const upload = await uploadProductSnapshot(
+        buildProductSnapshot(restored, undefined, loadVerifiedEventProofs(storage, namespace)),
+        null,
+      )
+      if (!upload.ok) {
+        setLastSyncSummary(guestIdentityActionSummary(action, {
+          result: 'failed',
+          step: 'upload',
+          detail: errorMessage(upload.body, 'try again with Sync GitHub now'),
+        }))
+        return
+      }
+      showGuestConflict(null)
+      setLastSyncSummary(guestIdentityActionSummary(action, { result: 'succeeded' }))
+    } finally {
+      setResolvingGuestConflict(null)
+      setGuestConflictStage('idle')
+    }
+  }, [accountNamespace, guestConflict, productState, resolvingGuestConflict, showGuestConflict])
 
   const changeSchedule = useCallback((next: SyncScheduleInterval) => {
     setSchedule(next)
@@ -1203,6 +1489,102 @@ export function GitHubSourcePanel() {
               <p className="font-prose mt-1 text-xs" style={{ color: 'var(--ink-muted)' }}>Sync again when you want fresh receipts.</p>
             </div>
           </section>
+
+          {/*
+            The identity guard's 409 used to be a sentence in the summary and a
+            dead end. Both copies are shown with what they actually hold, and
+            every action reports its outcome back in the summary below.
+          */}
+          {guestConflict && (
+            <section
+              aria-label="Cloud backup needs a choice"
+              className="mt-6 border p-5 sm:p-6"
+              style={{ borderColor: 'var(--accent)', background: 'var(--paper-raised)' }}
+            >
+              <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--accent)' }}>Cloud backup blocked</p>
+              <h2 className="font-ui mt-2 text-2xl font-semibold tracking-tight">{guestConflict.view.headline}</h2>
+              <p className="font-prose mt-2 max-w-2xl text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
+                This browser's progress is safe. The account guard stopped the upload because the two copies use different Terrarium identities; nothing is overwritten until you choose.
+              </p>
+
+              <div className="mt-5 grid gap-px border sm:grid-cols-2" style={{ borderColor: 'var(--rule)', background: 'var(--rule)' }}>
+                <GuestIdentitySideCard label="This browser" summary={guestConflict.view.local} />
+                {guestConflict.view.cloud ? (
+                  <GuestIdentitySideCard label="Account cloud copy" summary={guestConflict.view.cloud} />
+                ) : (
+                  <div className="bg-[color:var(--paper)] px-5 py-4">
+                    <p className="font-data text-[10px] uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Account cloud copy</p>
+                    <p className="font-ui mt-1 text-sm font-medium">Not readable right now</p>
+                    <p className="font-prose mt-1 text-xs" style={{ color: 'var(--ink-muted)' }}>Sync GitHub now again so the account's copy can be read.</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-5 space-y-4">
+                {guestConflict.view.actions.map((plan) => (
+                  <div
+                    key={plan.action}
+                    className="flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-start sm:justify-between"
+                    style={{ borderColor: 'var(--rule)' }}
+                  >
+                    <div className="max-w-2xl">
+                      <p className="font-ui text-sm font-medium">
+                        {plan.label}
+                        {plan.recommended && (
+                          <span className="font-data ml-2 text-[10px] uppercase tracking-wider" style={{ color: 'var(--accent)' }}>Recommended</span>
+                        )}
+                      </p>
+                      <p className="font-prose mt-1 text-xs leading-relaxed" style={{ color: 'var(--ink-muted)' }}>{plan.description}</p>
+                    </div>
+                    {guestConflictStage === plan.action && plan.requiresConfirmation ? (
+                      <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
+                        <p role="alert" className="font-prose max-w-sm text-xs leading-relaxed sm:text-right" style={{ color: 'var(--ink-muted)' }}>
+                          {plan.discardsCloudSnapshot
+                            ? "The account's cloud copy is deleted before the new upload. This cannot be undone."
+                            : "This browser's progress for this account is replaced by the account's cloud copy."}
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void resolveGuestConflict(plan.action, true)}
+                            disabled={resolvingGuestConflict !== null}
+                            aria-busy={resolvingGuestConflict === plan.action}
+                            className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50"
+                            style={{ borderColor: 'var(--accent)', color: 'var(--ink)' }}
+                          >
+                            {resolvingGuestConflict === plan.action ? 'Working…' : 'Confirm and continue'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setGuestConflictStage('idle')}
+                            disabled={resolvingGuestConflict !== null}
+                            className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50"
+                            style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => void resolveGuestConflict(plan.action, false)}
+                        disabled={!plan.available || resolvingGuestConflict !== null || busy}
+                        aria-busy={resolvingGuestConflict === plan.action}
+                        className="ui-row font-data shrink-0 border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50"
+                        style={{
+                          borderColor: plan.recommended ? 'var(--accent)' : 'var(--rule)',
+                          color: plan.recommended ? 'var(--ink)' : 'var(--ink-muted)',
+                        }}
+                      >
+                        {resolvingGuestConflict === plan.action ? 'Working…' : plan.label}
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           {effectiveTrackedCount === 0 && (
             <section className="mt-6 border-l-2 px-5 py-4" style={{ borderColor: 'var(--accent)', background: 'var(--paper-raised)' }}>

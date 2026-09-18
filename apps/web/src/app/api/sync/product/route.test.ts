@@ -15,6 +15,7 @@ import {
   issueGithubSyncCheckpoint,
   MAX_CHECKPOINT_TOKEN_LENGTH,
 } from '@/lib/sync/github-sync-checkpoint'
+import { GUEST_IDENTITY_CONFLICT_ERROR } from '@/lib/game/guest-identity-conflict'
 
 function request(method: string, body?: string, headers?: HeadersInit): NextRequest {
   return new NextRequest('http://localhost/api/sync/product', {
@@ -147,6 +148,34 @@ describe('POST/GET/DELETE /api/sync/product', () => {
     await POST(request('POST', JSON.stringify(snapshot(['event-1'], 'guest-1'))))
     const conflict = await POST(request('POST', JSON.stringify(snapshot(['event-2'], 'guest-2'))))
     expect(conflict.status).toBe(409)
+  })
+
+  it('answers the identity guard with the exact text the client detects', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST } = await import('./route')
+
+    await POST(request('POST', JSON.stringify(snapshot(['event-1'], 'guest-1'))))
+    const conflict = await POST(request('POST', JSON.stringify(snapshot(['event-2'], 'guest-2'))))
+
+    // The panel only offers the identity chooser for this exact sentence; a
+    // reworded guard would silently turn the choice back into a dead end.
+    expect(await conflict.json()).toEqual({ error: GUEST_IDENTITY_CONFLICT_ERROR })
+  })
+
+  it('lets the browser copy replace the account copy after the cloud row is deleted', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST, DELETE, GET } = await import('./route')
+
+    await POST(request('POST', JSON.stringify(snapshot(['event-1'], 'guest-1'))))
+    expect((await POST(request('POST', JSON.stringify(snapshot(['event-2'], 'guest-2'))))).status).toBe(409)
+
+    // This is the server half of the destructive "Use this browser" action:
+    // delete the account's row, then re-upload the browser's snapshot.
+    expect((await DELETE()).status).toBe(204)
+    const replaced = await POST(request('POST', JSON.stringify(snapshot(['event-2'], 'guest-2'))))
+    expect(replaced.status).toBe(200)
+    expect((await replaced.json()).guestId).toBe('guest-2')
+    expect((await GET()).status).toBe(200)
   })
 
   it('rejects malformed, widened, newer, and oversized payloads before storage', async () => {

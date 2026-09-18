@@ -380,6 +380,27 @@ the active companion, nickname, dialogue frequency, or public-profile settingsâ€
 the user may choose the local or cloud version. A failed sync preserves local
 state and can be retried; it never silently discards progression.
 
+A signed-in account can hold two different guest identities: the one in this
+browser and the one inside the account's cloud snapshot. The product route
+refuses such an upload with `409` rather than letting one browser silently
+overwrite an account's snapshot. That refusal is surfaced as an explicit
+choice on the GitHub panel, with both copies shown (events, companions, XP,
+and created date) before anything changes:
+
+- **Keep both** (recommended) adopts the account's guest identity locally,
+  keeps the browser's ledger, XP, and collection, and uploads the combined
+  copy; the server merges the two event sets without double-counting.
+- **Use this browser** deletes the account's cloud snapshot and replaces it
+  with the browser's copy. This is destructive and requires a two-step
+  confirmation naming what is deleted.
+- **Use the account** replaces the browser's product state for that account
+  with the cloud snapshot, adopts its guest identity, and uploads the result.
+
+Every action reports its outcome in the sync summary, and the choice closes
+once an upload succeeds so normal syncing resumes. If the two sides already
+share one identity, or one side holds no progression, the same chooser is
+shown with copy for that case instead of assuming a conflict.
+
 Destructive controls are separate and explicit. Disconnecting GitHub removes
 the stored token and sync checkpoints, stops future tracking, and keeps earned
 XP and the repository selections; deleting synced data is a different control

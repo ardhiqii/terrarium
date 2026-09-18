@@ -126,6 +126,14 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
   keeps earned XP and repository selections, and stays distinct from deleting
   synced data. Signing out, a revoked token, or a GitHub outage never
   disconnects or deletes anything.
+- The `/github` panel turns the account's identity-guard `409` into an explicit
+  choice instead of a dead end. Both copies are described from their snapshots
+  (events, companions, XP, created date) and the user picks **Keep both**
+  (adopt the account's guest identity, keep local progress, re-upload),
+  **Use this browser** (delete the cloud row and re-upload the browser copy,
+  behind a two-step confirmation), or **Use the account** (replace local
+  product state with the cloud snapshot and adopt its identity). The guard
+  itself is unchanged, and each action reports its outcome in the sync summary.
 
 ### Known gaps after the repository cache
 
