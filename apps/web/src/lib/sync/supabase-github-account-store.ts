@@ -23,6 +23,7 @@ interface AccountRow {
   auto_include_organizations_json: unknown
   baseline_by_repository_id_json: unknown
   last_synced_at: string | null
+  disconnected_at?: string | null
 }
 
 function uniqueStrings(values: readonly string[]): string[] {
@@ -174,6 +175,9 @@ export class SupabaseGithubAccountStore implements GithubAccountStore {
           auto_include_organizations_json: settings.autoIncludeOrganizations,
           baseline_by_repository_id_json: settings.baselineByRepositoryId,
           last_synced_at: settings.lastSyncedAt,
+          // Reconnecting clears the disconnect marker; the row's repository
+          // choices and handle are preserved on purpose.
+          disconnected_at: null,
         },
         { onConflict: 'github_id' },
       )
@@ -185,12 +189,14 @@ export class SupabaseGithubAccountStore implements GithubAccountStore {
     if (!secret) return null
     const { data, error } = await getSupabaseAdminClient()
       .from('github_accounts')
-      .select('token_iv, token_tag, token_ciphertext')
+      .select('token_iv, token_tag, token_ciphertext, disconnected_at')
       .eq('github_id', githubId)
       .maybeSingle()
     if (error) throwDatabaseError('github_accounts.getToken', error)
     if (!data) return null
-    const row = data as Pick<AccountRow, 'token_iv' | 'token_tag' | 'token_ciphertext'>
+    const row = data as Pick<AccountRow, 'token_iv' | 'token_tag' | 'token_ciphertext' | 'disconnected_at'>
+    if (row.disconnected_at) return null
+    if (!row.token_iv || !row.token_tag || !row.token_ciphertext) return null
     return decryptGithubToken(
       { iv: row.token_iv, tag: row.token_tag, ciphertext: row.token_ciphertext },
       secret,
@@ -254,13 +260,45 @@ export class SupabaseGithubAccountStore implements GithubAccountStore {
         last_synced_at: cleanNext.lastSyncedAt,
       })
       .eq('github_id', githubId)
-      .eq('baseline_by_repository_id_json', current.settings.baselineByRepositoryId)
+      // THE GUARD MUST BE SENT AS JSON TEXT. `baseline_by_repository_id_json`
+      // is a jsonb column, and supabase-js turns a filter value that is not a
+      // string into `String(value)` — so passing the object itself produced
+      // `[object Object]` and Postgres rejected the whole statement with
+      // "invalid input syntax for type json". The update threw, the route
+      // answered a bodyless 500, and the baseline was never committed, which is
+      // why every sync re-baselined and no XP was ever awarded.
+      .eq('baseline_by_repository_id_json', JSON.stringify(current.settings.baselineByRepositoryId))
       .select('github_id')
       .maybeSingle()
     if (error) throwDatabaseError('github_accounts.advanceBaseline', error)
     if (data) return true
     const latest = await this.get(githubId)
     return Boolean(latest && sameBaselineMap(latest.settings.baselineByRepositoryId, nextBaselineByRepositoryId))
+  }
+
+  async clearCredential(githubId: number): Promise<void> {
+    // The token columns are NOT NULL, so they are emptied rather than nulled.
+    // `disconnected_at` is what actually marks the row as disconnected. The
+    // repository choices and handle are deliberately left untouched.
+    const { error } = await getSupabaseAdminClient()
+      .from('github_accounts')
+      .update({
+        token_iv: '',
+        token_tag: '',
+        token_ciphertext: '',
+        scopes_json: [],
+        baseline_by_repository_id_json: {},
+        last_synced_at: null,
+        disconnected_at: new Date().toISOString(),
+      })
+      .eq('github_id', githubId)
+      .select('github_id')
+      .maybeSingle()
+    if (error) throwDatabaseError('github_accounts.clearCredential', error)
+    // No row means the account is already gone, which is disconnected by
+    // definition. The SQLite adapter's `UPDATE ... WHERE` is a no-op there,
+    // and rejecting made the panel answer 500 forever for a session that has
+    // nothing left to disconnect.
   }
 
   async remove(githubId: number): Promise<void> {

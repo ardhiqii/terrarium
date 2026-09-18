@@ -202,9 +202,10 @@ permissions for metadata, contents, pull requests, issues, checks/actions, and
 the required organization approval. It deliberately does not request the
 classic `repo` scope, which grants broader write-capable access. Before
 production, keep `SUPABASE_URL` and the server-only `SUPABASE_SECRET_KEY` in the
-deployment secret store and apply both
-`supabase/migrations/20260914000000_initial_sync.sql` and
-`supabase/migrations/20260914000001_harden_product_identity.sql`. The
+deployment secret store and apply all three
+`supabase/migrations/20260914000000_initial_sync.sql`,
+`supabase/migrations/20260914000001_harden_product_identity.sql`, and
+`supabase/migrations/20260918000000_github_accounts_disconnect.sql`. The
 migrations enable RLS and grant access only to the server role.
 
 The Supabase adapter covers the public sync snapshot, GitHub account/settings,
@@ -245,8 +246,11 @@ restart/redeploy end-to-end test.
 - local-note sync is opt-in and uploads only a private condition snapshot and
   sync checkpoint;
 - support manual sync or scheduled scan-then-sync while the website is open,
-  with a 15-minute default interval and 5-minute/30-minute alternatives;
-- skip scheduled cloud writes when a scan produces no relevant derived changes;
+  with a 15-minute default interval and 5-minute/30-minute alternatives; the
+  GitHub source implements this schedule today (browser-local cadence, timer
+  only while the page is open, paused by a rolling hourly request budget);
+- skip scheduled cloud writes when a scan produces no relevant derived changes
+  (local-note cloud sync only; GitHub cycles are a full activity read);
 - make clear that a closed browser cannot scan or sync a mounted folder;
 - first sign-in imports the current companion condition when no server state
   exists;
