@@ -173,31 +173,6 @@ use the activity date, not the sync date. Catch-up is summarized as one return
 update rather than replaying every reaction. Activity before approval or the
 initial baseline never awards retroactive XP; unavailable history is not guessed.
 
-A truncated bounded read is not a failed read. Every activity list is walked
-newest-first, so a scan that reaches its page ceiling has still read the most
-recent activity, and the material it could not reach is older than the baseline
-recorded for that sync and can never be awarded. A truncated read therefore
-records its baseline and reports the truncation separately, and the sync still
-reports `ok`. Treating truncation as a failure previously made every repository
-with a long history report `partial`, which withheld the baseline indefinitely
-and left the account unable to earn XP at all. A genuinely failed request keeps
-the opposite behaviour: the baseline is withheld so activity that may be newer
-than the checkpoint can be retried instead of being skipped permanently.
-
-GitHub's `403` is reported as a rate limit, not as revoked access. GitHub
-returns `403` both for a real permission problem and for an exhausted rate
-limit; conflating them told users to reconnect an account that was working
-correctly. Only `401` means the credential is no longer usable.
-
-CI checks are read from the head and merge commits of merged pull requests, not
-by walking the default branch. The normalizer only ever awards a check that
-matches a merged pull request, so the earlier walk spent roughly ninety to two
-hundred requests per repository discovering checks that were then discarded.
-
-A long sync reports streamed progress. The route answers with newline-delimited
-JSON so the client can show which repository is being read out of a known total
-and how many requests have completed, rather than an indefinite spinner.
-
 Commits are evidence of activity, not an unlimited per-commit XP faucet. Empty
 or generated-only commits do not award XP. Active days and work sessions are
 capped, while meaningful outcomes such as merged pull requests, releases, and
@@ -229,63 +204,7 @@ allowance.
 Disconnecting GitHub, removing a repository, revoking organization access, and
 deleting synced derived data are supported user controls. The server stores
 derived activity and progression only, never repository contents, code, or
-private note text. Disconnect and delete are different controls with different
-consequences: **Disconnect GitHub** (`DELETE /api/github/repositories`) removes
-the stored OAuth token and every sync checkpoint, stops future tracking, and
-keeps earned XP and the user's repository selections, while **Delete synced
-data** (`DELETE /api/sync/product`) removes the synced progression snapshot. A
-revoked token, a GitHub outage, a closed tab, or an expired session cookie never
-triggers either one; those only pause tracking and ask for a reconnect.
-
-## Repository listings are cached, and a stale listing never prunes
-
-The repository list is an expensive, read-only fact, so it is cached instead of
-re-listed on every page view, save, and sync. `/github` previously performed up
-to four listings per visit (page open, save, sync, post-sync reload) at up to
-five paged GitHub requests each, which drained the account's hourly budget and
-produced a rate-limit wall with no repositories shown.
-
-The cache has two copies. The browser keeps the last successful listing per
-profile (one active GitHub account at a time) and paints it immediately while
-the server request still runs, so settings stay server-authoritative. The
-server keeps an in-process copy per account, keyed by GitHub ID rather than by
-token: a token must never be a lookup key, a log line, or a heap-dump string.
-Like the existing `/api/creature` cache, the server copy lives only as long as
-a warm instance and is not distributed; that is a request-budget guard, not a
-promise.
-
-A listing is fresh for five minutes and retained for at most one hour. A fresh
-listing answers without contacting GitHub; the **Refresh list** control
-revalidates on demand. Only a successful listing is ever cached — never a
-partial page and never an error — and an empty listing is cached too, because
-an account with no readable repositories must not hammer GitHub. A listing that
-filled the last permitted page (500 repositories) is cached with a `truncated`
-flag: it is usable but is not a completeness proof. When GitHub cannot be read,
-the last listing is served marked `stale` while it is inside the retention
-window, and the picker says `cached · unavailable`; past an hour the failure is
-reported instead of an arbitrarily old listing. Revoked access (`401`) purges
-the entry rather than serving it, because the account can no longer read those
-repositories, and re-authorizing GitHub purges it too so a different account or
-scope cannot inherit the old listing. The in-process map is swept of expired
-entries and capped, so a listing nobody asks for again does not stay resident
-until restart.
-
-Sync never prunes a baseline from a listing it could not refresh. A stale
-listing could be missing a repository that is only temporarily unreadable, and
-a truncated listing is missing every repository past its page ceiling; treating
-either as deletion would drop a baseline and let the disconnected window be
-backfilled as new work. Pruning runs only from a complete listing, and saving
-settings applies the same rule: a tracked repository absent from a stale or
-truncated listing is preserved instead of silently unselected. The sync still
-reads activity from the list it has, because a temporarily unreadable
-repository contributes no activity anyway.
-
-The browser copy carries its GitHub account ID. A copy stored for another
-account is discarded rather than painted, the copy is cleared when a session
-ends (`401`), and a failed read only keeps showing a list the server confirmed
-for the account it answered for. Without that check, one browser profile shared
-by two accounts could present the first account's private repository names as
-the second account's list.
+private note text.
 
 ## XP should be explainable
 
@@ -299,9 +218,6 @@ The first balance uses simple evidence-based events:
 - new notes and net-new words after the source baseline;
 - newly resolved links;
 - merged pull requests, releases, linked issues, and successful CI.
-
-**Not yet implemented — see [`ROADMAP.md`](ROADMAP.md).** The shipped code
-buckets days and sessions in UTC; the contract below is the target.
 
 Daily and session caps use one account-level progress timezone. It defaults to
 the browser timezone at first setup, does not change automatically while the
@@ -438,37 +354,10 @@ server receives only a private condition snapshot and sync checkpoint, so the
 same local progress is not counted twice without exposing note activity details.
 Users can keep sync off, run it manually, or enable a schedule while the
 website is open. The default schedule is every 15 minutes, with manual,
-5-minute, and 30-minute choices.
-
-The implemented schedule is the GitHub source's automatic sync. It lives in the
-`/github` panel, persists per browser profile, and runs only while the page is
-open -- that is the documented contract, and it is why the cadence is browser
-state rather than a server cron. Every cycle is the same read a manual sync
-performs; there is no separate "scan first" step for GitHub. A cadence that has
-never recorded an attempt waits one full interval after the page opens instead
-of firing an unsolicited sync on load. A cycle reads a window of repositories
-derived from both sides of the same limit -- GitHub's hourly request budget and
-the deferred checkpoint's event capacity -- and the planner budgets the
-requests each cycle actually reported, pausing a cycle that would push the
-rolling hour past 4,000 of GitHub's 5,000 requests and telling the user why
-instead of failing or silently skipping. Each open tab folds its recorded spend
-into the shared browser record, so two tabs do not erase each other. The local
-note cloud-write schedule (scan first, skip the write when no relevant derived
-state changed) is still tied to folder mounting and is not part of this schedule.
-A new device can restore
+5-minute, and 30-minute choices. Each scheduled cycle scans first and skips the
+cloud write when no relevant derived state changed. A new device can restore
 the synced companion condition and verified GitHub activity, but cannot restore
 local note history that was never synced or exported.
-
-A deferred baseline checkpoint travels in the product upload's request body,
-not in a request header. The checkpoint carries every event ID the sync issued
-plus both baseline maps, which for a 44-repository account is tens of kilobytes
-(measured about 21 KB at 500 events). Request headers have a small platform
-budget, so the header form was rejected upstream as a bodyless 500 before the
-route ran and the computed baseline was never committed. The token is still
-HMAC-signed and account-bound, the events it names must all be present in the
-submitted snapshot, and the stored baseline must still match the checkpoint, so
-moving the transport does not weaken the tamper-proof property. The old request
-header is still accepted for compatibility.
 
 ## Hosted sync storage
 

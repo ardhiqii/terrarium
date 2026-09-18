@@ -9,11 +9,7 @@
 
 import { NextRequest } from 'next/server'
 import { getGithubAccountStore, type GithubAccountSettings } from '@/lib/sync/github-account-store'
-import type { GithubRepository } from '@/lib/sync/github-repositories'
-import {
-  getGithubRepositoriesCached,
-  purgeGithubRepositoryCache,
-} from '@/lib/sync/github-repository-cache'
+import { fetchGithubRepositories, type GithubRepository } from '@/lib/sync/github-repositories'
 import { getSessionProvider } from '@/lib/sync/session'
 import type { Session } from '@/lib/sync/types'
 
@@ -62,78 +58,29 @@ async function context(): Promise<{
   return { session, token, settings: await store.getSettings(session.githubId) }
 }
 
-interface AvailableRepositories {
-  repositories: readonly GithubRepository[]
-  /** When the listing was read from GitHub. */
-  fetchedAt: number
-  /** True when a failed refresh fell back to the last known listing. */
-  stale: boolean
-  /** True when the listing filled the last permitted page. */
-  truncated: boolean
-}
-
-/**
- * A listing, from the per-account TTL cache when it is fresh and from GitHub
- * otherwise. A failed read with a cached listing is served as `stale` rather
- * than as an error: the client marks it, and the picker keeps working instead
- * of showing a rate-limit wall with zero repositories.
- *
- * The status codes are unchanged. 401 still means revoked access, 429 still
- * means the rate limit was reached with nothing cached to show, and 502 still
- * means GitHub was unreachable and nothing was cached.
- */
-async function availableRepositories(
-  githubId: number,
-  token: string,
-  force = false,
-): Promise<AvailableRepositories | Response> {
-  const cached = await getGithubRepositoriesCached({ githubId, token, force })
-  const result = cached.result
+async function availableRepositories(token: string): Promise<readonly GithubRepository[] | Response> {
+  const result = await fetchGithubRepositories({ token })
   if (result.status === 'unauthorized') {
     return json(401, { error: 'GitHub access was revoked or expired. Reconnect GitHub.' })
   }
-  if (result.status === 'rate-limited') {
-    // A rate limit is transient: reconnecting GitHub would not help, so the
-    // user is told to retry instead of being signed out. The account id is
-    // included so the client can tell which account the server answered for
-    // and discard a browser copy that belongs to another one.
-    return json(429, { githubId, error: 'GitHub rate limit reached. Try again once the limit resets.' })
-  }
   if (result.status !== 'ok') {
-    return json(502, { githubId, error: 'GitHub could not be reached. Try again shortly.' })
+    return json(502, { error: 'GitHub could not be reached. Try again shortly.' })
   }
-  return {
-    repositories: result.repositories,
-    fetchedAt: cached.fetchedAt,
-    stale: cached.stale,
-    truncated: result.truncated === true,
-  }
+  return result.repositories
 }
 
-/** `?refresh=1` revalidates instead of accepting a fresh cache entry. */
-function refreshRequested(request: NextRequest | undefined): boolean {
-  const value = request?.nextUrl?.searchParams?.get('refresh')
-  return value === '1' || value === 'true'
-}
-
-export async function GET(request: NextRequest): Promise<Response> {
+export async function GET(): Promise<Response> {
   try {
     const value = await context()
     if ('error' in value) return value.error
-    const available = await availableRepositories(
-      value.session.githubId,
-      value.token,
-      refreshRequested(request),
-    )
-    if (available instanceof Response) return available
+    const repositories = await availableRepositories(value.token)
+    if (repositories instanceof Response) return repositories
     return json(200, {
       githubId: value.session.githubId,
-      repositories: available.repositories,
+      repositories,
       settings: publicSettings(value.settings),
-      approvedRepositoryCount: available.repositories.length,
-      trackedRepositoryCount: available.repositories.filter((repo) => repositoryIsTracked(repo, value.settings)).length,
-      fetchedAt: available.fetchedAt,
-      stale: available.stale,
+      approvedRepositoryCount: repositories.length,
+      trackedRepositoryCount: repositories.filter((repo) => repositoryIsTracked(repo, value.settings)).length,
     })
   } catch {
     return json(500, { error: 'Repository settings could not be loaded.' })
@@ -182,14 +129,7 @@ export async function PUT(request: NextRequest): Promise<Response> {
     }
     let payload: unknown
     try {
-      // The content-length header is a client claim and a chunked body has
-      // none, so the actual body is what is bounded. A payload past the cap is
-      // rejected instead of being parsed.
-      const raw = await request.text()
-      if (raw.length > SETTINGS_PAYLOAD_LIMIT_BYTES) {
-        return json(413, { error: 'Repository settings payload is too large.' })
-      }
-      payload = JSON.parse(raw) as unknown
+      payload = await request.json()
     } catch {
       return json(400, { error: 'Body must be valid JSON.' })
     }
@@ -198,9 +138,8 @@ export async function PUT(request: NextRequest): Promise<Response> {
       return json(400, { error: 'Repository settings are malformed.' })
     }
 
-    const available = await availableRepositories(value.session.githubId, value.token)
-    if (available instanceof Response) return available
-    const repositories = available.repositories
+    const repositories = await availableRepositories(value.token)
+    if (repositories instanceof Response) return repositories
     const byId = new Map(repositories.map((repo) => [repo.id, repo]))
     const existingTrackedIds = new Set(value.settings.trackedRepositoryIds)
     const existingExcludedIds = new Set(value.settings.excludedRepositoryIds)
@@ -216,15 +155,10 @@ export async function PUT(request: NextRequest): Promise<Response> {
     }
     // A repository can disappear from GitHub after permission revocation or
     // deletion. Drop stale tracked IDs so they stop contributing immediately,
-    // while retaining an existing exclusion in case access returns later. A
-    // listing that could not be refreshed completely (stale or truncated) is
-    // not proof of deletion: the user's explicit choice is preserved instead
-    // of being silently unselected by a failed read.
-    const completeListing = !available.stale && !available.truncated
+    // while retaining an existing exclusion in case access returns later.
     const trackedRepositoryIds = settingsPayload.trackedRepositoryIds.filter((id) => {
       const repository = byId.get(id)
-      if (repository === undefined) return !completeListing
-      return !repository.archived && repository.canRead
+      return repository !== undefined && !repository.archived && repository.canRead
     })
     const excludedRepositoryIds = settingsPayload.excludedRepositoryIds.filter((id) => {
       return byId.has(id) || existingExcludedIds.has(id)
@@ -265,35 +199,8 @@ export async function PUT(request: NextRequest): Promise<Response> {
       settings: publicSettings(savedSettings),
       approvedRepositoryCount: repositories.length,
       trackedRepositoryCount: repositories.filter((repo) => repositoryIsTracked(repo, savedSettings)).length,
-      fetchedAt: available.fetchedAt,
-      stale: available.stale,
     })
   } catch {
     return json(500, { error: 'Repository settings could not be saved.' })
-  }
-}
-
-/**
- * `DELETE /api/github/repositories` -- disconnect GitHub.
- *
- * This is NOT the same control as `DELETE /api/sync/product`, and the two must
- * never be merged. Disconnecting drops the OAuth credential and every sync
- * baseline so nothing new can be tracked; it keeps the account row, the
- * user's repository choices, and every earned XP. Deleting synced data
- * destroys the progression snapshot and stays a separate, explicit action.
- *
- * A revoked token, a GitHub outage, a closed tab, or an expired session cookie
- * must never reach this function. Nothing here runs unless the user asked for
- * it: automatic failures only purge caches and ask for a reconnect.
- */
-export async function DELETE(): Promise<Response> {
-  try {
-    const session = await getSessionProvider().current()
-    if (!session) return json(401, { error: 'Sign in with GitHub to manage repositories.' })
-    await getGithubAccountStore().clearCredential(session.githubId)
-    purgeGithubRepositoryCache(session.githubId)
-    return json(204, undefined)
-  } catch {
-    return json(500, { error: 'GitHub could not be disconnected. Try again shortly.' })
   }
 }

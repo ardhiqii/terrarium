@@ -77,71 +77,6 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
   namespaces from the cloud snapshot; SQLite remains the local/single-server
   fallback. Product snapshots now key by immutable GitHub ID, protect writes
   with optimistic timestamps, and keep restored event IDs replay-safe.
-- A bounded GitHub scan that reaches its page ceiling is now reported as
-  **truncated** instead of failed, so a long-history repository records its
-  baseline and can earn XP. Previously every such repository reported `partial`,
-  the baseline was withheld indefinitely, and the account stayed at zero XP no
-  matter how often the user synced.
-- CI checks are read from merged pull request head and merge commits rather than
-  by walking the default branch, removing roughly ninety to two hundred requests
-  per repository. GitHub's `403` is now reported as a rate limit rather than as
-  revoked access, and an empty repository's `409` is treated as a successful
-  empty read.
-- `POST /api/github/sync` streams newline-delimited progress, so the `/github`
-  surface shows the repository being read out of a known total, a live request
-  counter, and a cancel control instead of an indefinite spinner.
-- Every tracked repository is reachable. The old ceiling of 25 repositories left
-  19 of a 44-repository account permanently unbaselined, so none of their
-  activity could ever award XP; the window is now derived from GitHub's hourly
-  request budget and the checkpoint's event capacity, and repositories that
-  still need a baseline are read first, so the whole set is covered a window at
-  a time.
-- A large account's sync can commit its baseline again. The signed checkpoint
-  rejected more than 500 event IDs at *issuance*, which failed the whole sync
-  in-band, and it was delivered in a request header that tens of kilobytes
-  cannot fit -- the `/api/sync/product` call that commits the deferred baseline
-  came back as a bodyless 500. The checkpoint's event bound is now the sync
-  window's own worst case (derived, so the route cannot build a list its own
-  validator rejects) and it travels with the snapshot in the request body, still
-  HMAC-signed, account-bound, and checked against the stored baseline.
-- The `/github` panel offers the documented automatic-sync cadence (manual,
-  5, 15, and 30 minutes; 15 is the default) while the page is open, and budgets
-  the GitHub requests each cycle actually reported so a cadence that would
-  overdraw the account's hourly ceiling pauses with an explanation and resumes
-  when the rolling hour window clears.
-- `/github` no longer re-lists repositories on every visit. The last successful
-  listing is cached in the browser (instant paint on return) and on the server
-  per account (five minutes fresh, one hour retention, in-process, keyed by
-  GitHub ID and never by token), revalidated on demand with **Refresh list**,
-  and labelled with how old it is. Only successful listings are cached, a
-  listing that fills the fifth page is stored with a `truncated` flag and never
-  treated as complete, a failed read serves the last known list marked `cached ·
-  unavailable`, re-authorizing GitHub purges the entry, expired entries are
-  swept and the map is capped, and a sync never prunes a repository baseline
-  from a listing it could not refresh. The browser copy is bound to its GitHub
-  account ID: a copy from another account is discarded, a `401` clears it, and
-  a failed read keeps showing only a list the server confirmed for the account
-  it answered for. **Disconnect
-  GitHub** is now a real control: it removes the token and sync checkpoints,
-  keeps earned XP and repository selections, and stays distinct from deleting
-  synced data. Signing out, a revoked token, or a GitHub outage never
-  disconnects or deletes anything.
-
-### Known gaps after the repository cache
-
-- The `If-None-Match` / `304` revalidation fast path is not implemented. The
-  server cache entry has room for an ETag, but `fetchGithubRepositories` does
-  not return the response ETag yet, so a past-fresh-window refresh still
-  re-reads up to five pages instead of one conditional request.
-- The server cache is a module-scope `Map`, so it is per instance and is lost
-  on restart or cold start; a multi-instance deployment gets one copy each.
-  That is the same caveat as the `/api/creature` cache and is a request-budget
-  guard rather than a shared cache. Entries are swept on write and capped at
-  `GITHUB_REPOSITORY_CACHE_MAX_ENTRIES` accounts.
-- Accounts with more than 500 repositories get a truncated listing. The
-  `/user/repos` walk stops at five pages; the flag stops pruning and unselection
-  from it, but repositories past page 5 still need a narrower listing to become
-  trackable.
 
 ### Known prototype mismatch
 
@@ -183,14 +118,6 @@ keys, optimistic writes, and replay-safe product IDs are now implemented.
 Deploy and exercise OAuth, repository selection, baselines, XP, cloud restore,
 a second device, account rename, revoked access, and a redeploy before calling
 the hosted path production-ready.
-
-The progress timezone described in [`PRODUCT.md`](PRODUCT.md) section 5 is **not
-implemented**: days and sessions are currently bucketed in UTC, so a commit made
-late in the local evening can land on the previous day for a user east of UTC.
-The sync window is also bounded by page ceilings, so only the newest page of each
-activity list is read; the sync reports this as truncation rather than claiming a
-complete catch-up. Repository pagination beyond the collection cap, and a first
-real Vercel plus Supabase deployment verification, remain open.
 
 ### 3. Complete public profile privacy and account lifecycle
 
