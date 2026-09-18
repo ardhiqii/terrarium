@@ -202,9 +202,10 @@ permissions for metadata, contents, pull requests, issues, checks/actions, and
 the required organization approval. It deliberately does not request the
 classic `repo` scope, which grants broader write-capable access. Before
 production, keep `SUPABASE_URL` and the server-only `SUPABASE_SECRET_KEY` in the
-deployment secret store and apply both
-`supabase/migrations/20260914000000_initial_sync.sql` and
-`supabase/migrations/20260914000001_harden_product_identity.sql`. The
+deployment secret store and apply all three
+`supabase/migrations/20260914000000_initial_sync.sql`,
+`supabase/migrations/20260914000001_harden_product_identity.sql`, and
+`supabase/migrations/20260918000000_github_accounts_disconnect.sql`. The
 migrations enable RLS and grant access only to the server role.
 
 The Supabase adapter covers the public sync snapshot, GitHub account/settings,

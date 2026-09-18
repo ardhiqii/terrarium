@@ -156,6 +156,28 @@ permission state alongside the approved and tracked counts. Selecting all means
 all repositories currently shown; newly created repositories are not selected
 by default.
 
+Opening the picker must not spend the account's GitHub request budget. The last
+successful listing is cached in two places: the browser keeps one copy per
+profile (one active GitHub account at a time) and the server keeps one per
+account. The server copy answers a request without contacting GitHub for five
+minutes and is revalidated on demand with the **Refresh list** button; it is
+replaced only by a complete successful listing, never by a partial page or an
+error, and an empty listing is cached too so a legitimately empty account does
+not hammer GitHub. When GitHub cannot be read, the server serves the last known
+listing instead of failing while it is less than an hour old, and the picker
+labels what the user is looking at — `List updated 3 min ago`, or
+`cached · unavailable · updated …` when the visible list is not fresh. The
+browser copy paints instantly on return visits while the server request still
+runs, so saved settings stay server-authoritative. A failed read is never
+treated as an empty account: nothing is pruned or unselected from it, and a
+sync never drops a repository baseline from a listing it could not refresh.
+A listing that fills GitHub's last permitted page (500 repositories) is stored
+with a `truncated` flag: it is usable, but it is never treated as complete, so
+nothing is pruned or silently unselected from it either. The browser copy is
+keyed to the active GitHub account; a copy stored for another account is
+discarded instead of painted, and a failed read only keeps showing a list the
+server confirmed belongs to this account.
+
 Users may opt in to automatic inclusion separately for future personal
 repositories and each approved organization. Automatic inclusion respects
 GitHub permissions and never bypasses a revoked or missing grant. A newly
@@ -277,9 +299,18 @@ user's normal caps and deduplication rules and does not create a second XP
 source.
 
 Users can disconnect GitHub, remove selected repositories, revoke organization
-access, and delete synced derived data. GitHub may refresh server-side while the
-website is closed, but the server stores derived activity and progression only,
-never repository contents or code.
+access, and delete synced derived data, and these are deliberately different
+controls. **Disconnect GitHub** (`DELETE /api/github/repositories`) removes the
+stored OAuth token and every sync checkpoint so no future activity can be
+tracked; it keeps earned XP, the companion, and the repository selections, so
+reconnecting resumes the same sources with a fresh baseline. **Delete synced
+data** (`DELETE /api/sync/product`) is the separate destructive control that
+removes the synced progression snapshot. Signing out is neither: it only clears
+the browser session cookie and leaves the account, token, and XP untouched. A
+revoked token, a GitHub outage, a closed tab, or an expired session never
+disconnects or deletes anything — it pauses tracking and asks for a reconnect.
+GitHub may refresh server-side while the website is closed, but the server
+stores derived activity and progression only, never repository contents or code.
 
 The public profile shows an evidence-based activity history, never a hidden
 “quality score.”
@@ -349,9 +380,11 @@ the active companion, nickname, dialogue frequency, or public-profile settings�
 the user may choose the local or cloud version. A failed sync preserves local
 state and can be retried; it never silently discards progression.
 
-Destructive controls are separate and explicit. Disconnecting GitHub stops
-future tracking but keeps earned XP. Removing a mounted folder stops future
-scans but keeps earned XP. Resetting local state clears browser-held progress
+Destructive controls are separate and explicit. Disconnecting GitHub removes
+the stored token and sync checkpoints, stops future tracking, and keeps earned
+XP and the repository selections; deleting synced data is a different control
+that removes the cloud progression snapshot. Removing a mounted folder stops
+future scans but keeps earned XP. Resetting local state clears browser-held progress
 only after confirmation. Deleting cloud state removes synced companion data but
 never deletes local note files. Deleting a Terrarium account immediately hides
 the public profile and stops integrations, offers an export backup, and starts

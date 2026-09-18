@@ -37,6 +37,7 @@ import {
   sessionCookieOptions,
 } from '@/lib/sync/session-cookie'
 import { getGithubAccountStore } from '@/lib/sync/github-account-store'
+import { purgeGithubRepositoryCache } from '@/lib/sync/github-repository-cache'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -112,6 +113,9 @@ export async function GET(request: NextRequest): Promise<Response> {
   } catch {
     return failed(request)
   }
+  // A re-auth can grant a different scope or land on a different account, so
+  // the previous repository listing must not be inherited from the cache.
+  purgeGithubRepositoryCache(identity.githubId)
 
   // Return the user to the page they started from rather than the home page.
   const response = backToOrigin(request)

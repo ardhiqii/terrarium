@@ -229,7 +229,63 @@ allowance.
 Disconnecting GitHub, removing a repository, revoking organization access, and
 deleting synced derived data are supported user controls. The server stores
 derived activity and progression only, never repository contents, code, or
-private note text.
+private note text. Disconnect and delete are different controls with different
+consequences: **Disconnect GitHub** (`DELETE /api/github/repositories`) removes
+the stored OAuth token and every sync checkpoint, stops future tracking, and
+keeps earned XP and the user's repository selections, while **Delete synced
+data** (`DELETE /api/sync/product`) removes the synced progression snapshot. A
+revoked token, a GitHub outage, a closed tab, or an expired session cookie never
+triggers either one; those only pause tracking and ask for a reconnect.
+
+## Repository listings are cached, and a stale listing never prunes
+
+The repository list is an expensive, read-only fact, so it is cached instead of
+re-listed on every page view, save, and sync. `/github` previously performed up
+to four listings per visit (page open, save, sync, post-sync reload) at up to
+five paged GitHub requests each, which drained the account's hourly budget and
+produced a rate-limit wall with no repositories shown.
+
+The cache has two copies. The browser keeps the last successful listing per
+profile (one active GitHub account at a time) and paints it immediately while
+the server request still runs, so settings stay server-authoritative. The
+server keeps an in-process copy per account, keyed by GitHub ID rather than by
+token: a token must never be a lookup key, a log line, or a heap-dump string.
+Like the existing `/api/creature` cache, the server copy lives only as long as
+a warm instance and is not distributed; that is a request-budget guard, not a
+promise.
+
+A listing is fresh for five minutes and retained for at most one hour. A fresh
+listing answers without contacting GitHub; the **Refresh list** control
+revalidates on demand. Only a successful listing is ever cached — never a
+partial page and never an error — and an empty listing is cached too, because
+an account with no readable repositories must not hammer GitHub. A listing that
+filled the last permitted page (500 repositories) is cached with a `truncated`
+flag: it is usable but is not a completeness proof. When GitHub cannot be read,
+the last listing is served marked `stale` while it is inside the retention
+window, and the picker says `cached · unavailable`; past an hour the failure is
+reported instead of an arbitrarily old listing. Revoked access (`401`) purges
+the entry rather than serving it, because the account can no longer read those
+repositories, and re-authorizing GitHub purges it too so a different account or
+scope cannot inherit the old listing. The in-process map is swept of expired
+entries and capped, so a listing nobody asks for again does not stay resident
+until restart.
+
+Sync never prunes a baseline from a listing it could not refresh. A stale
+listing could be missing a repository that is only temporarily unreadable, and
+a truncated listing is missing every repository past its page ceiling; treating
+either as deletion would drop a baseline and let the disconnected window be
+backfilled as new work. Pruning runs only from a complete listing, and saving
+settings applies the same rule: a tracked repository absent from a stale or
+truncated listing is preserved instead of silently unselected. The sync still
+reads activity from the list it has, because a temporarily unreadable
+repository contributes no activity anyway.
+
+The browser copy carries its GitHub account ID. A copy stored for another
+account is discarded rather than painted, the copy is cleared when a session
+ends (`401`), and a failed read only keeps showing a list the server confirmed
+for the account it answered for. Without that check, one browser profile shared
+by two accounts could present the first account's private repository names as
+the second account's list.
 
 ## XP should be explainable
 

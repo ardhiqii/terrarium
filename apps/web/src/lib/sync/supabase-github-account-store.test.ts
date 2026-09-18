@@ -176,6 +176,56 @@ describe('SupabaseGithubAccountStore', () => {
     )
   })
 
+  it('clears the credential and baselines on disconnect while keeping choices', async () => {
+    const update = vi.fn().mockReturnThis()
+    const eq = vi.fn().mockReturnThis()
+    const maybeSingle = vi.fn().mockResolvedValue({ data: { github_id: 42 }, error: null })
+    const select = vi.fn().mockReturnValue({ maybeSingle })
+    mockedGetClient.mockReturnValue({
+      from: vi.fn().mockReturnValue({ update, eq, select }),
+    } as never)
+
+    await new SupabaseGithubAccountStore().clearCredential(42)
+
+    expect(eq).toHaveBeenCalledWith('github_id', 42)
+    const sent = update.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(sent).toMatchObject({
+      token_iv: '',
+      token_tag: '',
+      token_ciphertext: '',
+      scopes_json: [],
+      baseline_by_repository_id_json: {},
+      last_synced_at: null,
+      disconnected_at: expect.any(String),
+    })
+    // The row survives, so the user's repository choices are untouched.
+    expect(sent).not.toHaveProperty('tracked_repository_ids_json')
+    expect(sent).not.toHaveProperty('excluded_repository_ids_json')
+    expect(sent).not.toHaveProperty('auto_include_personal')
+  })
+
+  it('treats a missing account row as already disconnected and still reports database failures', async () => {
+    // A session whose account row is gone is disconnected already. Rejecting
+    // the call would leave the panel answering 500 forever on a no-op.
+    const update = vi.fn().mockReturnThis()
+    const eq = vi.fn().mockReturnThis()
+    const select = vi.fn().mockReturnValue({ maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }) })
+    mockedGetClient.mockReturnValue({
+      from: vi.fn().mockReturnValue({ update, eq, select }),
+    } as never)
+    await expect(new SupabaseGithubAccountStore().clearCredential(42)).resolves.toBeUndefined()
+
+    const errorSelect = vi.fn().mockReturnValue({
+      maybeSingle: vi.fn().mockResolvedValue({ data: null, error: { message: 'denied' } }),
+    })
+    mockedGetClient.mockReturnValue({
+      from: vi.fn().mockReturnValue({ update, eq, select: errorSelect }),
+    } as never)
+    await expect(new SupabaseGithubAccountStore().clearCredential(42)).rejects.toThrow(
+      'Supabase github_accounts.clearCredential failed: denied',
+    )
+  })
+
   it('removes accounts and reports database failures', async () => {
     const removeEq = vi.fn().mockResolvedValue({ error: null })
     mockedGetClient.mockReturnValue({

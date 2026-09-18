@@ -2,6 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import { MAX_CHECKPOINT_EVENT_IDS, verifyGithubSyncCheckpoint } from '@/lib/sync/github-sync-checkpoint'
 import { MAX_SYNC_REPOSITORIES } from '@/lib/sync/sync-schedule'
+import { cacheClearAll } from '@/lib/game/api-cache'
+import {
+  clearGithubRepositoryCache,
+  getGithubRepositoriesCached,
+} from '@/lib/sync/github-repository-cache'
 
 const mocks = vi.hoisted(() => ({
   settings: {
@@ -90,6 +95,10 @@ async function readSyncBody(response: Response): Promise<Record<string, unknown>
 describe('POST /api/github/sync', () => {
   beforeEach(() => {
     vi.stubEnv('SESSION_SECRET', 's'.repeat(32))
+    // The per-account sync rate limiter is module-global; reset it so this
+    // file's assertion count does not depend on how many syncs it issues.
+    cacheClearAll()
+    clearGithubRepositoryCache()
     mocks.settings = {
       trackedRepositoryIds: ['101'],
       excludedRepositoryIds: [],
@@ -103,7 +112,7 @@ describe('POST /api/github/sync', () => {
     mocks.saveSettings.mockReset().mockImplementation(async (_id: number, settings: typeof mocks.settings) => {
       mocks.settings = settings
     })
-    mocks.fetchRepositories.mockReset().mockResolvedValue({ status: 'ok', repositories: [repository] })
+    mocks.fetchRepositories.mockReset().mockResolvedValue({ status: 'ok', truncated: false, repositories: [repository] })
     mocks.fetchEvents.mockReset().mockResolvedValue({
       login: 'octo',
       input: {
@@ -240,7 +249,7 @@ describe('POST /api/github/sync', () => {
   })
 
   it('tells the user to retry instead of reconnecting when GitHub rate limits us', async () => {
-    mocks.fetchRepositories.mockResolvedValue({ status: 'rate-limited', repositories: [] })
+    mocks.fetchRepositories.mockResolvedValue({ status: 'rate-limited', truncated: false, repositories: [] })
 
     const response = await POST(request())
     const body = await response.json()
@@ -309,7 +318,7 @@ describe('POST /api/github/sync', () => {
       baselineByRepositoryId: {},
       lastSyncedAt: null,
     }
-    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', repositories: many })
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: many })
 
     const baselined = new Set<string>()
     for (let round = 0; round < 4 && baselined.size < many.length; round += 1) {
@@ -359,7 +368,7 @@ describe('POST /api/github/sync', () => {
       ),
       lastSyncedAt: null,
     }
-    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', repositories: heavy })
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: heavy })
     // The real fetcher only returns activity for the repositories it was asked
     // to read; the mock honours the request so the window is actually exercised.
     mocks.fetchEvents.mockImplementation(async (options: { repos: Array<{ id: string }> }) => {
@@ -424,7 +433,7 @@ describe('POST /api/github/sync', () => {
       baselineByRepositoryId: { '101': '2026-01-01T00:00:00.000Z' },
       lastSyncedAt: null,
     }
-    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', repositories: [known, fresh] })
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: [known, fresh] })
 
     const events = await readSyncEvents(await POST(request()))
 
@@ -436,7 +445,7 @@ describe('POST /api/github/sync', () => {
 
   it('clears a baseline when a complete repository refresh no longer exposes it', async () => {
     mocks.settings.baselineByRepositoryId = { '101': '2026-01-01T00:00:00.000Z' }
-    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', repositories: [] })
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: [] })
 
     const response = await POST(request())
     const body = await response.json()
@@ -445,5 +454,117 @@ describe('POST /api/github/sync', () => {
     expect(response.status).toBe(200)
     expect(checkpoint?.nextBaselineByRepositoryId).toEqual({})
     expect(mocks.fetchEvents).not.toHaveBeenCalled()
+  })
+
+  it('rejects an oversized body even when the client sends no content-length', async () => {
+    const payload = JSON.stringify({
+      activeCompanionId: 'pikachu-family',
+      padding: 'x'.repeat(20_000),
+    })
+    expect(payload.length).toBeGreaterThan(16 * 1024)
+
+    const response = await POST(new NextRequest('http://localhost/api/github/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(payload))
+          controller.close()
+        },
+      }),
+      duplex: 'half',
+    }))
+
+    expect(response.status).toBe(413)
+  })
+
+  it('reuses the cached repository listing for back-to-back syncs', async () => {
+    // REGRESSION: the picker page load already listed the repositories, so a
+    // sync issued right after it must not spend another five paged GitHub
+    // requests re-reading the same list.
+    const first = await POST(request())
+    expect(first.status).toBe(200)
+    await readSyncBody(first)
+
+    const second = await POST(request())
+    expect(second.status).toBe(200)
+    await readSyncBody(second)
+
+    expect(mocks.fetchRepositories).toHaveBeenCalledTimes(1)
+  })
+
+  it('skips the baseline prune when the listing was served stale', async () => {
+    // A stale listing is one GitHub could not be re-read. Pruning from it
+    // would treat every temporarily unreadable repository as deleted, drop its
+    // baseline, and re-baseline its activity as new work on reconnect.
+    mocks.settings.baselineByRepositoryId = { '101': '2026-01-01T00:00:00.000Z' }
+    // The cached listing is empty, so a naive prune would delete the baseline
+    // for '101' entirely.
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: [] })
+    await getGithubRepositoriesCached({
+      githubId: 9001,
+      token: 'server-token',
+      // Seed an entry past the fresh window (and inside retention) so the next
+      // sync revalidates it and then falls back to it.
+      now: Date.now() - 10 * 60 * 1000,
+    })
+    expect(mocks.fetchRepositories).toHaveBeenCalledTimes(1)
+    mocks.fetchRepositories.mockResolvedValue({ status: 'unavailable', truncated: false, repositories: [] })
+
+    const response = await POST(request())
+    const body = await response.json()
+    const checkpoint = verifyGithubSyncCheckpoint(body.checkpoint, 9001)
+
+    expect(response.status).toBe(200)
+    expect(checkpoint).not.toBeNull()
+    expect(checkpoint?.nextBaselineByRepositoryId).toEqual({ '101': '2026-01-01T00:00:00.000Z' })
+    expect(mocks.fetchEvents).not.toHaveBeenCalled()
+  })
+
+  it('skips the baseline prune when the listing was truncated at the page ceiling', async () => {
+    // A 501+-repository account gets a 500-repository "ok" listing that fills
+    // the fifth page. Treating it as complete would delete the baseline of
+    // every tracked repository past page 5 and re-baseline its activity.
+    mocks.settings.trackedRepositoryIds = ['101', '501']
+    mocks.settings.baselineByRepositoryId = {
+      '101': '2026-01-01T00:00:00.000Z',
+      '501': '2026-01-01T00:00:00.000Z',
+    }
+    mocks.fetchRepositories.mockResolvedValue({
+      status: 'ok',
+      repositories: [repository],
+      truncated: true,
+    })
+
+    const response = await POST(request())
+    const body = await readSyncBody(response)
+    const checkpoint = verifyGithubSyncCheckpoint(body.checkpoint as string, 9001)
+
+    expect(response.status).toBe(200)
+    expect(checkpoint?.nextBaselineByRepositoryId).toEqual({
+      '101': '2026-01-01T00:00:00.000Z',
+      '501': '2026-01-01T00:00:00.000Z',
+    })
+  })
+
+  it('purges the cached listing and asks for a reconnect when GitHub revokes access', async () => {
+    await getGithubRepositoriesCached({
+      githubId: 9001,
+      token: 'server-token',
+      // Past the fresh window, so the sync actually revalidates.
+      now: Date.now() - 10 * 60 * 1000,
+    })
+    expect(mocks.fetchRepositories).toHaveBeenCalledTimes(1)
+
+    mocks.fetchRepositories.mockResolvedValue({ status: 'unauthorized', truncated: false, repositories: [] })
+    const response = await POST(request())
+
+    expect(response.status).toBe(401)
+    expect(String((await response.json()).error)).toContain('Reconnect')
+
+    // The revoked listing is gone, so a later failure has nothing to fall back to.
+    mocks.fetchRepositories.mockResolvedValue({ status: 'unavailable', truncated: false, repositories: [] })
+    const after = await POST(request())
+    expect(after.status).toBe(502)
   })
 })

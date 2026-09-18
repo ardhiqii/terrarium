@@ -14,7 +14,8 @@ import { normalizeGitHubEvents, type GitHubEventNormalizationInput } from '@/lib
 import { fetchGitHubEvents, type GitHubEventsProgress, type GithubRepoRef } from '@/lib/game/github-events-fetch'
 import { checkRateLimit } from '@/lib/game/api-cache'
 import { getGithubAccountStore, type GithubAccountSettings } from '@/lib/sync/github-account-store'
-import { fetchGithubRepositories, type GithubRepository } from '@/lib/sync/github-repositories'
+import type { GithubRepository } from '@/lib/sync/github-repositories'
+import { getGithubRepositoriesCached } from '@/lib/sync/github-repository-cache'
 import { getSessionProvider } from '@/lib/sync/session'
 import { productSnapshotEvent } from '@/lib/sync/product-snapshot'
 import { issueGithubSyncCheckpoint } from '@/lib/sync/github-sync-checkpoint'
@@ -114,7 +115,14 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   let payload: unknown
   try {
-    payload = await request.json()
+    // The content-length header is a client claim and a chunked body has none,
+    // so the actual body is what is bounded. An oversized payload is rejected
+    // instead of being parsed.
+    const raw = await request.text()
+    if (raw.length > SYNC_PAYLOAD_LIMIT_BYTES) {
+      return json(413, { error: 'Sync payload is too large.' })
+    }
+    payload = JSON.parse(raw) as unknown
   } catch {
     return json(400, { error: 'Body must be valid JSON.' })
   }
@@ -129,7 +137,11 @@ export async function POST(request: NextRequest): Promise<Response> {
     const token = await store.getToken(session.githubId)
     if (!token) return json(401, { error: 'GitHub access is unavailable. Reconnect GitHub.' })
     const settings = await store.getSettings(session.githubId)
-    const repositoryResult = await fetchGithubRepositories({ token })
+    // The listing comes from the per-account TTL cache. Back-to-back syncs and
+    // the picker share it, so a sync right after opening `/github` costs no
+    // extra GitHub requests at all.
+    const repositoryOutcome = await getGithubRepositoriesCached({ githubId: session.githubId, token })
+    const repositoryResult = repositoryOutcome.result
     if (repositoryResult.status === 'unauthorized') {
       return json(401, { error: 'GitHub access was revoked or expired. Reconnect GitHub.' })
     }
@@ -164,13 +176,21 @@ export async function POST(request: NextRequest): Promise<Response> {
     const now = new Date().toISOString()
     const baselineByRepositoryId = { ...settings.baselineByRepositoryId }
     const repositoriesById = new Map(repositories.map((repository) => [repository.id, repository]))
-    for (const repositoryId of Object.keys(baselineByRepositoryId)) {
-      const repository = repositoriesById.get(repositoryId)
-      // A complete repository refresh is the access checkpoint. A missing,
-      // archived, or currently untracked repository must start fresh if it
-      // becomes eligible again; otherwise paused-time activity backfills XP.
-      if (!repository || !repositoryIsTracked(repository, settings)) {
-        delete baselineByRepositoryId[repositoryId]
+    // Pruning is only safe from a COMPLETE listing. A stale listing was served
+    // because GitHub could not be read, and a truncated listing filled the last
+    // permitted page, so both can be missing a repository GitHub still has. A
+    // temporarily missing repository would look deleted, its baseline would be
+    // dropped, and its activity would be re-baselined as if it were new work.
+    const completeListing = !repositoryOutcome.stale && repositoryResult.truncated !== true
+    if (completeListing) {
+      for (const repositoryId of Object.keys(baselineByRepositoryId)) {
+        const repository = repositoriesById.get(repositoryId)
+        // A complete repository refresh is the access checkpoint. A missing,
+        // archived, or currently untracked repository must start fresh if it
+        // becomes eligible again; otherwise paused-time activity backfills XP.
+        if (!repository || !repositoryIsTracked(repository, settings)) {
+          delete baselineByRepositoryId[repositoryId]
+        }
       }
     }
     const newBaselineRepositoryIds: string[] = []

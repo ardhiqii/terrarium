@@ -32,6 +32,18 @@ export type GithubRepositoryFetchStatus = 'ok' | 'unauthorized' | 'rate-limited'
 export interface GithubRepositoryFetchResult {
   readonly status: GithubRepositoryFetchStatus
   readonly repositories: readonly GithubRepository[]
+  /**
+   * True when the paged walk ended on a full final page at `MAX_PAGES`.
+   *
+   * A truncated listing is still a successful read -- it holds every repository
+   * the newest-first pages exposed -- but it is NOT a completeness proof. A
+   * 501+-repository account receives 500 repositories here; treating that as
+   * "the account has exactly these" would delete the sync baseline of every
+   * tracked repository past page 5 and re-baseline its activity as new work.
+   * Callers must skip pruning and unselection on it, exactly as for a stale
+   * listing.
+   */
+  readonly truncated: boolean
 }
 
 export interface FetchGithubRepositoriesOptions {
@@ -104,37 +116,51 @@ export async function fetchGithubRepositories(
   options: FetchGithubRepositoriesOptions,
 ): Promise<GithubRepositoryFetchResult> {
   const token = options.token.trim()
-  if (!token) return { status: 'unauthorized', repositories: [] }
+  if (!token) return { status: 'unauthorized', repositories: [], truncated: false }
   const client = options.fetch ?? globalThis.fetch
-  if (typeof client !== 'function') return { status: 'unavailable', repositories: [] }
+  if (typeof client !== 'function') return { status: 'unavailable', repositories: [], truncated: false }
   const apiBase = (options.apiBase ?? DEFAULT_API_BASE).replace(/\/+$/u, '')
   const repositories: GithubRepository[] = []
+  let truncated = false
+  /** GitHub's own pagination signal; a short page with `rel="next"` has more. */
+  const hasNextPage = (response: Response): boolean =>
+    /rel="?next"?/u.test(response.headers.get('link') ?? '')
 
   try {
     for (let page = 1; page <= MAX_PAGES; page += 1) {
       const url = `${apiBase}/user/repos?affiliation=owner%2Ccollaborator%2Corganization_member&per_page=${PAGE_SIZE}&sort=updated&page=${page}`
       const response = await withTimeout(client, url, token)
       if (response.status === 401) {
-        return { status: 'unauthorized', repositories: [] }
+        return { status: 'unauthorized', repositories: [], truncated: false }
       }
       if (response.status === 403) {
         // GitHub answers 403 both for a genuine permission problem and for an
         // exhausted rate limit. Reporting a rate limit as revoked access told
         // the user to reconnect an account that was working fine, so the two
         // cases are separated and the caller can offer a retry instead.
-        return { status: 'rate-limited', repositories: [] }
+        return { status: 'rate-limited', repositories: [], truncated: false }
       }
-      if (!response.ok) return { status: 'unavailable', repositories: [] }
+      if (!response.ok) return { status: 'unavailable', repositories: [], truncated: false }
       const body: unknown = await response.json()
-      if (!Array.isArray(body)) return { status: 'unavailable', repositories: [] }
+      if (!Array.isArray(body)) return { status: 'unavailable', repositories: [], truncated: false }
       repositories.push(...body.map(parseRepository).filter((value): value is GithubRepository => value !== null))
-      if (body.length < PAGE_SIZE) break
+      // A short page is only the last page when GitHub does not advertise a
+      // successor. `sort=updated` pagination is unstable, so a page can come
+      // back short while later pages still exist; trusting the length alone
+      // would report the listing COMPLETE and let the sync prune delete the
+      // baseline of a repository the walk never reached.
+      const morePages = hasNextPage(response)
+      if (!morePages && body.length < PAGE_SIZE) break
+      // A full page -- or an advertised successor -- on the last allowed page
+      // means there may be repositories we did not request. The listing is
+      // usable, but it is not a completeness proof.
+      if (page === MAX_PAGES) truncated = body.length >= PAGE_SIZE || morePages
     }
   } catch {
-    return { status: 'unavailable', repositories: [] }
+    return { status: 'unavailable', repositories: [], truncated: false }
   }
 
   const unique = new Map<string, GithubRepository>()
   for (const repository of repositories) unique.set(repository.id, repository)
-  return { status: 'ok', repositories: [...unique.values()] }
+  return { status: 'ok', repositories: [...unique.values()], truncated }
 }

@@ -35,6 +35,7 @@ vi.mock('@/lib/game/github-events-fetch', () => ({
 }))
 
 import { resetGithubAccountStoreForTests, getGithubAccountStore } from '@/lib/sync/github-account-store'
+import { clearGithubRepositoryCache } from '@/lib/sync/github-repository-cache'
 import { resetProductStoreForTests, getProductStore } from '@/lib/sync/product-store'
 import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
 import { createEncounterState } from '@/lib/game/encounters'
@@ -146,7 +147,10 @@ describe('large-account GitHub sync → product checkpoint commit', () => {
     vi.stubEnv('SESSION_SECRET', 's'.repeat(32))
     resetGithubAccountStoreForTests(':memory:')
     resetProductStoreForTests(':memory:')
-    mocks.fetchRepositories.mockReset().mockResolvedValue({ status: 'ok', repositories })
+    // The repository listing cache is process-global; a test that changes the
+    // mocked listing must not inherit the previous test's entry.
+    clearGithubRepositoryCache()
+    mocks.fetchRepositories.mockReset().mockResolvedValue({ status: 'ok', repositories, truncated: false })
     mocks.fetchEvents.mockReset().mockImplementation(async (options: { repos: Array<{ id: string }> }) =>
       providerInput(options.repos.map((ref) => ref.id)),
     )
@@ -229,6 +233,38 @@ describe('large-account GitHub sync → product checkpoint commit', () => {
     expect(await getProductStore().getRecord(GITHUB_ID, 'octo')).not.toBeNull()
   })
 
+  it('re-baselines after a disconnect instead of awarding the disconnected window', async () => {
+    // Disconnect drops the credential AND the baselines. The provider still
+    // returns the whole August history, which is newer than the pre-disconnect
+    // baseline; with no checkpoint it must be re-baselined, never awarded.
+    const accountStore = getGithubAccountStore()
+    const trackedRepository = repositories[0].id
+    await accountStore.putCredential({ githubId: GITHUB_ID, handle: 'octo', avatarUrl: null }, 'server-token', ['repo'])
+    await accountStore.saveSettings(GITHUB_ID, {
+      trackedRepositoryIds: [trackedRepository],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+      baselineByRepositoryId: { [trackedRepository]: BASELINE },
+      lastSyncedAt: BASELINE,
+    })
+
+    await accountStore.clearCredential(GITHUB_ID)
+    // Re-auth as the same account, preserving choices but not baselines.
+    await accountStore.putCredential({ githubId: GITHUB_ID, handle: 'octo', avatarUrl: null }, 'second-token', ['repo'])
+    expect((await accountStore.getSettings(GITHUB_ID)).trackedRepositoryIds).toEqual([trackedRepository])
+    expect((await accountStore.getSettings(GITHUB_ID)).baselineByRepositoryId).toEqual({})
+
+    const sync = await syncGithub(syncRequest())
+    const body = await readSyncResult(sync)
+
+    expect(body.kind).toBe('baseline')
+    expect(body.events).toEqual([])
+    expect(body.newBaselineRepositoryIds).toEqual([trackedRepository])
+    const advanced = await accountStore.getSettings(GITHUB_ID)
+    expect(advanced.baselineByRepositoryId[trackedRepository]).not.toBe(BASELINE)
+  })
+
   it('baselines a tracked set larger than one read window, window by window', async () => {
     // REGRESSION: the original 25-repository ceiling left 19 of a
     // 44-repository account baselined never, so no activity in them could
@@ -291,7 +327,7 @@ describe('large-account GitHub sync → product checkpoint commit', () => {
       lastSyncedAt: null,
     })
     // One tracked repository keeps the checkpoint token small enough for a header.
-    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', repositories: [repositories[0]] })
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: [repositories[0]] })
     mocks.fetchEvents.mockResolvedValue({
       login: 'octo',
       input: { sourceId: String(GITHUB_ID), companionId: 'octo', commits: [] },
