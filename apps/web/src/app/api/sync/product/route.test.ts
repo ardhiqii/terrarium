@@ -193,6 +193,49 @@ describe('POST/GET/DELETE /api/sync/product', () => {
     expect(await response.json()).toMatchObject({ error: expect.stringMatching(/server-issued receipt/i) })
   })
 
+  it('names the failing event and the reason when a receipt does not verify', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST } = await import('./route')
+    const value = snapshot(['event-1'])
+    const forged: ProductSnapshot = {
+      ...value,
+      events: [{ ...value.events[0], source: 'github', provenance: 'verified', verifiedProof: 'not-a-real-receipt' }],
+    }
+
+    const response = await POST(request('POST', JSON.stringify(forged)))
+
+    expect(response.status).toBe(400)
+    const body = (await response.json()) as {
+      receiptFailures?: readonly { eventId: string; reason: string; payloadDigest: string }[]
+      receiptFailureCount?: number
+    }
+    // A generic 400 was indistinguishable from a signing-key mismatch. The body
+    // must now name the event, why it failed, and a digest of the payload the
+    // verifier recomputed, so the mint-side digest can be compared against it.
+    expect(body.receiptFailureCount).toBe(1)
+    expect(body.receiptFailures?.[0]).toMatchObject({
+      eventId: expect.any(String),
+      reason: 'receipt-mismatch',
+      payloadDigest: expect.stringMatching(/^[0-9a-f]{16}$/u),
+    })
+  })
+
+  it('reports a missing receipt separately from a mismatched one', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST } = await import('./route')
+    const value = snapshot(['event-1'])
+    const forged: ProductSnapshot = {
+      ...value,
+      events: [{ ...value.events[0], source: 'github', provenance: 'verified' }],
+    }
+
+    const response = await POST(request('POST', JSON.stringify(forged)))
+    const body = (await response.json()) as { receiptFailures?: readonly { reason: string }[] }
+
+    expect(response.status).toBe(400)
+    expect(body.receiptFailures?.[0]?.reason).toBe('missing-receipt')
+  })
+
   it('drops legacy verified events without a valid receipt and recomputes XP before returning them', async () => {
     vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
     const dbPath = path.join(tmpdir(), `terrarium-product-route-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.db`)

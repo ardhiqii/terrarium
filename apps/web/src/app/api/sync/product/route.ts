@@ -44,7 +44,7 @@ import {
   MAX_CHECKPOINT_TOKEN_LENGTH,
   verifyGithubSyncCheckpoint,
 } from '@/lib/sync/github-sync-checkpoint'
-import { verifyVerifiedEventProof } from '@/lib/sync/verified-event-proof'
+import { verifiedEventProofPayloadDigest, verifyVerifiedEventProof } from '@/lib/sync/verified-event-proof'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -261,15 +261,37 @@ export async function POST(request: NextRequest): Promise<Response> {
     })
   }
 
-  const untrustedEvent = incoming.events.find((event) =>
-    event.source === 'github'
-      ? event.provenance !== 'verified' ||
-        !event.verifiedProof ||
-        !verifyVerifiedEventProof(event, session.githubId, event.verifiedProof)
-      : event.provenance === 'verified',
-  )
-  if (untrustedEvent) {
-    return json(400, { error: 'Verified GitHub events must include a server-issued receipt.' })
+  /**
+   * Why one event was rejected. Naming the reason and the event matters: a
+   * generic 400 made a payload that no longer matches look identical to a
+   * deployment whose signing key changed, and both were indistinguishable
+   * from a client that simply forgot to attach a receipt. The payload digest
+   * is a one-way hash of the client's own event, so it is safe to return and
+   * is directly comparable with the mint-side digest the sync route reports.
+   */
+  const receiptFailure = (event: ProductSnapshotEvent): string | null => {
+    if (event.source === 'github') {
+      if (event.provenance !== 'verified') return 'provenance-not-verified'
+      if (!event.verifiedProof) return 'missing-receipt'
+      return verifyVerifiedEventProof(event, session.githubId, event.verifiedProof) ? null : 'receipt-mismatch'
+    }
+    return event.provenance === 'verified' ? 'source-cannot-be-verified' : null
+  }
+  const failedEvents = incoming.events
+    .map((event) => ({ event, reason: receiptFailure(event) }))
+    .filter((entry): entry is { event: ProductSnapshotEvent; reason: string } => entry.reason !== null)
+  if (failedEvents.length > 0) {
+    return json(400, {
+      error: 'Verified GitHub events must include a server-issued receipt.',
+      // Bounded: a client must never be able to turn one request into a large
+      // response, and the first failures are enough to identify the cause.
+      receiptFailures: failedEvents.slice(0, 5).map(({ event, reason }) => ({
+        eventId: event.eventId,
+        reason,
+        payloadDigest: verifiedEventProofPayloadDigest(event, session.githubId),
+      })),
+      receiptFailureCount: failedEvents.length,
+    })
   }
 
   const legacyHeaderToken = request.headers.get('x-github-sync-checkpoint')

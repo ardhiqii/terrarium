@@ -22,7 +22,7 @@ import { issueGithubSyncCheckpoint } from '@/lib/sync/github-sync-checkpoint'
 import {
   MAX_SYNC_REPOSITORIES,
 } from '@/lib/sync/sync-schedule'
-import { issueVerifiedEventProof } from '@/lib/sync/verified-event-proof'
+import { issueVerifiedEventProof, verifiedEventProofPayloadDigest } from '@/lib/sync/verified-event-proof'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -251,9 +251,16 @@ export async function POST(request: NextRequest): Promise<Response> {
      */
     const buildBody = (): Record<string, unknown> => {
       const verifiedEventProofs: Record<string, string> = {}
+      /**
+       * Mint-side payload digests, reported beside the receipts so a receipt
+       * that later fails to verify can be compared against the verify-side
+       * payload. A digest is not the receipt: it cannot be replayed.
+       */
+      const verifiedEventProofDigests: Record<string, string> = {}
       const snapshotEvents = events.map((event) => productSnapshotEvent(event))
       for (const snapshotEvent of snapshotEvents) {
         verifiedEventProofs[snapshotEvent.eventId] = issueVerifiedEventProof(snapshotEvent, session.githubId)
+        verifiedEventProofDigests[snapshotEvent.eventId] = verifiedEventProofPayloadDigest(snapshotEvent, session.githubId)
       }
 
       const nextSettings: GithubAccountSettings = {
@@ -291,6 +298,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         truncated,
         summary: activitySummary(events),
         verifiedEventProofs,
+        verifiedEventProofDigests,
         checkpoint,
       }
     }
