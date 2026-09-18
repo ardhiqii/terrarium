@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   asCompanionId,
   asEventId,
@@ -17,28 +17,17 @@ import {
 import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
 import {
   browserProductStorage,
-  DEFAULT_STORED_SYNC_SCHEDULE,
   ensureBrowserGuestProfile,
   loadBrowserEncounters,
   loadBrowserLedger,
   loadRevealedDraws,
-  loadSyncRequestUsage,
-  loadSyncScheduleState,
   loadVerifiedEventProofs,
   saveBrowserEncounters,
   saveBrowserLedger,
   saveRevealedDraws,
-  saveSyncRequestUsage,
-  saveSyncScheduleState,
   saveVerifiedEventProofs,
 } from '@/lib/game/product-browser-storage'
 import { saveGuestProfile } from '@/lib/game/guest-profile'
-import {
-  clearGithubRepositoryCache,
-  decideFailedListingRefresh,
-  loadGithubRepositoryCache,
-  saveGithubRepositoryCache,
-} from '@/lib/game/github-repository-browser-cache'
 import {
   buildProductSnapshot,
   deserializeProductSnapshot,
@@ -46,32 +35,18 @@ import {
   restoreProductStateFromSnapshot,
 } from '@/lib/sync/product-snapshot'
 import { productEventId } from '@/lib/sync/product-event-id'
-import { loginHrefFor } from '@/lib/sync/oauth-return-path'
-import {
-  addSyncRequestUsage,
-  MAX_SYNC_REPOSITORIES,
-  mergeSyncRequestUsage,
-  parseSyncSchedule,
-  scheduleIntervalMs,
-  scheduleTick,
-  SYNC_SCHEDULE_OPTIONS,
-  syncScheduleLabel,
-  type SyncRequestUsageEntry,
-  type SyncScheduleInterval,
-} from '@/lib/sync/sync-schedule'
 import { filterGithubRepositories, type RepositoryScope } from '@/lib/sync/github-repository-browser'
 import type { GithubRepository } from '@/lib/sync/github-repositories'
 import { CompanionSwitcher } from './CompanionSwitcher'
-import { SyncProgress } from './SyncProgress'
 import { EncounterReveal } from './EncounterReveal'
 import { ProductActivityPanel } from './ProductActivityPanel'
 import { GitHubRewardGuide } from './GitHubRewardGuide'
 
 interface GithubSettings {
-  trackedRepositoryIds: readonly string[]
-  excludedRepositoryIds: readonly string[]
+  trackedRepositoryIds: string[]
+  excludedRepositoryIds: string[]
   autoIncludePersonal: boolean
-  autoIncludeOrganizations: readonly string[]
+  autoIncludeOrganizations: string[]
   lastSyncedAt: string | null
 }
 
@@ -81,10 +56,6 @@ interface RepositoryResponse {
   settings: GithubSettings
   approvedRepositoryCount: number
   trackedRepositoryCount: number
-  /** When the server read this listing from GitHub. */
-  fetchedAt: number
-  /** True when the server fell back to its own cached listing. */
-  stale: boolean
 }
 
 const EVENT_CATEGORIES: readonly EventCategory[] = [
@@ -179,167 +150,6 @@ async function responseBody(response: Response): Promise<Record<string, unknown>
   return isRecord(body) ? body : {}
 }
 
-/**
- * Writes a fresh listing into browser storage and returns the time it was read
- * from GitHub. `savedAt` tracks the read time, not the write time, so the
- * freshness label stays honest when the server itself served a cache entry.
- */
-function persistRepositoryCache(data: RepositoryResponse): number {
-  const repositories = Array.isArray(data.repositories) ? data.repositories : []
-  const readAt = typeof data.fetchedAt === 'number' && Number.isFinite(data.fetchedAt) && data.fetchedAt > 0
-    ? data.fetchedAt
-    : Date.now()
-  saveGithubRepositoryCache(browserProductStorage(), {
-    githubId: data.githubId,
-    savedAt: readAt,
-    repositories,
-    settings: data.settings,
-    approvedRepositoryCount: typeof data.approvedRepositoryCount === 'number'
-      ? data.approvedRepositoryCount
-      : repositories.length,
-    trackedRepositoryCount: typeof data.trackedRepositoryCount === 'number'
-      ? data.trackedRepositoryCount
-      : 0,
-  })
-  return readAt
-}
-
-function relativeAgeLabel(ageMs: number): string {
-  const minutes = Math.floor(Math.max(0, ageMs) / 60_000)
-  if (minutes < 1) return 'just now'
-  if (minutes < 60) return `${minutes} min ago`
-  const hours = Math.floor(minutes / 60)
-  return `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`
-}
-
-/**
- * "List updated 3 min ago", or the degraded variant when the visible list is
- * the last known one because GitHub could not be read.
- */
-function repositoryListFreshnessLabel(readAt: number | null, stale: boolean): string | null {
-  if (readAt === null) return null
-  const updated = relativeAgeLabel(Date.now() - readAt)
-  return stale ? `cached · unavailable · updated ${updated}` : `List updated ${updated}`
-}
-
-interface SyncProgressState {
-  repositoryIndex: number
-  repositoryCount: number
-  repository: string
-  requestsDone: number
-}
-
-/**
- * How often the scheduler re-checks the cadence. It is much shorter than any
- * interval option so a tab that was closed through its due time syncs soon
- * after it reopens, and short enough that the pause notice is not stale.
- */
-const SCHEDULE_TICK_MS = 30 * 1000
-
-/**
- * Reads a streamed sync response.
- *
- * A sync reads up to 25 repositories back to back, so the route answers with
- * newline-delimited JSON and reports each repository as it starts. Pre-flight
- * failures and the no-repositories path still answer with ordinary JSON, and
- * that is handled here so callers see one shape either way.
- */
-async function readSyncResponse(
-  response: Response,
-  onProgress: (progress: SyncProgressState) => void,
-  signal: AbortSignal,
-): Promise<Record<string, unknown>> {
-  const contentType = response.headers.get('content-type') ?? ''
-  if (!contentType.includes('application/x-ndjson') || !response.body) {
-    return responseBody(response)
-  }
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  // Held in an object so the closure assignments below are not narrowed away.
-  const outcome: {
-    result: Record<string, unknown>
-    failure: string | null
-    /** True once a `result` or `error` line has been seen. */
-    sawTerminal: boolean
-  } = {
-    result: {},
-    failure: null,
-    sawTerminal: false,
-  }
-
-  const handleLine = (line: string): void => {
-    const trimmed = line.trim()
-    if (trimmed.length === 0) return
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(trimmed)
-    } catch {
-      // A corrupt or partial line must never take the whole sync down.
-      return
-    }
-    if (!isRecord(parsed)) return
-    if (parsed.type === 'progress') {
-      onProgress({
-        repositoryIndex: typeof parsed.repositoryIndex === 'number' ? parsed.repositoryIndex : 0,
-        repositoryCount: typeof parsed.repositoryCount === 'number' ? parsed.repositoryCount : 0,
-        repository: typeof parsed.repository === 'string' ? parsed.repository : '',
-        requestsDone: typeof parsed.requestsDone === 'number' ? parsed.requestsDone : 0,
-      })
-      return
-    }
-    if (parsed.type === 'result' && isRecord(parsed.payload)) {
-      outcome.result = parsed.payload
-      outcome.sawTerminal = true
-      return
-    }
-    if (parsed.type === 'error') {
-      outcome.sawTerminal = true
-      outcome.failure = typeof parsed.error === 'string'
-        ? parsed.error
-        : 'GitHub activity could not be synced.'
-    }
-  }
-
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      // A line split across two chunks stays buffered until its newline arrives.
-      const lines = buffer.split('\n')
-      buffer = lines.pop() ?? ''
-      for (const line of lines) handleLine(line)
-    }
-    // Flush the decoder. A multi-byte character split across the final chunk
-    // boundary is held back until the stream is explicitly drained, and losing
-    // it would corrupt the terminal line.
-    buffer += decoder.decode()
-    handleLine(buffer)
-  } finally {
-    if (signal.aborted) {
-      await reader.cancel().catch(() => undefined)
-    }
-    try {
-      reader.releaseLock()
-    } catch {
-      // A lock already released by cancel() must not mask the real outcome.
-    }
-  }
-
-  if (outcome.failure) throw new Error(outcome.failure)
-  // A stream that ends without a terminal line means the sync was cut off: a
-  // platform timeout, a proxy that rewrote the content type, or a corrupt line.
-  // Returning an empty body here would surface as a successful sync reporting
-  // "0 new verified events", which is precisely the false success this
-  // indicator exists to prevent. Fail loudly instead.
-  if (!outcome.sawTerminal) {
-    throw new Error('The sync ended before it finished. Nothing was awarded; try again.')
-  }
-  return outcome.result
-}
-
 function errorMessage(body: Record<string, unknown>, fallback: string): string {
   return typeof body.error === 'string' ? body.error : fallback
 }
@@ -430,203 +240,43 @@ export function GitHubSourcePanel() {
   const [productState, setProductState] = useState<ProductState | null>(null)
   const [revealedDraws, setRevealedDraws] = useState<string[]>([])
   const [accountNamespace, setAccountNamespace] = useState<string | null>(null)
-  // `disconnected` keeps the progression panels visible after the user
-  // disconnects: the credential is gone, but earned XP and the companion are
-  // exactly what the confirmation says were kept.
-  const [status, setStatus] = useState<'loading' | 'ready' | 'signed-out' | 'error' | 'disconnected'>('loading')
+  const [status, setStatus] = useState<'loading' | 'ready' | 'signed-out' | 'error'>('loading')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
-  const [progress, setProgress] = useState<SyncProgressState | null>(null)
-  // Cancelling only makes sense while the GitHub read is still in flight. Once
-  // the result has arrived the remaining work is local and must finish, or the
-  // panel would claim a cancellation while still applying the events.
-  const [readingPhase, setReadingPhase] = useState(false)
-  const syncAbortRef = useRef<AbortController | null>(null)
   const [savingSettings, setSavingSettings] = useState(false)
   const [lastSyncSummary, setLastSyncSummary] = useState<string | null>(null)
-  // Automatic-sync cadence. The default comes from the product docs (every 15
-  // minutes) and the choice is per browser profile, because a schedule only runs
-  // while this page is open.
-  const [schedule, setSchedule] = useState<SyncScheduleInterval>(DEFAULT_STORED_SYNC_SCHEDULE.interval)
-  const [scheduleNotice, setScheduleNotice] = useState('')
-  const [nextSyncLabel, setNextSyncLabel] = useState('')
-  // GitHub requests are counted over a rolling hour. Every attempt records what
-  // its progress stream actually spent, and the schedule pauses before the
-  // account's hourly ceiling is reached instead of running into a hard limit.
-  const syncUsageRef = useRef<SyncRequestUsageEntry[]>([])
-  const lastAttemptAtRef = useRef<number | null>(null)
-  const lastObservedRequestsRef = useRef<number | null>(null)
-  const requestsThisSyncRef = useRef(0)
-  // Read through a ref so an in-flight sync records against the cadence the
-  // user has now, not the one that was selected when the sync started.
-  const scheduleRef = useRef(schedule)
-  useEffect(() => {
-    scheduleRef.current = schedule
-  }, [schedule])
   const [repositoryQuery, setRepositoryQuery] = useState('')
   const [repositoryScope, setRepositoryScope] = useState<RepositoryScope>('all')
   const [collapsedOwners, setCollapsedOwners] = useState<string[]>([])
-  // When the visible listing was read from GitHub, and whether it is the last
-  // known one because a refresh failed. Shown next to the result count so the
-  // picker never implies the list is fresher than it is.
-  const [listFetchedAt, setListFetchedAt] = useState<number | null>(null)
-  const [listStale, setListStale] = useState(false)
-  const [refreshingList, setRefreshingList] = useState(false)
-  const [disconnectStage, setDisconnectStage] = useState<'idle' | 'confirm'>('idle')
-  const [disconnecting, setDisconnecting] = useState(false)
-  // The GitHub account id of the last successful response. A stored listing is
-  // only painted for that account once it is known; null means "not confirmed
-  // yet", which is the first paint of a session.
-  const accountGithubIdRef = useRef<number | null>(null)
-  // The account whose listing was CONFIRMED in this mount. A failed read may
-  // keep the visible listing only while it belongs to the account the server
-  // answered for, so this is an account id rather than a mount-scoped boolean:
-  // a shared profile can switch accounts in another tab, and the old account's
-  // private repository names must not stay on screen for the new one.
-  const confirmedGithubIdRef = useRef<number | null>(null)
-  // Whether the drafts differ from the saved settings, read through a ref so a
-  // refresh can keep unsaved edits without making `loadRepositories` depend on
-  // draft state.
-  const unsavedDraftRef = useRef(false)
 
   const hydrateState = useCallback(() => {
     const state = browserState()
     setProductState(state)
     setRevealedDraws(loadRevealedDraws(browserProductStorage()))
-    const stored = loadSyncScheduleState(browserProductStorage())
-    setSchedule(stored.interval)
-    lastAttemptAtRef.current = stored.lastAttemptAt
-    syncUsageRef.current = loadSyncRequestUsage(browserProductStorage())
     return state
   }, [])
 
-  const applySettings = useCallback((next: GithubSettings) => {
-    setSettings(next)
-    setDraftTrackedIds([...next.trackedRepositoryIds])
-    setDraftExcludedIds([...next.excludedRepositoryIds])
-    setDraftAutoPersonal(next.autoIncludePersonal)
-    setDraftOrganizations([...next.autoIncludeOrganizations])
-  }, [])
-
-  /**
-   * Loads the repository listing.
-   *
-   * With no `refresh`, the browser copy is painted synchronously first so the
-   * picker has no loading state, then the server is asked anyway: the server
-   * keeps its own five-minute copy, so the request is normally free, settings
-   * stay server-authoritative, and a cold browser with a warm server still
-   * gets data. `refresh: true` (the Refresh list button) skips the cache and
-   * asks the server to revalidate against GitHub.
-   */
-  const loadRepositories = useCallback(async (options?: { refresh?: boolean }) => {
-    const refresh = options?.refresh === true
-    const storage = browserProductStorage()
-    // Paint the stored copy only when it is known to belong to this account.
-    // Before a response confirms the account this is a best guess that the
-    // answer below replaces or discards.
-    const cached = loadGithubRepositoryCache(storage, accountGithubIdRef.current ?? undefined)
-    /**
-     * Applies server settings unless the user has unsaved draft edits. The
-     * server's settings did not change while a refresh ran, so reverting the
-     * drafts would silently discard the user's selection.
-     */
-    const applyServerSettings = (next: GithubSettings) => {
-      if (unsavedDraftRef.current) {
-        setSettings(next)
-        return
-      }
-      applySettings(next)
-    }
-    if (refresh) {
-      setRefreshingList(true)
-    } else if (cached) {
-      // Instant paint from the last successful listing; the fetch below still
-      // runs and stays the source of truth for settings.
-      setRepositories([...cached.repositories])
-      applyServerSettings(cached.settings)
-      setListFetchedAt(cached.savedAt)
-      setListStale(false)
-      setStatus('ready')
-    } else {
-      setStatus('loading')
-    }
+  const loadRepositories = useCallback(async () => {
+    setStatus('loading')
     setMessage('')
     try {
-      const response = await fetch(
-        `/api/github/repositories${refresh ? '?refresh=1' : ''}`,
-        { cache: 'no-store' },
-      )
+      const response = await fetch('/api/github/repositories', { cache: 'no-store' })
       const body = await responseBody(response)
       if (response.status === 401) {
-        // The stored copy belongs to a session that is over. A different
-        // account signing in on this profile must not inherit it.
-        clearGithubRepositoryCache(storage)
-        accountGithubIdRef.current = null
-        confirmedGithubIdRef.current = null
         setStatus('signed-out')
         setMessage(errorMessage(body, 'Sign in with GitHub to connect a repository.'))
         return
       }
-      if (!response.ok) {
-        const failure = errorMessage(body, 'Repositories could not be loaded.')
-        // A failed read is not a dead end when the list on screen is known to
-        // belong to the account the server answered for: keep the picker
-        // usable and say which list the user is looking at. A failure answered
-        // for a DIFFERENT account means the visible list belongs to a session
-        // that is over -- a shared profile can switch accounts in another tab
-        // -- so it is dropped rather than shown for the new account.
-        const failedAccountId = typeof body.githubId === 'number' && Number.isFinite(body.githubId)
-          ? body.githubId
-          : null
-        const outcome = decideFailedListingRefresh({
-          cached,
-          confirmedGithubId: confirmedGithubIdRef.current,
-          failedGithubId: failedAccountId,
-        })
-        if (outcome === 'keep-listing') {
-          setListStale(true)
-          setStatus('ready')
-          setMessage(`${failure} Showing the last known repository list.`)
-          return
-        }
-        if (outcome === 'drop-listing') {
-          confirmedGithubIdRef.current = null
-          accountGithubIdRef.current = null
-          setRepositories([])
-          setSettings(null)
-          setDraftTrackedIds([])
-          setDraftExcludedIds([])
-          setDraftAutoPersonal(false)
-          setDraftOrganizations([])
-        }
-        throw new Error(failure)
-      }
+      if (!response.ok) throw new Error(errorMessage(body, 'Repositories could not be loaded.'))
       const data = body as unknown as RepositoryResponse
-      const nextAccountId = typeof data.githubId === 'number' && Number.isFinite(data.githubId)
-        ? data.githubId
-        : null
-      // A successful answer for a different account means the drafts on screen
-      // belong to the old account. They must not survive as "unsaved edits"
-      // over the new account's settings: their repository IDs are foreign, and
-      // saving them would only be rejected as unavailable.
-      const accountChanged = accountGithubIdRef.current !== null && nextAccountId !== accountGithubIdRef.current
-      accountGithubIdRef.current = nextAccountId
       setRepositories(Array.isArray(data.repositories) ? data.repositories : [])
-      if (accountChanged) {
-        unsavedDraftRef.current = false
-        applySettings(data.settings)
-      } else {
-        applyServerSettings(data.settings)
-      }
-      setListFetchedAt(persistRepositoryCache(data))
-      setListStale(data.stale === true)
-      confirmedGithubIdRef.current = accountGithubIdRef.current
+      setSettings(data.settings)
+      setDraftTrackedIds(data.settings.trackedRepositoryIds)
+      setDraftExcludedIds(data.settings.excludedRepositoryIds)
+      setDraftAutoPersonal(data.settings.autoIncludePersonal)
+      setDraftOrganizations(data.settings.autoIncludeOrganizations)
       const namespace = `github-${data.githubId}`
       setAccountNamespace(namespace)
-      const storedSchedule = loadSyncScheduleState(browserProductStorage(), namespace)
-      setSchedule(storedSchedule.interval)
-      lastAttemptAtRef.current = storedSchedule.lastAttemptAt
-      syncUsageRef.current = loadSyncRequestUsage(browserProductStorage(), namespace)
       const localState = browserState(namespace)
       const hydrated = await restoreCloudProductState(localState, namespace)
       setProductState(hydrated.state)
@@ -636,14 +286,10 @@ export function GitHubSourcePanel() {
     } catch (error) {
       setStatus('error')
       setMessage(error instanceof Error ? error.message : 'Repositories could not be loaded.')
-    } finally {
-      setRefreshingList(false)
     }
-  }, [applySettings])
+  }, [])
 
-  // A layout effect runs before the browser paints, so a remount paints the
-  // cached listing in the first frame instead of flashing the loading state.
-  useLayoutEffect(() => {
+  useEffect(() => {
     hydrateState()
     void loadRepositories()
   }, [hydrateState, loadRepositories])
@@ -691,14 +337,7 @@ export function GitHubSourcePanel() {
     settings.autoIncludePersonal !== draftAutoPersonal ||
     settings.autoIncludeOrganizations.join('|') !== [...draftOrganizations].sort().join('|')
   )
-  // Kept in a ref so `loadRepositories` can read the flag without depending on
-  // draft state (a new identity would re-run the mount effect on every edit).
-  useEffect(() => {
-    unsavedDraftRef.current = settingsChanged
-  }, [settingsChanged])
   const sourceControlsDisabled = savingSettings || busy
-  const listControlsDisabled = sourceControlsDisabled || refreshingList
-  const listFreshnessLabel = repositoryListFreshnessLabel(listFetchedAt, listStale)
 
   const saveSettings = useCallback(async (): Promise<boolean> => {
     if (savingSettings) return false
@@ -721,16 +360,12 @@ export function GitHubSourcePanel() {
         return false
       }
       const data = body as unknown as RepositoryResponse
-      accountGithubIdRef.current = typeof data.githubId === 'number' && Number.isFinite(data.githubId)
-        ? data.githubId
-        : null
       setRepositories(data.repositories)
-      applySettings(data.settings)
-      // The save response carries the authoritative settings too, so the
-      // browser copy must not keep an older selection.
-      setListFetchedAt(persistRepositoryCache(data))
-      setListStale(data.stale === true)
-      confirmedGithubIdRef.current = accountGithubIdRef.current
+      setSettings(data.settings)
+      setDraftTrackedIds(data.settings.trackedRepositoryIds)
+      setDraftExcludedIds(data.settings.excludedRepositoryIds)
+      setDraftAutoPersonal(data.settings.autoIncludePersonal)
+      setDraftOrganizations(data.settings.autoIncludeOrganizations)
       return true
     } catch {
       setMessage('Repository settings could not be saved. Try again.')
@@ -738,48 +373,20 @@ export function GitHubSourcePanel() {
     } finally {
       setSavingSettings(false)
     }
-  }, [applySettings, draftAutoPersonal, draftOrganizations, draftTrackedIds, savingSettings])
+  }, [draftAutoPersonal, draftOrganizations, draftTrackedIds, savingSettings])
 
   const syncNow = useCallback(async () => {
     if (!productState) return
     setBusy(true)
     setMessage('')
-    setProgress(null)
-    setReadingPhase(true)
-    requestsThisSyncRef.current = 0
-    const controller = new AbortController()
-    syncAbortRef.current = controller
-    const cancelled = (): boolean => controller.signal.aborted
     try {
       if (settingsChanged && !(await saveSettings())) return
       const response = await fetch('/api/github/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ activeCompanionId: productState.profile.activeCompanionId }),
-        signal: controller.signal,
       })
-      let body: Record<string, unknown> = {}
-      try {
-        body = await readSyncResponse(response, (next) => {
-          // The progress stream is the only honest measure of what this sync
-          // cost the account's hourly GitHub request budget.
-          requestsThisSyncRef.current = Math.max(requestsThisSyncRef.current, next.requestsDone)
-          setProgress(next)
-        }, controller.signal)
-      } catch (error) {
-        // An aborted read is the user's own doing, not a failure.
-        if (cancelled()) {
-          setLastSyncSummary('Sync cancelled. No new activity was awarded.')
-          return
-        }
-        throw error
-      } finally {
-        setReadingPhase(false)
-      }
-      if (cancelled()) {
-        setLastSyncSummary('Sync cancelled. No new activity was awarded.')
-        return
-      }
+      const body = await responseBody(response)
       if (!response.ok) {
         setMessage(errorMessage(body, 'GitHub activity could not be synced.'))
         return
@@ -818,211 +425,36 @@ export function GitHubSourcePanel() {
         accountNamespace ?? undefined,
       )
       const checkpoint = typeof body.checkpoint === 'string' ? body.checkpoint : null
-      // The checkpoint travels in the BODY. A real account's signed checkpoint
-      // is tens of kilobytes (measured ~21 KB at 500 events), far beyond the
-      // request-header budget of the platform in front of the function, where
-      // it was rejected upstream as a bodyless 500 and the baseline was never
-      // committed. A body has a megabyte-scale allowance instead.
+      const snapshotHeaders: HeadersInit = { 'Content-Type': 'application/json' }
+      if (checkpoint) snapshotHeaders['x-github-sync-checkpoint'] = checkpoint
       const snapshotResponse = await fetch('/api/sync/product', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(checkpoint
-          ? { snapshot: uploadSnapshot, checkpoint }
-          : uploadSnapshot),
+        headers: snapshotHeaders,
+        body: JSON.stringify(uploadSnapshot),
       })
       const snapshotBody = await responseBody(snapshotResponse)
       const count = typeof body.repositoryCount === 'number' ? body.repositoryCount : 0
       const eventCount = Math.max(0, next.ledger.events.length - productState.ledger.events.length)
       const baselineCount = Array.isArray(body.newBaselineRepositoryIds) ? body.newBaselineRepositoryIds.length : 0
       const skippedCount = typeof body.skippedRepositoryCount === 'number' ? body.skippedRepositoryCount : 0
-      const limitNote = skippedCount > 0
-        ? ` ${skippedCount} more will be read by the next sync; repositories without a baseline go first.`
-        : ''
-      // Truncation is not a failure: the scan window ended before the oldest
-      // activity, and everything newer than the checkpoint was still awarded.
-      const truncatedNote = body.truncated === true
-        ? ' The scan window ended before the oldest activity; earlier history is not awarded.'
-        : ''
+      const limitNote = skippedCount > 0 ? ` ${skippedCount} more will stay pending; narrow the selection to sync them.` : ''
       const cloudNote = snapshotResponse.ok
         ? ' Condition saved.'
         : ` Local progress is safe, but cloud condition was not saved: ${errorMessage(snapshotBody, 'try again later')}`
       if (body.kind === 'baseline') {
-        setLastSyncSummary(`Baseline recorded for ${baselineCount} ${baselineCount === 1 ? 'repository' : 'repositories'} · no old history awarded.${limitNote}${truncatedNote}${cloudNote}`)
+        setLastSyncSummary(`Baseline recorded for ${baselineCount} ${baselineCount === 1 ? 'repository' : 'repositories'} · no old history awarded.${limitNote}${cloudNote}`)
       } else if (body.kind === 'partial' || body.syncStatus === 'partial') {
         setLastSyncSummary(`Checked ${count} tracked ${count === 1 ? 'repository' : 'repositories'} · ${eventCount} new verified events. Some activity could not be read completely; try again to catch up.${limitNote}${cloudNote}`)
       } else {
-        setLastSyncSummary(`Checked ${count} tracked ${count === 1 ? 'repository' : 'repositories'} · ${eventCount} new verified events.${truncatedNote}${limitNote}${cloudNote}`)
+        setLastSyncSummary(`Checked ${count} tracked ${count === 1 ? 'repository' : 'repositories'} · ${eventCount} new verified events.${limitNote}${cloudNote}`)
       }
       await loadRepositories()
     } catch (error) {
-      if (cancelled()) {
-        setLastSyncSummary('Sync cancelled. No new activity was awarded.')
-      } else {
-        setMessage(error instanceof Error ? error.message : 'GitHub activity could not be synced.')
-      }
+      setMessage(error instanceof Error ? error.message : 'GitHub activity could not be synced.')
     } finally {
-      // The panel's own state is restored first and unconditionally: a browser
-      // storage write can be refused (private mode, quota), and a write must
-      // never leave the panel busy or the scheduler blocked on a dead abort
-      // controller. Persistence is best-effort after that.
       setBusy(false)
-      setProgress(null)
-      setReadingPhase(false)
-      syncAbortRef.current = null
-
-      // A cancelled or failed attempt still spent requests against the account's
-      // hourly ceiling, so the budget counts what was really issued.
-      const attemptedAt = Date.now()
-      lastAttemptAtRef.current = attemptedAt
-      if (requestsThisSyncRef.current > 0) {
-        lastObservedRequestsRef.current = requestsThisSyncRef.current
-        syncUsageRef.current = addSyncRequestUsage(
-          syncUsageRef.current,
-          attemptedAt,
-          requestsThisSyncRef.current,
-        )
-      }
-      try {
-        const storage = browserProductStorage()
-        // `saveSyncRequestUsage` merges a peer tab's entries; it returns the
-        // merged record even when the storage write itself is refused.
-        syncUsageRef.current = saveSyncRequestUsage(
-          storage,
-          syncUsageRef.current,
-          accountNamespace ?? undefined,
-          attemptedAt,
-        )
-        saveSyncScheduleState(
-          storage,
-          { interval: scheduleRef.current, lastAttemptAt: attemptedAt },
-          accountNamespace ?? undefined,
-        )
-      } catch {
-        // Browser storage is unavailable; the in-memory cadence still holds.
-      }
     }
   }, [accountNamespace, loadRepositories, productState, saveSettings, settingsChanged])
-
-  const changeSchedule = useCallback((next: SyncScheduleInterval) => {
-    setSchedule(next)
-    setScheduleNotice('')
-    setNextSyncLabel('')
-    saveSyncScheduleState(
-      browserProductStorage(),
-      { interval: next, lastAttemptAt: lastAttemptAtRef.current },
-      accountNamespace ?? undefined,
-    )
-  }, [accountNamespace])
-
-  /**
-   * Disconnect GitHub: the only control that removes the stored credential.
-   * It deliberately keeps earned XP, the companion, and the repository
-   * choices -- deleting synced data stays `DELETE /api/sync/product`, a
-   * separate explicit action. Nothing automatic (a revoked token, an outage,
-   * a closed tab, an expired cookie) can reach this path.
-   */
-  const disconnectGitHub = useCallback(async () => {
-    if (disconnecting) return
-    setDisconnecting(true)
-    setMessage('')
-    try {
-      const response = await fetch('/api/github/repositories', { method: 'DELETE' })
-      if (response.status === 401) {
-        // The credential is still stored; the session cookie is what is
-        // missing, so say that instead of claiming a disconnect happened.
-        setStatus('signed-out')
-        setMessage('Your session expired. Sign in again to disconnect GitHub.')
-        return
-      }
-      if (!response.ok) {
-        setMessage('GitHub could not be disconnected. Try again.')
-        return
-      }
-      clearGithubRepositoryCache(browserProductStorage())
-      setRepositories([])
-      confirmedGithubIdRef.current = null
-      accountGithubIdRef.current = null
-      setSettings(null)
-      setDraftTrackedIds([])
-      setDraftExcludedIds([])
-      setDraftAutoPersonal(false)
-      setDraftOrganizations([])
-      // The namespace is kept: it is the local storage key for this account's
-      // progression, not the credential. Companion switches and reveals stay
-      // in the account's namespace so reconnecting resumes the same state.
-      setListFetchedAt(null)
-      setListStale(false)
-      setScheduleNotice('')
-      setNextSyncLabel('')
-      // Not `signed-out`: the credential is gone, but the progression panels
-      // stay visible because earned XP and the companion were kept.
-      setStatus('disconnected')
-      setMessage('GitHub disconnected. Earned XP was kept.')
-    } catch {
-      setMessage('GitHub could not be disconnected. Try again.')
-    } finally {
-      setDisconnecting(false)
-      setDisconnectStage('idle')
-    }
-  }, [disconnecting])
-
-  // The latest `syncNow` is reached through a ref so the ticker below does not
-  // have to be torn down every time product state changes.
-  const syncNowRef = useRef(syncNow)
-  useEffect(() => {
-    syncNowRef.current = syncNow
-  }, [syncNow])
-
-  /**
-   * The scheduled sync runs only while this page is open -- that is the whole
-   * contract in the product docs, and it is why the cadence lives in the panel
-   * rather than in a server cron. One ticker owns every automatic decision, so
-   * two intervals can never double a sync.
-   */
-  useEffect(() => {
-    if (status !== 'ready') return
-    // A manual cadence has no ticker at all; the rendered copy for `manual`
-    // above ignores any notice left over from a previous cadence.
-    if (scheduleIntervalMs(schedule) === null) return
-
-    const tick = (): void => {
-      const now = Date.now()
-      try {
-        // A peer tab may have spent requests we have not seen; fold its record
-        // in before deciding, or two tabs each think the whole budget is free.
-        syncUsageRef.current = mergeSyncRequestUsage(
-          syncUsageRef.current,
-          loadSyncRequestUsage(browserProductStorage(), accountNamespace ?? undefined, now),
-        )
-      } catch {
-        // Storage unavailable: decide from the in-memory record.
-      }
-      const result = scheduleTick({
-        interval: schedule,
-        now,
-        lastAttemptAt: lastAttemptAtRef.current,
-        usage: syncUsageRef.current,
-        // The estimate must match what a sync actually reads: the window, not
-        // the whole tracked set, or a 5-minute cadence would pause forever for
-        // an account whose window costs far less than its total.
-        trackedRepositoryCount: Math.min(effectiveTrackedCount, MAX_SYNC_REPOSITORIES),
-        lastObservedRequests: lastObservedRequestsRef.current,
-        busy: syncAbortRef.current !== null,
-      })
-      syncUsageRef.current = [...result.usage]
-      setScheduleNotice(result.notice)
-      setNextSyncLabel(result.nextLabel)
-      if (result.run) {
-        // The scheduler must never reject into the timer; syncNow reports its
-        // own failures through the panel's message state.
-        void syncNowRef.current().catch(() => undefined)
-      }
-    }
-
-    tick()
-    const timer = window.setInterval(tick, SCHEDULE_TICK_MS)
-    return () => window.clearInterval(timer)
-  }, [accountNamespace, effectiveTrackedCount, schedule, status])
 
   const toggleTracked = (repository: GithubRepository) => {
     const autoTracked = repository.ownerType === 'User'
@@ -1081,68 +513,15 @@ export function GitHubSourcePanel() {
             </p>
           </div>
           {status === 'ready' && (
-            <div className="shrink-0 lg:w-72">
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => void syncNow()}
-                  disabled={sourceControlsDisabled || !productState}
-                  className="ui-row font-ui border px-4 py-3 text-sm font-medium transition-transform active:translate-y-[1px] disabled:cursor-wait disabled:opacity-50 motion-reduce:transition-none"
-                  style={{ borderColor: 'var(--accent)', color: 'var(--ink)' }}
-                >
-                  {busy ? 'Syncing…' : 'Sync GitHub now'}
-                </button>
-                {busy && readingPhase && (
-                  <button
-                    type="button"
-                    onClick={() => syncAbortRef.current?.abort()}
-                    className="ui-row font-ui border px-3 py-3 text-xs transition-transform active:translate-y-[1px] motion-reduce:transition-none"
-                    style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}
-                  >
-                    Cancel
-                  </button>
-                )}
-              </div>
-              {busy && (
-                <SyncProgress
-                  repositoryIndex={progress?.repositoryIndex ?? 0}
-                  repositoryCount={progress?.repositoryCount ?? 0}
-                  repository={progress?.repository ?? ''}
-                  requestsDone={progress?.requestsDone ?? 0}
-                />
-              )}
-              <label
-                htmlFor="github-sync-schedule"
-                className="font-data mt-4 block text-[10px] uppercase tracking-wider"
-                style={{ color: 'var(--ink-muted)' }}
-              >
-                Automatic sync
-                <select
-                  id="github-sync-schedule"
-                  value={schedule}
-                  disabled={sourceControlsDisabled}
-                  onChange={(event) => changeSchedule(parseSyncSchedule(event.target.value))}
-                  className="font-ui mt-1.5 w-full border bg-[color:var(--paper)] px-2 py-2 text-xs"
-                  style={{ borderColor: 'var(--rule)', color: 'var(--ink)' }}
-                >
-                  {SYNC_SCHEDULE_OPTIONS.map((option) => (
-                    <option key={option} value={option}>{syncScheduleLabel(option)}</option>
-                  ))}
-                </select>
-              </label>
-              <p
-                role={scheduleNotice ? 'status' : undefined}
-                aria-live={scheduleNotice ? 'polite' : undefined}
-                className="font-prose mt-2 text-xs leading-relaxed"
-                style={{ color: 'var(--ink-muted)' }}
-              >
-                {schedule === 'manual'
-                  ? 'Automatic sync is off. Use Sync GitHub now.'
-                  : scheduleNotice
-                    || nextSyncLabel
-                    || 'Runs while this page is open. It pauses before your hourly GitHub request limit is spent.'}
-              </p>
-            </div>
+            <button
+              type="button"
+              onClick={() => void syncNow()}
+              disabled={sourceControlsDisabled || !productState}
+              className="ui-row font-ui shrink-0 border px-4 py-3 text-sm font-medium disabled:cursor-wait disabled:opacity-50"
+              style={{ borderColor: 'var(--accent)', color: 'var(--ink)' }}
+            >
+              {busy ? 'Syncing…' : 'Sync GitHub now'}
+            </button>
           )}
         </div>
       </section>
@@ -1153,19 +532,14 @@ export function GitHubSourcePanel() {
         </p>
       )}
 
-      {(status === 'signed-out' || status === 'disconnected') && (
+      {status === 'signed-out' && (
         <section className="mt-6 border p-6" style={{ borderColor: 'var(--rule)', background: 'var(--paper-raised)' }}>
           <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Not connected</p>
           <h2 className="font-ui mt-2 text-2xl font-semibold tracking-tight">Connect GitHub to choose a source.</h2>
           <p className="font-prose mt-3 max-w-xl text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
             Terrarium asks GitHub for repository access so it can list personal and organization repositories. You approve the list; only tracked repositories affect progression.
           </p>
-          {message && (
-            <p role="status" aria-live="polite" className="font-prose mt-3 max-w-xl text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-              {message}
-            </p>
-          )}
-          <a href={loginHrefFor('/github')} className="ui-row font-ui mt-5 inline-block border px-4 py-2 text-sm" style={{ borderColor: 'var(--ink)', color: 'var(--ink)' }}>
+          <a href="/api/auth/login" className="ui-row font-ui mt-5 inline-block border px-4 py-2 text-sm" style={{ borderColor: 'var(--ink)', color: 'var(--ink)' }}>
             Sign in with GitHub
           </a>
         </section>
@@ -1265,95 +639,17 @@ export function GitHubSourcePanel() {
                 </span>
               )}
             </div>
-
-            {/*
-              Disconnect lives here, visually separated from the selection
-              controls, because it is destructive in a different way: it drops
-              the credential and the sync baselines but keeps XP, the
-              companion, and these choices. Deleting synced data is a
-              different control on the account surface.
-            */}
-            <div className="mt-6 border-t pt-5" style={{ borderColor: 'var(--rule)' }}>
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                <div className="max-w-xl">
-                  <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Disconnect</p>
-                  <p className="font-prose mt-2 text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-                    Stops future tracking and removes the stored GitHub token. Earned XP, your companion, and the repository choices above are kept. Signing out is not disconnecting.
-                  </p>
-                </div>
-                {disconnectStage === 'idle' ? (
-                  <button
-                    type="button"
-                    onClick={() => setDisconnectStage('confirm')}
-                    disabled={sourceControlsDisabled || disconnecting}
-                    className="ui-row font-data shrink-0 border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50"
-                    style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}
-                  >
-                    Disconnect GitHub
-                  </button>
-                ) : (
-                  <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
-                    <p role="alert" className="font-prose max-w-sm text-xs leading-relaxed sm:text-right" style={{ color: 'var(--ink-muted)' }}>
-                      Future tracking stops and the token is removed. Earned XP and your repository choices stay. Deleting synced data remains a separate action.
-                    </p>
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void disconnectGitHub()}
-                        disabled={disconnecting}
-                        aria-busy={disconnecting}
-                        className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50"
-                        style={{ borderColor: 'var(--accent)', color: 'var(--ink)' }}
-                      >
-                        {disconnecting ? 'Disconnecting…' : 'Confirm disconnect'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setDisconnectStage('idle')}
-                        disabled={disconnecting}
-                        className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50"
-                        style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
           </section>
 
           <section aria-label="Repository browser" className="mt-8">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
               <div>
                 <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Repository browser</p>
                 <h2 className="font-ui mt-2 text-2xl font-semibold tracking-tight">Find a source</h2>
               </div>
-              <div className="flex flex-wrap items-center gap-3 sm:justify-end">
-                {listFreshnessLabel && (
-                  <p
-                    role="status"
-                    aria-live="polite"
-                    className="font-data text-xs"
-                    style={{ color: listStale ? 'var(--accent)' : 'var(--ink-muted)' }}
-                  >
-                    {listFreshnessLabel}
-                  </p>
-                )}
-                <button
-                  type="button"
-                  onClick={() => void loadRepositories({ refresh: true })}
-                  disabled={listControlsDisabled}
-                  aria-busy={refreshingList}
-                  className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50"
-                  style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}
-                >
-                  {refreshingList ? 'Refreshing…' : 'Refresh list'}
-                </button>
-                <p className="font-data text-xs" style={{ color: 'var(--ink-muted)' }}>
-                  {filteredRepositories.length} of {repositories.length} visible
-                </p>
-              </div>
+              <p className="font-data text-xs" style={{ color: 'var(--ink-muted)' }}>
+                {filteredRepositories.length} of {repositories.length} visible
+              </p>
             </div>
 
             <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center">
@@ -1490,21 +786,16 @@ export function GitHubSourcePanel() {
           {message && <p role="alert" className="font-ui mt-5 text-sm" style={{ color: 'var(--accent)' }}>{message}</p>}
           {lastSyncSummary && <p role="status" aria-live="polite" className="font-prose mt-5 border-l-2 pl-4 text-sm leading-relaxed" style={{ borderColor: 'var(--accent)', color: 'var(--ink-muted)' }}>{lastSyncSummary}</p>}
           {settings.lastSyncedAt && !lastSyncSummary && <p className="font-data mt-5 text-xs" style={{ color: 'var(--ink-muted)' }}>Last checked {new Date(settings.lastSyncedAt).toLocaleString()}</p>}
-        </>
-      )}
 
-      {/*
-        The progression surface belongs to the account, not to the connection.
-        After a disconnect the credential is gone but the earned XP, companion,
-        and activity history stay, so they keep rendering.
-      */}
-      {(status === 'disconnected' || (status === 'ready' && settings)) && productState && (
-        <div className="mt-8">
-          <EncounterReveal state={productState} revealedIds={revealedDraws} onReveal={dismissDraw} onMakeActive={makeActive} />
-          <ProductActivityPanel state={productState} sourceLabel="Verified GitHub activity" />
-          <GitHubRewardGuide state={productState} />
-          <CompanionSwitcher state={productState} onSwitch={makeActive} />
-        </div>
+          {productState && (
+            <div className="mt-8">
+              <EncounterReveal state={productState} revealedIds={revealedDraws} onReveal={dismissDraw} onMakeActive={makeActive} />
+              <ProductActivityPanel state={productState} sourceLabel="Verified GitHub activity" />
+              <GitHubRewardGuide state={productState} />
+              <CompanionSwitcher state={productState} onSwitch={makeActive} />
+            </div>
+          )}
+        </>
       )}
     </div>
   )

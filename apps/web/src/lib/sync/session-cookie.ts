@@ -39,17 +39,6 @@ export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
 export const OAUTH_STATE_COOKIE = 'tg_oauth_state'
 
 /**
- * Holds the page to return to once authorization completes.
- *
- * Carried through the OAuth round trip in a cookie rather than as a query
- * parameter on the callback, because the callback is where GitHub sends the
- * browser and its query string is not ours to control. The value is
- * re-validated with `safeReturnPath` at both ends; nothing about a cookie makes
- * it trustworthy.
- */
-export const OAUTH_RETURN_COOKIE = 'tg_oauth_return'
-
-/**
  * Rejecting a short secret is not pedantry. An HMAC is only as strong as its
  * key, and the failure mode of a weak one is silent: everything still works,
  * and forgery is merely cheap. Refusing to sign at all is louder and safer.

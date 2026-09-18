@@ -54,14 +54,6 @@ export interface GithubAccountStore {
     nextBaselineByRepositoryId: Readonly<Record<string, string>>,
     lastSyncedAt: string | null,
   ): Promise<boolean>
-  /**
-   * Disconnect: drop the OAuth credential and every sync baseline, while
-   * keeping the account row, its handle, and the user's repository choices.
-   * The row survives because the choices in it are the user's, not the
-   * token's: reconnecting must resume the same selections, but with a fresh
-   * checkpoint so a disconnected window is never backfilled as new work.
-   */
-  clearCredential(githubId: number): Promise<void>
   remove(githubId: number): Promise<void>
 }
 
@@ -78,8 +70,6 @@ interface Row {
   auto_include_organizations_json: string
   baseline_by_repository_id_json: string
   last_synced_at: string | null
-  /** Set when the user disconnected; the token columns are empty then. */
-  disconnected_at: string | null
 }
 
 function defaultDbPath(): string {
@@ -198,21 +188,13 @@ export class GithubAccountSqliteStore implements GithubAccountStore {
         auto_include_personal INTEGER NOT NULL,
         auto_include_organizations_json TEXT NOT NULL,
         baseline_by_repository_id_json TEXT NOT NULL,
-        last_synced_at TEXT,
-        disconnected_at TEXT
+        last_synced_at TEXT
       )
     `)
     // Development databases created before manual auto-inclusion exclusions
     // existed need a tiny additive migration; no data is rewritten.
     try {
       this.db.exec("ALTER TABLE github_accounts ADD COLUMN excluded_repository_ids_json TEXT NOT NULL DEFAULT '[]'")
-    } catch {
-      // The column already exists.
-    }
-    // Disconnect keeps the account row (and the user's repository choices) and
-    // only clears the credential, so the row needs a way to say "no token".
-    try {
-      this.db.exec('ALTER TABLE github_accounts ADD COLUMN disconnected_at TEXT')
     } catch {
       // The column already exists.
     }
@@ -248,8 +230,7 @@ export class GithubAccountSqliteStore implements GithubAccountStore {
            token_iv = excluded.token_iv,
            token_tag = excluded.token_tag,
            token_ciphertext = excluded.token_ciphertext,
-           scopes_json = excluded.scopes_json,
-           disconnected_at = NULL`,
+           scopes_json = excluded.scopes_json`,
       )
       .run(
         identity.githubId,
@@ -271,15 +252,12 @@ export class GithubAccountSqliteStore implements GithubAccountStore {
     const secret = getSessionSecret()
     if (!secret) return null
     const row = this.row(githubId)
-    // A disconnected row keeps its handle and repository choices but has no
-    // credential; the explicit marker is checked before any decryption so a
-    // future change to the encrypted-column defaults cannot resurrect it.
-    if (!row || row.disconnected_at) return null
-    if (!row.token_iv || !row.token_tag || !row.token_ciphertext) return null
-    return decryptGithubToken(
-      { iv: row.token_iv, tag: row.token_tag, ciphertext: row.token_ciphertext },
-      secret,
-    )
+    return row
+      ? decryptGithubToken(
+          { iv: row.token_iv, tag: row.token_tag, ciphertext: row.token_ciphertext },
+          secret,
+        )
+      : null
   }
 
   async get(githubId: number): Promise<GithubAccountRecord | null> {
@@ -356,25 +334,6 @@ export class GithubAccountSqliteStore implements GithubAccountStore {
       try { this.db.exec('ROLLBACK') } catch { /* transaction already ended */ }
       throw error
     }
-  }
-
-  async clearCredential(githubId: number): Promise<void> {
-    // The token columns are NOT NULL, so they are emptied rather than nulled.
-    // `disconnected_at` is what actually marks the row as disconnected: the
-    // empty ciphertext is a storage detail, not the contract.
-    this.db
-      .prepare(
-        `UPDATE github_accounts SET
-           token_iv = '',
-           token_tag = '',
-           token_ciphertext = '',
-           scopes_json = '[]',
-           baseline_by_repository_id_json = '{}',
-           last_synced_at = NULL,
-           disconnected_at = ?
-         WHERE github_id = ?`,
-      )
-      .run(new Date().toISOString(), githubId)
   }
 
   async remove(githubId: number): Promise<void> {
