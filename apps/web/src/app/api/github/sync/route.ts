@@ -10,19 +10,24 @@
  */
 
 import { NextRequest } from 'next/server'
+import { asCompanionId } from '@/lib/game/events'
+import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
 import { normalizeGitHubEvents, type GitHubEventNormalizationInput } from '@/lib/game/github-events'
 import { fetchGitHubEvents, type GitHubEventsProgress, type GithubRepoRef } from '@/lib/game/github-events-fetch'
 import { checkRateLimit } from '@/lib/game/api-cache'
 import { getGithubAccountStore, type GithubAccountSettings } from '@/lib/sync/github-account-store'
-import type { GithubRepository } from '@/lib/sync/github-repositories'
 import { getGithubRepositoriesCached } from '@/lib/sync/github-repository-cache'
 import { getSessionProvider } from '@/lib/sync/session'
+import { getProductStore } from '@/lib/sync/product-store'
+import { trustStoredProductSnapshot } from '@/lib/sync/trusted-product-snapshot'
 import { productSnapshotEvent } from '@/lib/sync/product-snapshot'
 import { issueGithubSyncCheckpoint } from '@/lib/sync/github-sync-checkpoint'
-import {
-  MAX_SYNC_REPOSITORIES,
-} from '@/lib/sync/sync-schedule'
 import { issueVerifiedEventProof, verifiedEventProofPayloadDigest } from '@/lib/sync/verified-event-proof'
+import {
+  repositoryIsTracked,
+  selectGithubRepositoryWindow,
+  filterInputAfterBaselines,
+} from '@/lib/sync/github-source-policy'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -50,53 +55,6 @@ function parseCompanionId(value: unknown): string | null {
     : null
 }
 
-function repositoryIsTracked(
-  repository: GithubRepository,
-  settings: GithubAccountSettings,
-): boolean {
-  if (!repository.canRead || repository.archived) return false
-  if (settings.excludedRepositoryIds.includes(repository.id)) return false
-  if (settings.trackedRepositoryIds.includes(repository.id)) return true
-  if (repository.ownerType === 'User' && settings.autoIncludePersonal) return true
-  return settings.autoIncludeOrganizations.includes(repository.ownerLogin.toLowerCase())
-}
-
-function occurredAfterBaseline(
-  repositoryId: string,
-  occurredAt: string,
-  baselines: Readonly<Record<string, string>>,
-): boolean {
-  const baseline = baselines[repositoryId]
-  if (!baseline) return false
-  const eventTime = Date.parse(occurredAt)
-  const baselineTime = Date.parse(baseline)
-  return Number.isFinite(eventTime) && Number.isFinite(baselineTime) && eventTime > baselineTime
-}
-
-function filterInputAfterBaselines(
-  input: GitHubEventNormalizationInput,
-  baselines: Readonly<Record<string, string>>,
-): GitHubEventNormalizationInput {
-  return {
-    ...input,
-    commits: input.commits?.filter((record) =>
-      occurredAfterBaseline(record.repositoryId, record.occurredAt, baselines),
-    ),
-    mergedPullRequests: input.mergedPullRequests?.filter((record) =>
-      occurredAfterBaseline(record.repositoryId, record.mergedAt, baselines),
-    ),
-    releases: input.releases?.filter((record) =>
-      occurredAfterBaseline(record.repositoryId, record.publishedAt, baselines),
-    ),
-    linkedIssues: input.linkedIssues?.filter((record) =>
-      occurredAfterBaseline(record.repositoryId, record.closedAt, baselines),
-    ),
-    ciChecks: input.ciChecks?.filter((record) =>
-      occurredAfterBaseline(record.repositoryId, record.completedAt, baselines),
-    ),
-  }
-}
-
 function activitySummary(events: readonly { category: string }[]) {
   const summary: Record<string, number> = {}
   for (const event of events) summary[event.category] = (summary[event.category] ?? 0) + 1
@@ -119,7 +77,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     // so the actual body is what is bounded. An oversized payload is rejected
     // instead of being parsed.
     const raw = await request.text()
-    if (raw.length > SYNC_PAYLOAD_LIMIT_BYTES) {
+    if (Buffer.byteLength(raw, 'utf8') > SYNC_PAYLOAD_LIMIT_BYTES) {
       return json(413, { error: 'Sync payload is too large.' })
     }
     payload = JSON.parse(raw) as unknown
@@ -131,12 +89,35 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
   const activeCompanionId = parseCompanionId((payload as Record<string, unknown>).activeCompanionId)
   if (!activeCompanionId) return json(400, { error: 'activeCompanionId is required.' })
+  if (!PROTOTYPE_COMPANION_CATALOG.get(activeCompanionId)) {
+    return json(400, { error: 'activeCompanionId is not a recognized companion.' })
+  }
 
   try {
     const store = getGithubAccountStore()
     const token = await store.getToken(session.githubId)
     if (!token) return json(401, { error: 'GitHub access is unavailable. Reconnect GitHub.' })
     const settings = await store.getSettings(session.githubId)
+    // A stable GitHub event belongs to the companion that first accepted it.
+    // Read the account condition before minting receipts so a later provider
+    // replay after an active-companion switch cannot move already-awarded XP.
+    // A concurrent first upload can still win the race; the product merge then
+    // applies the same stable-ID rule when that response is uploaded.
+    const existingGithubCompanionByEventId = new Map<string, string>()
+    try {
+      const productRecord = await getProductStore().getRecord(session.githubId, session.handle)
+      const trustedSnapshot = productRecord
+        ? trustStoredProductSnapshot(productRecord.snapshot, session.githubId)
+        : null
+      for (const event of trustedSnapshot?.events ?? []) {
+        if (event.source === 'github' && event.provenance === 'verified') {
+          existingGithubCompanionByEventId.set(event.eventId, event.companionId)
+        }
+      }
+    } catch {
+      // Product sync remains available if the optional existing-condition read
+      // is unavailable; the first successful upload establishes ownership.
+    }
     // The listing comes from the per-account TTL cache. Back-to-back syncs and
     // the picker share it, so a sync right after opening `/github` costs no
     // extra GitHub requests at all.
@@ -153,19 +134,14 @@ export async function POST(request: NextRequest): Promise<Response> {
     }
 
     const repositories = repositoryResult.repositories
-    const eligibleCandidates = repositories.filter((repository) => repositoryIsTracked(repository, settings))
     // Repositories without a baseline come first. A new repository cannot award
-    // anything until its baseline is recorded, so the window (derived in
-    // `sync-schedule.ts` from the hourly request budget and the checkpoint's
-    // event capacity) drops an already-tracked repository rather than stranding
-    // one that is still awaiting its baseline. The earlier fixed ceiling of 25
-    // stranded 19 of a 44-repository account forever because it had no such
-    // ordering and no way to cover the remainder.
-    const eligible = [
-      ...eligibleCandidates.filter((repository) => !settings.baselineByRepositoryId[repository.id]),
-      ...eligibleCandidates.filter((repository) => Boolean(settings.baselineByRepositoryId[repository.id])),
-    ].slice(0, MAX_SYNC_REPOSITORIES)
-    const skippedRepositoryCount = Math.max(0, eligibleCandidates.length - eligible.length)
+    // anything until its baseline is recorded, so the bounded window drops an
+    // already-tracked repository rather than stranding one that is still
+    // awaiting its baseline.
+    const repositoryWindow = selectGithubRepositoryWindow(repositories, settings)
+    const eligible = repositoryWindow.eligible
+    const eligibleCandidates = repositories.filter((repository) => repositoryIsTracked(repository, settings))
+    const skippedRepositoryCount = repositoryWindow.skippedCount
     // Keep explicit choices explicit. Auto-included repositories are selected
     // by policy for this sync, but must not be written into the explicit list;
     // otherwise turning auto-inclusion off would not actually stop tracking.
@@ -257,7 +233,14 @@ export async function POST(request: NextRequest): Promise<Response> {
        * payload. A digest is not the receipt: it cannot be replayed.
        */
       const verifiedEventProofDigests: Record<string, string> = {}
-      const snapshotEvents = events.map((event) => productSnapshotEvent(event))
+      const issuedEvents = events.map((event) => {
+        const candidate = productSnapshotEvent(event)
+        const existingCompanionId = existingGithubCompanionByEventId.get(candidate.eventId)
+        return existingCompanionId
+          ? { ...event, companionId: asCompanionId(existingCompanionId) }
+          : event
+      })
+      const snapshotEvents = issuedEvents.map((event) => productSnapshotEvent(event))
       for (const snapshotEvent of snapshotEvents) {
         verifiedEventProofs[snapshotEvent.eventId] = issueVerifiedEventProof(snapshotEvent, session.githubId)
         verifiedEventProofDigests[snapshotEvent.eventId] = verifiedEventProofPayloadDigest(snapshotEvent, session.githubId)
@@ -283,7 +266,7 @@ export async function POST(request: NextRequest): Promise<Response> {
           : events.length === 0 && newBaselineRepositoryIds.length > 0
             ? 'baseline'
             : 'synced',
-        events,
+        events: issuedEvents,
         repositoryCount: eligible.length,
         eligibleRepositoryCount: eligibleCandidates.length,
         skippedRepositoryCount,

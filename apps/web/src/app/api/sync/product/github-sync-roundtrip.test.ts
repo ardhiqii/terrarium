@@ -41,10 +41,12 @@ import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
 import { createEncounterState } from '@/lib/game/encounters'
 import { createGuestProfile } from '@/lib/game/guest-profile'
 import { applyProductEvents, createProductState } from '@/lib/game/product-state'
-import { buildProductSnapshot } from '@/lib/sync/product-snapshot'
+import { buildProductSnapshot, type ProductSnapshot } from '@/lib/sync/product-snapshot'
+import { issueVerifiedEventProof } from '@/lib/sync/verified-event-proof'
 import { MAX_SYNC_REPOSITORIES } from '@/lib/sync/sync-schedule'
 import type { NormalizedEvent } from '@/lib/game/events'
 import { POST as syncGithub } from '@/app/api/github/sync/route'
+import { POST as repairGithub } from '@/app/api/github/repair/route'
 import { POST as syncProduct } from './route'
 
 const GITHUB_ID = 9001
@@ -111,10 +113,10 @@ function providerInput(requestedIds: readonly string[]): {
   }
 }
 
-function syncRequest(): NextRequest {
+function syncRequest(activeCompanionId = 'pikachu-family'): NextRequest {
   return new NextRequest('http://localhost/api/github/sync', {
     method: 'POST',
-    body: JSON.stringify({ activeCompanionId: 'pikachu-family' }),
+    body: JSON.stringify({ activeCompanionId }),
     headers: { 'Content-Type': 'application/json' },
   })
 }
@@ -137,6 +139,14 @@ function productRequest(body: unknown, headers?: HeadersInit): NextRequest {
     method: 'POST',
     body: JSON.stringify(body),
     headers: { 'Content-Type': 'application/json', ...headers },
+  })
+}
+
+function repairRequest(eventIds: readonly string[], checkpoint: string): NextRequest {
+  return new NextRequest('http://localhost/api/github/repair', {
+    method: 'POST',
+    body: JSON.stringify({ activeCompanionId: 'pikachu-family', eventIds, checkpoint, proofs: {} }),
+    headers: { 'Content-Type': 'application/json' },
   })
 }
 
@@ -222,13 +232,10 @@ describe('large-account GitHub sync → product checkpoint commit', () => {
       repositories.map((repository) => repository.id).sort(),
     )
     expect(settings.lastSyncedAt).not.toBe(BASELINE)
-    // KNOWN GAP (pre-existing, out of scope): the store only rewrites
-    // `lastSyncedAt` when the baseline map itself changes, so a repeat sync
-    // that awards events without adding a repository leaves the stored
-    // timestamp behind. The baseline map above is what defers XP, and it did
-    // persist. The schedule added alongside this fix keeps its own last-attempt
-    // time, so cadence does not depend on this field.
-    expect(settings.lastSyncedAt).toBeNull()
+    // A successful product/checkpoint commit records the successful time even
+    // when a replay carries a baseline map that was already current. It never
+    // moves backwards on a delayed checkpoint.
+    expect(settings.lastSyncedAt).toBeTruthy()
     // The merged product condition is stored under the signed-in account.
     expect(await getProductStore().getRecord(GITHUB_ID, 'octo')).not.toBeNull()
   })
@@ -357,5 +364,188 @@ describe('large-account GitHub sync → product checkpoint commit', () => {
     // The baseline map was already at this checkpoint, so it is left as-is
     // rather than being written twice; the legacy transport still commits.
     expect((await accountStore.getSettings(GITHUB_ID)).baselineByRepositoryId).toEqual({ '1000': BASELINE })
+  })
+
+  it('repairs a legacy cap/metadata receipt and commits the preserved checkpoint once', async () => {
+    const accountStore = getGithubAccountStore()
+    const repository = repositories[0]
+    await accountStore.putCredential({ githubId: GITHUB_ID, handle: 'octo', avatarUrl: null }, 'server-token', ['repo'])
+    await accountStore.saveSettings(GITHUB_ID, {
+      trackedRepositoryIds: [repository.id],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+      baselineByRepositoryId: { [repository.id]: BASELINE },
+      lastSyncedAt: BASELINE,
+    })
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: [repository] })
+    mocks.fetchEvents.mockResolvedValue({
+      login: 'octo',
+      input: {
+        sourceId: String(GITHUB_ID),
+        companionId: 'octo',
+        commits: [{
+          id: 'repair-commit',
+          repositoryId: repository.id,
+          occurredAt: '2026-08-28T10:00:00Z',
+          additions: 2,
+          changedFiles: 1,
+        }],
+      },
+      status: 'ok',
+      truncated: false,
+    })
+
+    const scan = await readSyncResult(await syncGithub(syncRequest()))
+    const profile = createGuestProfile({
+      guestId: 'guest-repair',
+      starterCompanionId: 'pikachu-family',
+      now: '2026-08-28T10:00:00.000Z',
+    })
+    const state = applyProductEvents(
+      createProductState(profile, { events: [] }, createEncounterState(), PROTOTYPE_COMPANION_CATALOG),
+      scan.events as NormalizedEvent[],
+      PROTOTYPE_COMPANION_CATALOG,
+      { triggerId: 'repair-sync' },
+    )
+    const proofs = scan.verifiedEventProofs as Record<string, string>
+    const canonical = buildProductSnapshot(state, '2026-08-28T10:00:00.000Z', proofs)
+    const failed = canonical.events[0]
+    // Simulate the old round trip: the browser's current canonical event has a
+    // receipt signed over a raw cap key and missing metadata. The event itself,
+    // checkpoint, ledger identity, and encounter state remain untouched.
+    const legacyReceiptPayload = {
+      ...failed,
+      cap: failed.cap ? { ...failed.cap, key: 'github:9001:2026-08-28:legacy-cap' } : undefined,
+      metadata: undefined,
+    }
+    const legacy: ProductSnapshot = {
+      ...canonical,
+      events: [{
+        ...failed,
+        verifiedProof: issueVerifiedEventProof(legacyReceiptPayload, GITHUB_ID),
+      }, ...canonical.events.slice(1)],
+    }
+    const failedUpload = await syncProduct(productRequest({ snapshot: legacy, checkpoint: scan.checkpoint }))
+    expect(failedUpload.status).toBe(400)
+    expect((await getProductStore().getRecord(GITHUB_ID, 'octo'))).toBeNull()
+    expect((await accountStore.getSettings(GITHUB_ID)).baselineByRepositoryId).toEqual({ [repository.id]: BASELINE })
+
+    const repair = await repairGithub(repairRequest([failed.eventId], scan.checkpoint as string))
+    const repairBody = await repair.json()
+    expect(repair.status).toBe(200)
+    expect(repairBody.repaired).toHaveLength(1)
+    expect(repairBody.blocked).toEqual([])
+
+    const repaired: ProductSnapshot = {
+      ...legacy,
+      events: legacy.events.map((event) => event.eventId === failed.eventId
+        ? { ...event, verifiedProof: repairBody.repaired[0].proof }
+        : event),
+    }
+    const committed = await syncProduct(productRequest({ snapshot: repaired, checkpoint: scan.checkpoint }))
+    expect(committed.status).toBe(200)
+    expect((await accountStore.getSettings(GITHUB_ID)).baselineByRepositoryId).toEqual({
+      [repository.id]: expect.any(String),
+    })
+    const stored = await getProductStore().getRecord(GITHUB_ID, 'octo')
+    expect(stored?.snapshot.events).toHaveLength(canonical.events.length)
+    expect(stored?.snapshot.companions.find((companion) => companion.companionId === 'pikachu-family')?.xp)
+      .toBe(canonical.companions.find((companion) => companion.companionId === 'pikachu-family')?.xp)
+    expect(stored?.snapshot.encounters).toEqual(canonical.encounters)
+
+    // The signed checkpoint is single-use by baseline state, while the product
+    // merge remains replay-safe: a second identical upload cannot double XP.
+    const replay = await syncProduct(productRequest({ snapshot: repaired, checkpoint: scan.checkpoint }))
+    expect(replay.status).toBe(200)
+    expect((await getProductStore().getRecord(GITHUB_ID, 'octo'))?.snapshot.events).toHaveLength(canonical.events.length)
+  })
+
+  it('replaces a replayed GitHub event with its newer proof without awarding XP twice', async () => {
+    const accountStore = getGithubAccountStore()
+    const repository = repositories[0]
+    await accountStore.putCredential({ githubId: GITHUB_ID, handle: 'octo', avatarUrl: null }, 'server-token', ['repo'])
+    await accountStore.saveSettings(GITHUB_ID, {
+      trackedRepositoryIds: [repository.id],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+      baselineByRepositoryId: { [repository.id]: BASELINE },
+      lastSyncedAt: BASELINE,
+    })
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: [repository] })
+
+    const firstCommit = {
+      id: 'stable-commit',
+      repositoryId: repository.id,
+      occurredAt: '2026-08-28T10:00:00Z',
+      additions: 2,
+      changedFiles: 1,
+    }
+    const secondCommit = {
+      id: 'new-commit',
+      repositoryId: repository.id,
+      occurredAt: '2026-08-28T10:30:00Z',
+      additions: 3,
+      changedFiles: 1,
+    }
+    mocks.fetchEvents
+      .mockResolvedValueOnce({
+        login: 'octo',
+        input: { sourceId: String(GITHUB_ID), companionId: 'octo', commits: [firstCommit] },
+        status: 'ok',
+        truncated: false,
+      })
+      .mockResolvedValueOnce({
+        login: 'octo',
+        input: { sourceId: String(GITHUB_ID), companionId: 'octo', commits: [firstCommit, secondCommit] },
+        status: 'ok',
+        truncated: false,
+      })
+
+    const snapshotForScan = (body: Record<string, unknown>, triggerId: string) => {
+      const event = (body.events as NormalizedEvent[]).find((candidate) => candidate.category === 'work-session')
+      if (!event) throw new Error('The mocked GitHub scan did not produce a work-session event')
+      const profile = createGuestProfile({ guestId: 'guest-1', starterCompanionId: 'pikachu-family', now: '2026-08-28T10:00:00.000Z' })
+      const state = applyProductEvents(
+        createProductState(profile, { events: [] }, createEncounterState(), PROTOTYPE_COMPANION_CATALOG),
+        [event],
+        PROTOTYPE_COMPANION_CATALOG,
+        { triggerId, encounterProgress: 0 },
+      )
+      return buildProductSnapshot(
+        state,
+        '2026-08-28T10:00:00.000Z',
+        body.verifiedEventProofs as Record<string, string>,
+      )
+    }
+
+    const firstScan = await readSyncResult(await syncGithub(syncRequest()))
+    const firstSnapshot = snapshotForScan(firstScan, 'github-sync-roundtrip')
+    const firstEvent = firstSnapshot.events[0]
+    expect(firstEvent.metadata?.activityCount).toBe(1)
+    const firstResponse = await syncProduct(productRequest({ snapshot: firstSnapshot }))
+    expect(firstResponse.status).toBe(200)
+    const secondScan = await readSyncResult(await syncGithub(syncRequest('ditto-like')))
+    const secondRawEvent = (secondScan.events as NormalizedEvent[]).find((candidate) => candidate.category === 'work-session')
+    expect(secondRawEvent?.companionId).toBe('pikachu-family')
+    const secondSnapshot = snapshotForScan(secondScan, 'github-sync-roundtrip')
+    const secondEvent = secondSnapshot.events[0]
+    expect(secondEvent.eventId).toBe(firstEvent.eventId)
+    expect(secondEvent.metadata?.activityCount).toBe(2)
+    expect(secondEvent.verifiedProof).not.toBe(firstEvent.verifiedProof)
+    const secondResponse = await syncProduct(productRequest({ snapshot: secondSnapshot }))
+    expect(secondResponse.status).toBe(200)
+
+    const record = await getProductStore().getRecord(GITHUB_ID, 'octo')
+    expect(record).not.toBeNull()
+    if (!record) return
+    const storedEvent = record.snapshot.events.find((event) => event.eventId === secondEvent.eventId)
+    expect(storedEvent).toBeDefined()
+    if (!storedEvent) return
+    expect(storedEvent.metadata).toEqual(secondEvent.metadata)
+    expect(storedEvent.verifiedProof).toBe(secondEvent.verifiedProof)
+    expect(record.snapshot.events).toHaveLength(1)
+    expect(record.snapshot.companions.find((companion) => companion.companionId === 'pikachu-family')?.xp).toBe(10)
   })
 })

@@ -10,6 +10,16 @@ import { addEvents, type EventLedger, type NormalizedEvent } from './events'
 import { createEncounterState, type EncounterState } from './encounters'
 import { canonicalizeProductEvent } from '../sync/product-event-id'
 import {
+  deserializeProductSnapshot,
+  serializeProductSnapshot,
+  type ProductSnapshot,
+} from '../sync/product-snapshot'
+import {
+  MAX_RECEIPT_REPAIR_EVENT_IDS,
+  PRODUCT_EVENT_ID_PATTERN,
+  type StoredReceiptFailure,
+} from '../sync/github-receipt-repair'
+import {
   mergeSyncRequestUsage,
   parseSyncSchedule,
   pruneSyncRequestUsage,
@@ -38,9 +48,47 @@ const VERIFIED_EVENT_PROOFS_KEY = 'terrarium:github-event-proofs'
 const SYNC_SCHEDULE_KEY = 'terrarium:github-sync-schedule'
 /** Rolling record of the GitHub requests recent syncs actually spent. */
 const SYNC_USAGE_KEY = 'terrarium:github-sync-usage'
-const PRODUCT_EVENT_ID = /^event-[0-9a-f]{8}-[0-9a-f]{8}$/u
+const SYNC_RECOVERY_KEY = 'terrarium:github-sync-recovery'
+const PRODUCT_EVENT_ID = PRODUCT_EVENT_ID_PATTERN
 
 export interface BrowserProductStorage extends GuestProfileStorage {}
+
+/**
+ * A failed product upload is durable browser state, not a reason to rescan and
+ * risk losing the signed checkpoint after a reload. The snapshot remains a
+ * derived-only payload and the checkpoint is useful only to the same account
+ * namespace; neither value is sent anywhere except the authenticated product
+ * route on an explicit retry.
+ */
+export interface StoredGithubSyncRecovery {
+  readonly snapshot: ProductSnapshot
+  readonly checkpoint: string | null
+  readonly failures: readonly StoredReceiptFailure[]
+  readonly blockedEventIds: readonly string[]
+  readonly attemptedAt: string
+}
+
+function cleanRecoveryFailures(value: unknown): StoredReceiptFailure[] {
+  if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
+  const failures: StoredReceiptFailure[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const record = item as Record<string, unknown>
+    const eventId = record.eventId
+    if (typeof eventId !== 'string' || !PRODUCT_EVENT_ID.test(eventId) || seen.has(eventId)) continue
+    const reason = typeof record.reason === 'string' && record.reason.trim().length > 0
+      ? record.reason
+      : 'receipt-rejected'
+    const digest = typeof record.payloadDigest === 'string' && /^[0-9a-f]{16}$/u.test(record.payloadDigest)
+      ? record.payloadDigest
+      : null
+    seen.add(eventId)
+    failures.push({ eventId, reason, payloadDigest: digest })
+    if (failures.length >= MAX_RECEIPT_REPAIR_EVENT_IDS) break
+  }
+  return failures
+}
 
 function namespacedKey(key: string, namespace?: string): string {
   return namespace ? `${key}:${namespace}` : key
@@ -108,6 +156,98 @@ export function saveVerifiedEventProofs(
     ),
   )
   storage.setItem(namespacedKey(VERIFIED_EVENT_PROOFS_KEY, namespace), JSON.stringify(clean))
+}
+
+/** Merge a repair's replacements into the namespace without erasing other
+ * receipts that are still needed by the cumulative browser ledger. */
+export function mergeVerifiedEventProofs(
+  storage: BrowserProductStorage,
+  proofs: Readonly<Record<string, string>>,
+  namespace?: string,
+): void {
+  saveVerifiedEventProofs(
+    storage,
+    { ...loadVerifiedEventProofs(storage, namespace), ...proofs },
+    undefined,
+    namespace,
+  )
+}
+
+export function saveGithubSyncRecovery(
+  storage: BrowserProductStorage,
+  recovery: StoredGithubSyncRecovery,
+  namespace?: string,
+): void {
+  try {
+    const serializedSnapshot = serializeProductSnapshot(recovery.snapshot)
+    const failures = cleanRecoveryFailures(recovery.failures).slice(0, MAX_RECEIPT_REPAIR_EVENT_IDS)
+    const blockedEventIds = [...new Set(recovery.blockedEventIds.filter((eventId) => PRODUCT_EVENT_ID.test(eventId)))]
+      .slice(0, MAX_RECEIPT_REPAIR_EVENT_IDS)
+    const attemptedAt = new Date(recovery.attemptedAt)
+    if (!Number.isFinite(attemptedAt.getTime())) return
+    if (recovery.checkpoint !== null && (typeof recovery.checkpoint !== 'string' || recovery.checkpoint.length === 0)) return
+    storage.setItem(
+      namespacedKey(SYNC_RECOVERY_KEY, namespace),
+      JSON.stringify({
+        snapshot: JSON.parse(serializedSnapshot),
+        checkpoint: recovery.checkpoint,
+        failures,
+        blockedEventIds,
+        attemptedAt: attemptedAt.toISOString(),
+      }),
+    )
+  } catch {
+    // Recovery is best effort. The primary local ledger is written separately
+    // and is never cleared when a browser quota refuses this diagnostic record.
+  }
+}
+
+export function loadGithubSyncRecovery(
+  storage: BrowserProductStorage,
+  namespace?: string,
+): StoredGithubSyncRecovery | null {
+  try {
+    const parsed: unknown = JSON.parse(storage.getItem(namespacedKey(SYNC_RECOVERY_KEY, namespace)) ?? 'null')
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    const record = parsed as Record<string, unknown>
+    const snapshotValue = typeof record.snapshot === 'string'
+      ? record.snapshot
+      : JSON.stringify(record.snapshot)
+    const snapshot = deserializeProductSnapshot(snapshotValue)
+    if (!snapshot) return null
+    const checkpoint = record.checkpoint === null || record.checkpoint === undefined
+      ? null
+      : typeof record.checkpoint === 'string' && record.checkpoint.length > 0
+        ? record.checkpoint
+        : null
+    if (typeof record.attemptedAt !== 'string' || Number.isNaN(Date.parse(record.attemptedAt))) return null
+    const failures = cleanRecoveryFailures(record.failures)
+    const blockedEventIds = Array.isArray(record.blockedEventIds)
+      ? [...new Set(record.blockedEventIds.filter((eventId): eventId is string =>
+          typeof eventId === 'string' && PRODUCT_EVENT_ID.test(eventId),
+        ))].slice(0, MAX_RECEIPT_REPAIR_EVENT_IDS)
+      : []
+    return {
+      snapshot,
+      checkpoint,
+      failures,
+      blockedEventIds,
+      attemptedAt: new Date(record.attemptedAt).toISOString(),
+    }
+  } catch {
+    return null
+  }
+}
+
+export function clearGithubSyncRecovery(
+  storage: BrowserProductStorage,
+  namespace?: string,
+): void {
+  try {
+    storage.removeItem(namespacedKey(SYNC_RECOVERY_KEY, namespace))
+  } catch {
+    // Best effort; retaining recovery is safer than claiming it was cleared.
+  }
 }
 
 export function loadBrowserEncounters(storage: BrowserProductStorage, namespace?: string): EncounterState {

@@ -1,13 +1,22 @@
 import { describe, expect, it } from 'vitest'
+import { createEncounterState } from './encounters'
+import { PROTOTYPE_COMPANION_CATALOG } from './companion-catalog'
+import { createGuestProfile } from './guest-profile'
+import { createProductState } from './product-state'
+import { buildProductSnapshot } from '../sync/product-snapshot'
 import {
   DEFAULT_STORED_SYNC_SCHEDULE,
+  loadGithubSyncRecovery,
   loadSyncRequestUsage,
   loadSyncScheduleState,
   loadVerifiedEventProofs,
+  mergeVerifiedEventProofs,
+  saveGithubSyncRecovery,
   saveSyncRequestUsage,
   saveSyncScheduleState,
   saveVerifiedEventProofs,
   type BrowserProductStorage,
+  type StoredGithubSyncRecovery,
 } from './product-browser-storage'
 
 function storage(): BrowserProductStorage {
@@ -17,6 +26,15 @@ function storage(): BrowserProductStorage {
     setItem: (key, value) => { values.set(key, value) },
     removeItem: (key) => { values.delete(key) },
   }
+}
+
+function productSnapshot() {
+  const now = '2026-09-23T10:00:00.000Z'
+  const profile = createGuestProfile({ guestId: 'guest-1', starterCompanionId: 'pikachu-family', now })
+  return buildProductSnapshot(
+    createProductState(profile, { events: [] }, createEncounterState(), PROTOTYPE_COMPANION_CATALOG),
+    now,
+  )
 }
 
 describe('browser GitHub receipt storage', () => {
@@ -37,6 +55,39 @@ describe('browser GitHub receipt storage', () => {
 
     expect(loadVerifiedEventProofs(value, 'github-42')).toEqual({ [eventId]: 'receipt' })
     expect(loadVerifiedEventProofs(value, 'github-43')).toEqual({})
+  })
+
+  it('merges a repaired proof without erasing unrelated receipts', () => {
+    const value = storage()
+    const first = 'event-12345678-abcdef12'
+    const second = 'event-12345678-deadbeef'
+
+    saveVerifiedEventProofs(value, { [first]: 'old-first', [second]: 'old-second' }, undefined, 'github-42')
+    mergeVerifiedEventProofs(value, { [first]: 'fresh-first' }, 'github-42')
+
+    expect(loadVerifiedEventProofs(value, 'github-42')).toEqual({
+      [first]: 'fresh-first',
+      [second]: 'old-second',
+    })
+  })
+
+  it('persists a bounded recovery snapshot and leaves it available after a failed upload', () => {
+    const value = storage()
+    const recovery: StoredGithubSyncRecovery = {
+      snapshot: productSnapshot(),
+      checkpoint: 'signed-checkpoint',
+      failures: [{
+        eventId: 'event-12345678-abcdef12',
+        reason: 'receipt-mismatch',
+        payloadDigest: '0123456789abcdef',
+      }],
+      blockedEventIds: ['event-12345678-abcdef12'],
+      attemptedAt: '2026-09-23T10:05:00.000Z',
+    }
+
+    saveGithubSyncRecovery(value, recovery, 'github-42')
+    expect(loadGithubSyncRecovery(value, 'github-42')).toEqual(recovery)
+    expect(loadGithubSyncRecovery(value, 'github-43')).toBeNull()
   })
 
   it('fails closed for malformed stored data', () => {

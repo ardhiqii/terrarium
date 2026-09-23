@@ -139,7 +139,31 @@ mutable login handle. Writes use an optimistic checkpoint so two devices do
 not silently replace one another's latest condition. GitHub activity receipts
 are issued by the server-side GitHub sync route and verified before a product
 upload can preserve `verified` provenance. A cloud restore keeps event IDs
-stable so the next provider delivery remains idempotent.
+stable so the next provider delivery remains idempotent. Replayed aggregate
+signals refresh their evidence without awarding the stable event twice, and
+ownership stays with the companion that first accepted the event. Account-row
+deletes require the current server version and are conditional at the store,
+so an open identity chooser cannot erase a newer device's progress. Legacy
+rows that have no immutable GitHub ID are not adopted by mutable handle.
+
+If one legacy GitHub receipt no longer matches the canonical product payload,
+`/github` keeps the browser ledger, proofs, encounters, and signed checkpoint
+in the account-local recovery record instead of clearing them. **Repair receipts
+and retry** sends the bounded opaque event IDs together with the short-lived
+signed checkpoint that originally named them, or preserves the old server
+receipt for a legacy event, to `POST /api/github/repair`; the server re-reads
+the approved 16-repository window, checks GitHub attribution
+and ownership, and mints receipts only for independently confirmed activity.
+Unrecoverable events remain visible as blocked and are never downgraded to local
+provenance. Valid events may be backed up without advancing the checkpoint; the
+last successful checkpoint advances only after a repaired snapshot is stored.
+Repeated repair or sync is idempotent, and XP/caps are recomputed server-side.
+
+The `/companions` archive reads the trusted account product snapshot when a
+user is signed in and one exists. It shows that account-scoped XP and
+progression separately from the local garden archive. A signed-in user with no
+product row or an unavailable row sees an explicit not-synced/unavailable state;
+the legacy `github-cache.json` aggregate is not presented as account XP.
 
 ### 4.4 GitHub
 

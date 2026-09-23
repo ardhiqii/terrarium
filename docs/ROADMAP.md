@@ -208,8 +208,13 @@ and account-switch flows before exposing public companion state widely.
 
 ### 4. Replace legacy collection surfaces
 
-Add a quiet encounter meter, persisted weighted draws, duplicate conversion, one
-active companion, free switching, and per-companion XP. Test refreshes, repeated
+The account archive now reads the trusted product-sync snapshot when one exists,
+keeps synced XP separate from the local garden/cache archive, and reports an
+explicit not-synced state instead of displaying the global legacy GitHub cache
+as account progress. The remaining migration is the full provider-neutral
+collection and sprite presentation: add a quiet encounter meter, persisted
+weighted draws, duplicate conversion, one active companion, free switching,
+and per-companion XP to the legacy collection surface. Test refreshes, repeated
 events, duplicate results, offline mode, and deterministic replay.
 
 ### 5. Upgrade local source handling

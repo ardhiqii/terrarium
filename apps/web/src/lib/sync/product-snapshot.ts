@@ -631,16 +631,37 @@ function unionById<T>(left: readonly T[], right: readonly T[], id: (value: T) =>
   return [...result.values()]
 }
 
+function hasHigherGithubActivityCount(
+  event: ProductSnapshotEvent,
+  existing: ProductSnapshotEvent,
+): boolean {
+  if (event.source !== 'github' || existing.source !== 'github') return false
+  // The receipt binds the companion ID. Never let a replay delivered after a
+  // companion switch move ownership of an already-awarded stable event.
+  if (event.companionId !== existing.companionId) return false
+  const activityCount = event.metadata?.activityCount
+  const existingActivityCount = existing.metadata?.activityCount
+  return typeof activityCount === 'number' &&
+    typeof existingActivityCount === 'number' &&
+    activityCount > existingActivityCount
+}
+
 function unionEvents(guest: readonly ProductSnapshotEvent[], server: readonly ProductSnapshotEvent[]): ProductSnapshotEvent[] {
   const result = new Map<string, ProductSnapshotEvent>()
   // The stored server event wins by default. A freshly receipt-backed event
   // may replace an older local copy with the same stable ID so a first
-  // post-sync upload can upgrade an event without duplicating its XP.
+  // post-sync upload can upgrade an event without duplicating its XP. A later
+  // receipt-backed GitHub aggregate may also refresh an older receipt-backed
+  // server copy, but only when its activity count is higher.
   for (const event of [...server, ...guest]) {
     const existing = result.get(event.eventId)
     const receiptBacked = event.provenance === 'verified' && Boolean(event.verifiedProof)
     const existingReceiptBacked = existing?.provenance === 'verified' && Boolean(existing.verifiedProof)
-    if (!existing || (receiptBacked && !existingReceiptBacked)) {
+    const refreshesGithubAggregate = existing !== undefined &&
+      receiptBacked &&
+      existingReceiptBacked &&
+      hasHigherGithubActivityCount(event, existing)
+    if (!existing || (receiptBacked && !existingReceiptBacked) || refreshesGithubAggregate) {
       result.set(event.eventId, event)
     }
   }

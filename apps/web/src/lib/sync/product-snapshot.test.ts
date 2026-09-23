@@ -67,6 +67,29 @@ function snapshotWith(overrides: Partial<ProductSnapshot>): ProductSnapshot {
   return { ...buildProductSnapshot(state()), ...overrides }
 }
 
+function verifiedGithubSnapshot(
+  activityCount: number,
+  verifiedProof: string,
+  companionId = 'pikachu-family',
+): ProductSnapshot {
+  const snapshot = buildProductSnapshot(
+    state([githubEvent('github:42:work-session:2026-08-28-04')].map((sourceEvent) => ({
+      ...sourceEvent,
+      companionId: asCompanionId(companionId),
+    }))),
+    now,
+  )
+  return {
+    ...snapshot,
+    events: [{
+      ...snapshot.events[0],
+      provenance: 'verified',
+      verifiedProof,
+      metadata: { activityCount },
+    }],
+  }
+}
+
 describe('product snapshot', () => {
   afterEach(() => vi.unstubAllEnvs())
 
@@ -184,6 +207,56 @@ describe('product snapshot', () => {
 
     expect(merged.events[0]).toMatchObject({ provenance: 'verified', verifiedProof: 'server-receipt' })
     expect(merged.companions.find((companion) => companion.companionId === 'pikachu-family')?.xp).toBe(25)
+  })
+
+  it('refreshes same-ID verified GitHub metadata when the receipt-backed activity count grows', () => {
+    const server = verifiedGithubSnapshot(2, 'server-receipt')
+    const guest = verifiedGithubSnapshot(3, 'newer-receipt')
+
+    const merged = mergeGuestWithServer(guest, server)
+
+    expect(merged.events[0]).toMatchObject({
+      provenance: 'verified',
+      verifiedProof: 'newer-receipt',
+      metadata: { activityCount: 3 },
+    })
+  })
+
+  it('keeps server ownership when a newer replay is bound to another companion', () => {
+    const server = verifiedGithubSnapshot(2, 'server-receipt', 'pikachu-family')
+    const switchedGuest = verifiedGithubSnapshot(3, 'switched-receipt', 'ditto-like')
+
+    const merged = mergeGuestWithServer(switchedGuest, server)
+
+    expect(merged.events[0]).toMatchObject({
+      companionId: 'pikachu-family',
+      verifiedProof: 'server-receipt',
+      metadata: { activityCount: 2 },
+    })
+    expect(merged.companions.find((companion) => companion.companionId === 'pikachu-family')?.xp).toBe(10)
+  })
+
+  it('does not let a stale receipt-backed GitHub client downgrade the server aggregate', () => {
+    const server = verifiedGithubSnapshot(3, 'server-receipt')
+    const staleGuest = verifiedGithubSnapshot(2, 'stale-receipt')
+
+    const merged = mergeGuestWithServer(staleGuest, server)
+
+    expect(merged.events[0]).toMatchObject({
+      provenance: 'verified',
+      verifiedProof: 'server-receipt',
+      metadata: { activityCount: 3 },
+    })
+  })
+
+  it('keeps XP deduplicated when a verified GitHub aggregate is refreshed', () => {
+    const server = verifiedGithubSnapshot(2, 'server-receipt')
+    const guest = verifiedGithubSnapshot(4, 'newer-receipt')
+
+    const merged = mergeGuestWithServer(guest, server)
+
+    expect(merged.events).toHaveLength(1)
+    expect(merged.companions.find((companion) => companion.companionId === 'pikachu-family')?.xp).toBe(10)
   })
 
   it('falls back to the server active companion only when the guest active ID is invalid', () => {

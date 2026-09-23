@@ -131,6 +131,17 @@ describe('POST /api/github/sync', () => {
     })
   })
 
+  it('rejects an unrecognized active companion before minting receipts', async () => {
+    const response = await POST(new NextRequest('http://localhost/api/github/sync', {
+      method: 'POST',
+      body: JSON.stringify({ activeCompanionId: 'not-in-catalog' }),
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: expect.stringMatching(/recognized companion/i) })
+  })
+
   it('records a first-use baseline and awards no old activity', async () => {
     const response = await POST(request())
     const body = await readSyncBody(response)

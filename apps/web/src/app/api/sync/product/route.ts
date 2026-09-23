@@ -30,14 +30,16 @@ import { createGuestProfile } from '@/lib/game/guest-profile'
 import { getGithubAccountStore } from '@/lib/sync/github-account-store'
 import { getSessionProvider } from '@/lib/sync/session'
 import { getProductStore } from '@/lib/sync/product-store'
+import { trustStoredProductSnapshot } from '@/lib/sync/trusted-product-snapshot'
 import {
+  buildProductSnapshot,
   deserializeProductSnapshot,
   mergeProductSnapshots,
   PRODUCT_SNAPSHOT_SCHEMA_VERSION,
-  type ProductSnapshot,
-  type ProductSnapshotCompanion,
-  type ProductSnapshotEvent,
   restoreProductStateFromSnapshot,
+  validateProductSnapshot,
+  type ProductSnapshot,
+  type ProductSnapshotEvent,
 } from '@/lib/sync/product-snapshot'
 import { checkRateLimit } from '@/lib/game/api-cache'
 import {
@@ -63,6 +65,7 @@ const RATE_LIMIT_WINDOW_MS = 60 * 1000
  * instead of a baseline that silently never commits.
  */
 const PRODUCT_PAYLOAD_LIMIT_BYTES = 2 * 1024 * 1024 // 2 MB cap on the request body
+const DELETE_PAYLOAD_LIMIT_BYTES = 4 * 1024
 /**
  * Bound for the deprecated checkpoint header.
  *
@@ -75,10 +78,12 @@ const PRODUCT_PAYLOAD_LIMIT_BYTES = 2 * 1024 * 1024 // 2 MB cap on the request b
  */
 const LEGACY_CHECKPOINT_HEADER_LIMIT = 64 * 1024
 
-function json(status: number, body: unknown): Response {
+function json(status: number, body: unknown, extraHeaders: HeadersInit = {}): Response {
   return new Response(body === undefined ? null : JSON.stringify(body), {
     status,
-    headers: body === undefined ? {} : { 'Content-Type': 'application/json; charset=utf-8' },
+    headers: body === undefined
+      ? extraHeaders
+      : { 'Content-Type': 'application/json; charset=utf-8', ...extraHeaders },
   })
 }
 
@@ -150,77 +155,67 @@ function sameTimestampMap(
   )
 }
 
-function trustStoredEvents(snapshot: ProductSnapshot, githubId: number): ProductSnapshot {
-  let changed = false
-  const events = snapshot.events.flatMap((event): ProductSnapshotEvent[] => {
-    const trustedGithub = event.source === 'github' &&
-      event.provenance === 'verified' &&
-      Boolean(event.verifiedProof) &&
-      verifyVerifiedEventProof(event, githubId, event.verifiedProof as string)
-    // GitHub is never a local source. Any unverified or invalid event must be
-    // removed instead of downgraded, otherwise its already-derived XP survives
-    // the receipt boundary through the companion totals.
-    if (event.source === 'github' && !trustedGithub) {
-      changed = true
-      return []
-    }
-    if (event.provenance !== 'verified') return [event]
-    changed = true
-    // Verified provenance is meaningful only for server-issued GitHub
-    // receipts. Remove malformed legacy records from every other source too.
-    return []
-  })
-  if (!changed) return snapshot
+/**
+ * Recompute the derived companion fields at the storage boundary. The browser
+ * normally sends a snapshot built by the same engine, but XP, progression,
+ * and encounter counts are not trusted merely because the outer shape passed
+ * validation. Preserve the opaque baseline/warning fields and the receipts
+ * while rebuilding the fields that can be derived from the event ledger.
+ */
+function unknownCompanionIds(snapshot: ProductSnapshot): string[] {
+  const ids = new Set<string>([
+    snapshot.activeCompanionId,
+    ...snapshot.companions.map((companion) => companion.companionId),
+    ...snapshot.collection.map((reference) => reference.companionId),
+    ...snapshot.events.map((event) => event.companionId),
+    ...snapshot.encounters.draws.flatMap((draw) => [
+      draw.selectedCompanionId,
+      ...draw.weights.map((weight) => weight.companionId),
+    ]),
+  ])
+  return [...ids].filter((id) => !PROTOTYPE_COMPANION_CATALOG.get(id)).sort()
+}
 
-  // Encounter draws do not carry a source-event foreign key in the compact
-  // product contract. Once an untrusted event is removed, the safe choice is
-  // to invalidate encounter-derived rewards rather than let an old draw,
-  // essence balance, or collectible survive the receipt boundary.
-  const sanitized = {
-    ...snapshot,
-    events,
-    collection: snapshot.collection.filter((reference) => reference.acquisition !== 'encounter'),
-    encounters: {
-      ...snapshot.encounters,
-      meter: 0,
-      totalProgress: 0,
-      nextSequence: 0,
-      draws: [],
-      processedTriggerIds: [],
-      essenceByFamily: {},
-    },
-  }
+function unownedCompanionIds(snapshot: ProductSnapshot): string[] {
+  const owned = new Set(snapshot.collection.map((reference) => reference.companionId))
+  const referenced = new Set([
+    snapshot.activeCompanionId,
+    ...snapshot.companions.map((companion) => companion.companionId),
+    ...snapshot.events.map((event) => event.companionId),
+    ...snapshot.encounters.draws.map((draw) => draw.selectedCompanionId),
+  ])
+  return [...referenced].filter((id) => !owned.has(id)).sort()
+}
+
+function canonicalizeDerivedSnapshot(snapshot: ProductSnapshot): ProductSnapshot {
   const fallbackProfile = createGuestProfile({
     guestId: snapshot.guestId,
     starterCompanionId: snapshot.activeCompanionId,
     now: snapshot.createdAt,
   })
-  const rebuilt = restoreProductStateFromSnapshot(
-    sanitized,
+  const state = restoreProductStateFromSnapshot(
+    snapshot,
     fallbackProfile,
     PROTOTYPE_COMPANION_CATALOG,
   )
-  const rebuiltById = new Map(rebuilt.companions.map((companion) => [companion.companionId, companion]))
-  const companions = snapshot.companions.flatMap((companion): ProductSnapshotCompanion[] => {
-    const current = rebuiltById.get(companion.companionId)
-    if (!current) return []
-    return [{
-      ...companion,
-      xp: current.xp,
-      essence: current.essence,
-      encounterCount: current.encounterCount,
-      progression: current.progression
-        ? {
-            stepId: current.progression.step.id,
-            formId: current.progression.form.id,
-          nextStepId: current.progression.nextStep?.id ?? null,
-          nextFormId: current.progression.nextForm?.id ?? null,
-        }
-        : null,
-    }]
-  })
-  const activeCompanionId = rebuilt.activeCompanion?.companionId ?? sanitized.collection[0]?.companionId ?? snapshot.activeCompanionId
-  return { ...sanitized, activeCompanionId, companions }
+  const proofs = Object.fromEntries(
+    snapshot.events.flatMap((event) => event.verifiedProof
+      ? [[event.eventId, event.verifiedProof] as const]
+      : []),
+  )
+  const rebuilt = buildProductSnapshot(state, snapshot.generatedAt, proofs)
+  const canonical: ProductSnapshot = {
+    ...rebuilt,
+    guestId: snapshot.guestId,
+    createdAt: snapshot.createdAt,
+    updatedAt: snapshot.updatedAt,
+    generatedAt: snapshot.generatedAt,
+    activeCompanionId: snapshot.activeCompanionId,
+    sourceBaselines: snapshot.sourceBaselines,
+    recoverabilityWarning: snapshot.recoverabilityWarning,
+  }
+  validateProductSnapshot(canonical)
+  return canonical
 }
 
 export async function POST(request: NextRequest): Promise<Response> {
@@ -243,7 +238,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     return json(400, { error: 'Request body could not be read.' })
   }
 
-  if (raw.length > PRODUCT_PAYLOAD_LIMIT_BYTES) {
+  if (Buffer.byteLength(raw, 'utf8') > PRODUCT_PAYLOAD_LIMIT_BYTES) {
     return json(413, { error: 'Payload too large.' })
   }
 
@@ -259,6 +254,14 @@ export async function POST(request: NextRequest): Promise<Response> {
     return json(400, {
       error: `schemaVersion ${incoming.schemaVersion} is newer than this server supports (${PRODUCT_SNAPSHOT_SCHEMA_VERSION}).`,
     })
+  }
+  const unknownIds = unknownCompanionIds(incoming)
+  if (unknownIds.length > 0) {
+    return json(400, { error: 'Product snapshot contains an unrecognized companion.', companionIds: unknownIds.slice(0, 5) })
+  }
+  const unownedIds = unownedCompanionIds(incoming)
+  if (unownedIds.length > 0) {
+    return json(400, { error: 'Product snapshot references a companion outside its collection.', companionIds: unownedIds.slice(0, 5) })
   }
 
   /**
@@ -309,10 +312,20 @@ export async function POST(request: NextRequest): Promise<Response> {
     : null
   if (checkpointToken && !checkpoint) return json(400, { error: 'Sync checkpoint is invalid or expired.' })
   if (checkpoint) {
+    const checkpointEvents = new Map(incoming.events.map((event) => [event.eventId, event]))
     const checkpointEventIds = new Set(checkpoint.eventIds)
-    const incomingEventIds = new Set(incoming.events.map((event) => event.eventId))
-    if ([...checkpointEventIds].some((eventId) => !incomingEventIds.has(eventId))) {
+    if ([...checkpointEventIds].some((eventId) => !checkpointEvents.has(eventId))) {
       return json(409, { error: 'Sync checkpoint events are missing from the product snapshot.' })
+    }
+    if ([...checkpointEventIds].some((eventId) => {
+      const event = checkpointEvents.get(eventId)
+      // A signed checkpoint is a baseline commit for verified GitHub activity,
+      // not a generic list of client-chosen IDs. This closes the substitution
+      // gap where a local event reused a checkpoint ID and advanced the source
+      // baseline without carrying the server-issued receipt.
+      return !event || event.source !== 'github' || event.provenance !== 'verified' || !event.verifiedProof
+    })) {
+      return json(409, { error: 'Sync checkpoint events must be verified GitHub events.' })
     }
     const currentSettings = await getGithubAccountStore().getSettings(session.githubId)
     if (
@@ -325,17 +338,18 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   const store = getProductStore()
   const handle = session.handle.toLowerCase()
+  const canonicalIncoming = canonicalizeDerivedSnapshot(incoming)
 
   // Retry a short optimistic-concurrency window. This keeps two tabs/devices
   // from silently replacing one another's event history while preserving the
   // simple provider-neutral store contract.
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const serverRecord = await store.getRecord(session.githubId, handle)
-    const server = serverRecord ? trustStoredEvents(serverRecord.snapshot, session.githubId) : null
-    if (server && server.guestId !== incoming.guestId) {
+    const server = serverRecord ? trustStoredProductSnapshot(serverRecord.snapshot, session.githubId) : null
+    if (server && server.guestId !== canonicalIncoming.guestId) {
       return json(409, { error: 'This GitHub account already has a different guest profile.' })
     }
-    const merged = server ? mergeProductSnapshots(incoming, server) : incoming
+    const merged = server ? mergeProductSnapshots(canonicalIncoming, server) : canonicalIncoming
     const saved = await store.put(
       session.githubId,
       handle,
@@ -366,14 +380,50 @@ export async function GET(): Promise<Response> {
   const session = await getSessionProvider().current()
   if (!session) return json(401, { error: 'Sign in required.' })
   const record = await getProductStore().getRecord(session.githubId, session.handle)
-  const snapshot = record ? trustStoredEvents(record.snapshot, session.githubId) : null
-  if (!snapshot) return json(404, { error: 'This account has never synced the product snapshot.' })
-  return json(200, snapshot)
+  const snapshot = record ? trustStoredProductSnapshot(record.snapshot, session.githubId) : null
+  if (!record || !snapshot) return json(404, { error: 'This account has never synced the product snapshot.' })
+  return json(200, snapshot, { 'X-Product-Snapshot-Version': record.version })
 }
 
-export async function DELETE(): Promise<Response> {
+export async function DELETE(request: NextRequest): Promise<Response> {
   const session = await getSessionProvider().current()
   if (!session) return json(401, { error: 'Sign in required.' })
-  await getProductStore().remove(session.githubId, session.handle)
+
+  // The identity chooser's destructive "Use this browser" action supplies the
+  // server row version it just displayed. Deletion without that version is
+  // rejected so a stale caller cannot erase newer cloud progress.
+  const contentLength = request.headers.get('content-length')
+  if (contentLength && Number(contentLength) > DELETE_PAYLOAD_LIMIT_BYTES) {
+    return json(413, { error: 'Delete payload too large.' })
+  }
+  let expectedVersion: string | null = request.headers.get('x-product-snapshot-version')
+  try {
+    const raw = await request.text()
+    if (Buffer.byteLength(raw, 'utf8') > DELETE_PAYLOAD_LIMIT_BYTES) {
+      return json(413, { error: 'Delete payload too large.' })
+    }
+    if (raw.trim().length > 0) {
+      const parsed: unknown = JSON.parse(raw)
+      if (isRecord(parsed) && parsed.expectedVersion !== undefined) {
+        if (typeof parsed.expectedVersion !== 'string' || parsed.expectedVersion.length === 0) {
+          return json(400, { error: 'Product snapshot version must be a non-empty string.' })
+        }
+        expectedVersion = parsed.expectedVersion
+      }
+    }
+  } catch {
+    return json(400, { error: 'Delete body must be valid JSON.' })
+  }
+
+  if (expectedVersion === null) {
+    return json(428, { error: 'A current product snapshot version is required before deleting.' })
+  }
+  const store = getProductStore()
+  // The version check and delete must be one conditional store operation; a
+  // read followed by an unconditional delete has a race between them.
+  const deleted = await store.removeIfVersion(session.githubId, expectedVersion)
+  if (!deleted) {
+    return json(409, { error: 'Cloud condition changed on another device. Review it again before deleting.' })
+  }
   return json(204, undefined)
 }
