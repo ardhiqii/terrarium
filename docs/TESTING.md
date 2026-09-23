@@ -41,6 +41,23 @@ receipts, deferred checkpoint recovery, replay-safe merging, guest conflicts,
 payload validation, repository selection, browser receipt persistence, and size
 limits. Keep the focused command above scoped to the changed files when adding
 new sync hardening tests.
+
+The large-account baseline path has its own end-to-end contract:
+`apps/web/src/app/api/sync/product/github-sync-roundtrip.test.ts` drives both
+real routes and both SQLite stores with only the GitHub providers mocked. It
+pins the failures that made a 44-repository account unable to bank XP: the
+whole tracked set is baselined window by window with no repository stranded, a
+checkpoint over more than 500 event IDs is issued and committed, and the
+checkpoint reaches `/api/sync/product` in the request body rather than a request
+header. `apps/web/src/lib/sync/sync-schedule.test.ts` pins the automatic-sync
+cadence and its GitHub request budget (a window's worth of repositories, not the
+whole tracked set, so the documented choices stay affordable) and the derived
+window invariant (`MAX_SYNC_REPOSITORIES` x `MAX_EVENTS_PER_REPOSITORY` must fit
+inside `MAX_CHECKPOINT_EVENT_IDS`);
+`apps/web/src/app/api/github/sync/route.test.ts` proves a heavy full window is
+never rejected by the checkpoint validator. `apps/web/src/lib/sync/github-sync-checkpoint.test.ts`
+proves a full window of worst-case events plus 500-entry baseline maps still fits
+the signed-token bound.
 The latest focused mutation run covered the Supabase adapters and cloud
 rehydration helper with **61.08% overall mutation score, 67.26% of covered
 mutants, 0 timeouts, and 0 errors**. Survivors are reported so they remain
@@ -50,6 +67,11 @@ The real Supabase project was checked manually in the SQL editor on 2026-09-14:
 all three tables (`synced_users`, `github_accounts`, `product_snapshots`) exist,
 and all three report `rls_enabled = true`. Tests must continue using mocks or
 local SQLite; do not put live Supabase calls in the Vitest suite.
+`apps/web/src/lib/sync/supabase-schema.test.ts` is the guard against a schema
+drift the mocked-client suite cannot see: it records every column the Supabase
+adapter selects, filters on, or writes and asserts each one is declared by a
+file under `supabase/migrations/`. Apply all migrations, including
+`20260918000000_github_accounts_disconnect.sql` (`github_accounts.disconnected_at`).
 
 ---
 
@@ -138,6 +160,52 @@ settings.
 Cloud restore still needs to be exercised after this branch is deployed with
 the Vercel Supabase variables; the current browser deployment predates the
 uncommitted adapter changes.
+
+Repository-cache and Disconnect smoke checks (manual, on the local Next server):
+
+1. Open `/github`. The picker paints the last known list and labels it with how
+   old it is; the count and freshness label appear above the repository browser.
+2. Reload `/github`. The list must be on screen in the first frame — no
+   “Checking GitHub access…” flash — and the network tab must still show one
+   `GET /api/github/repositories` (the paint is a cache, not the source).
+3. Click **Refresh list**. The label updates and the request carries
+   `?refresh=1`.
+4. Go offline (devtools or network), reload. The list stays visible and the
+   label reads `cached · unavailable · updated …`.
+5. Open `/github` in a browser profile that has previously used a different
+   GitHub account. The second account must never see the first account's
+   repository names, not even for a frame after a failed refresh.
+6. Click **Disconnect GitHub**, then **Confirm disconnect**. The status turns to
+   “Not connected”, the message says earned XP was kept, and the companion and
+   activity panels stay visible. `DELETE /api/github/repositories` answers 204
+   and `DELETE /api/sync/product` is not called.
+7. Sign in again. The token is stored afresh, the repository choices are still
+   selected, and the first sync re-baselines instead of backfilling XP.
+
+Automated guards for the same paths (offline, no live calls):
+
+- `apps/web/src/lib/sync/github-repositories.test.ts` — a short page with
+  `Link: rel="next"` keeps walking instead of ending the listing early; a walk
+  that reaches the page ceiling with a successor is `truncated`; a mid-walk
+  failure discards the pages already read instead of caching a partial list.
+- `apps/web/src/lib/sync/github-repository-cache.test.ts` — concurrent reads
+  for one account share a single provider call; a purge (disconnect, re-auth)
+  is never undone by an in-flight read; a backwards clock revalidates instead
+  of serving the entry as fresh; a concurrent read for a different account is
+  independent.
+- `apps/web/src/lib/game/github-repository-browser-cache.test.ts` — a degraded
+  response cannot replace a newer stored listing; the failed-refresh decision
+  keeps the visible list only for the account the server answered for and
+  drops it for a different account.
+- `apps/web/src/app/api/github/repositories/route.test.ts` — an oversized
+  chunked body answers 413 even without a `content-length` header; refresh
+  values that are not `1`/`true` keep the cache entry; malformed settings,
+  prototype keys, tracked+excluded conflicts, and unknown IDs still answer 400;
+  automatic failed reads never clear the credential; a stale listing reports
+  its original read time.
+- `apps/web/src/lib/sync/github-account-store.test.ts` — opening the store on a
+  legacy development database adds the disconnect column without losing rows,
+  and disconnect leaves another account's choices untouched.
 
 ## 6. The extension
 

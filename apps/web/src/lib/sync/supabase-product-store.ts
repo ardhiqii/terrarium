@@ -1,5 +1,6 @@
 /** Supabase implementation of the derived product snapshot store. */
 
+import { randomUUID } from 'node:crypto'
 import {
   deserializeProductSnapshot,
   serializeProductSnapshot,
@@ -13,6 +14,7 @@ interface ProductSnapshotRow {
   handle: string
   snapshot_json: unknown
   updated_at: string
+  row_version: string | null
 }
 
 function normalizeHandle(handle: string): string {
@@ -37,6 +39,7 @@ export class SupabaseProductStore implements ProductStore {
       handle: normalizeHandle(handle),
       snapshot_json: JSON.parse(serializeProductSnapshot(snapshot)),
       updated_at: updatedAt,
+      row_version: randomUUID(),
     }
     if (expectedUpdatedAt === null) {
       const { error } = await client.from('product_snapshots').insert(row)
@@ -56,50 +59,18 @@ export class SupabaseProductStore implements ProductStore {
     return Boolean(data)
   }
 
-  async getRecord(githubId: number, handle?: string): Promise<ProductSnapshotRecord | null> {
+  async getRecord(githubId: number, _handle?: string): Promise<ProductSnapshotRecord | null> {
     const client = getSupabaseAdminClient()
     const byId = await client
       .from('product_snapshots')
-      .select('github_id, handle, snapshot_json, updated_at')
+      .select('github_id, handle, snapshot_json, updated_at, row_version')
       .eq('github_id', githubId)
       .maybeSingle()
     if (byId.error) throwDatabaseError('product_snapshots.get', byId.error)
-    let data = byId.data as ProductSnapshotRow | null
-    if (!data && handle) {
-      const legacy = await client
-        .from('product_snapshots')
-        .select('github_id, handle, snapshot_json, updated_at')
-        .eq('handle', normalizeHandle(handle))
-        .is('github_id', null)
-        .maybeSingle()
-      if (legacy.error) throwDatabaseError('product_snapshots.get', legacy.error)
-      data = legacy.data as ProductSnapshotRow | null
-      if (data && data.github_id === null) {
-        const migrated = await client
-          .from('product_snapshots')
-          .update({ github_id: githubId })
-          .eq('handle', normalizeHandle(handle))
-          .is('github_id', null)
-          .select('github_id, handle, snapshot_json, updated_at')
-          .maybeSingle()
-        if (migrated.error) throwDatabaseError('product_snapshots.migrate', migrated.error)
-        if (migrated.data) {
-          // The conditional update returned a row only when this caller won
-          // the legacy-row claim. If another account won the race, re-read by
-          // immutable ID instead of returning data that belongs to it.
-          data = migrated.data as ProductSnapshotRow
-        } else {
-          const claimed = await client
-            .from('product_snapshots')
-            .select('github_id, handle, snapshot_json, updated_at')
-            .eq('github_id', githubId)
-            .maybeSingle()
-          if (claimed.error) throwDatabaseError('product_snapshots.get', claimed.error)
-          data = claimed.data as ProductSnapshotRow | null
-        }
-      }
-    }
-    if (!data) return null
+    const data = byId.data as ProductSnapshotRow | null
+    // A row with only a mutable handle cannot be safely attributed to this
+    // immutable GitHub identity. Do not adopt legacy rows on a name match.
+    if (!data || !data.row_version) return null
     const snapshot = deserializeProductSnapshot(
       typeof data.snapshot_json === 'string'
         ? data.snapshot_json
@@ -111,6 +82,7 @@ export class SupabaseProductStore implements ProductStore {
           handle: data.handle,
           snapshot,
           updatedAt: data.updated_at,
+          version: data.row_version,
         }
       : null
   }
@@ -119,21 +91,26 @@ export class SupabaseProductStore implements ProductStore {
     return (await this.getRecord(githubId, handle))?.snapshot ?? null
   }
 
-  async remove(githubId: number, handle?: string): Promise<void> {
+  async remove(githubId: number, _handle?: string): Promise<void> {
     const client = getSupabaseAdminClient()
     const { error } = await client
       .from('product_snapshots')
       .delete()
       .eq('github_id', githubId)
     if (error) throwDatabaseError('product_snapshots.remove', error)
-    if (handle) {
-      const legacy = await client
-        .from('product_snapshots')
-        .delete()
-        .eq('handle', normalizeHandle(handle))
-        .is('github_id', null)
-      if (legacy.error) throwDatabaseError('product_snapshots.remove', legacy.error)
-    }
+  }
+
+  async removeIfVersion(githubId: number, expectedVersion: string): Promise<boolean> {
+    const client = getSupabaseAdminClient()
+    const { data, error } = await client
+      .from('product_snapshots')
+      .delete()
+      .eq('github_id', githubId)
+      .eq('row_version', expectedVersion)
+      .select('github_id')
+      .maybeSingle()
+    if (error) throwDatabaseError('product_snapshots.removeIfVersion', error)
+    return Boolean(data)
   }
 }
 

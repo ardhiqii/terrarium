@@ -176,6 +176,56 @@ describe('SupabaseGithubAccountStore', () => {
     )
   })
 
+  it('clears the credential and baselines on disconnect while keeping choices', async () => {
+    const update = vi.fn().mockReturnThis()
+    const eq = vi.fn().mockReturnThis()
+    const maybeSingle = vi.fn().mockResolvedValue({ data: { github_id: 42 }, error: null })
+    const select = vi.fn().mockReturnValue({ maybeSingle })
+    mockedGetClient.mockReturnValue({
+      from: vi.fn().mockReturnValue({ update, eq, select }),
+    } as never)
+
+    await new SupabaseGithubAccountStore().clearCredential(42)
+
+    expect(eq).toHaveBeenCalledWith('github_id', 42)
+    const sent = update.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(sent).toMatchObject({
+      token_iv: '',
+      token_tag: '',
+      token_ciphertext: '',
+      scopes_json: [],
+      baseline_by_repository_id_json: {},
+      last_synced_at: null,
+      disconnected_at: expect.any(String),
+    })
+    // The row survives, so the user's repository choices are untouched.
+    expect(sent).not.toHaveProperty('tracked_repository_ids_json')
+    expect(sent).not.toHaveProperty('excluded_repository_ids_json')
+    expect(sent).not.toHaveProperty('auto_include_personal')
+  })
+
+  it('treats a missing account row as already disconnected and still reports database failures', async () => {
+    // A session whose account row is gone is disconnected already. Rejecting
+    // the call would leave the panel answering 500 forever on a no-op.
+    const update = vi.fn().mockReturnThis()
+    const eq = vi.fn().mockReturnThis()
+    const select = vi.fn().mockReturnValue({ maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }) })
+    mockedGetClient.mockReturnValue({
+      from: vi.fn().mockReturnValue({ update, eq, select }),
+    } as never)
+    await expect(new SupabaseGithubAccountStore().clearCredential(42)).resolves.toBeUndefined()
+
+    const errorSelect = vi.fn().mockReturnValue({
+      maybeSingle: vi.fn().mockResolvedValue({ data: null, error: { message: 'denied' } }),
+    })
+    mockedGetClient.mockReturnValue({
+      from: vi.fn().mockReturnValue({ update, eq, select: errorSelect }),
+    } as never)
+    await expect(new SupabaseGithubAccountStore().clearCredential(42)).rejects.toThrow(
+      'Supabase github_accounts.clearCredential failed: denied',
+    )
+  })
+
   it('removes accounts and reports database failures', async () => {
     const removeEq = vi.fn().mockResolvedValue({ error: null })
     mockedGetClient.mockReturnValue({
@@ -191,5 +241,54 @@ describe('SupabaseGithubAccountStore', () => {
     await expect(new SupabaseGithubAccountStore().remove(42)).rejects.toThrow(
       'Supabase github_accounts.remove failed: denied',
     )
+  })
+
+  it('sends the baseline concurrency guard as JSON text, not a raw object', async () => {
+    // REGRESSION: `baseline_by_repository_id_json` is a jsonb column, and
+    // supabase-js turns a filter value that is not a string into
+    // `String(value)`. Passing the object therefore sent `[object Object]`,
+    // Postgres rejected the statement with "invalid input syntax for type
+    // json", the update threw, and the route answered a bodyless 500. The
+    // baseline was never committed, so every sync re-baselined and the account
+    // could never earn XP.
+    const baseline = { 'repo-1': '2024-01-01T00:00:00.000Z' }
+    const next = { 'repo-1': '2024-02-01T00:00:00.000Z' }
+    const maybeSingle = vi.fn()
+      .mockResolvedValueOnce({
+        data: {
+          github_id: 42,
+          handle: 'torvalds',
+          token_iv: 'iv',
+          token_tag: 'tag',
+          token_ciphertext: 'ciphertext',
+          scopes_json: [],
+          tracked_repository_ids_json: [],
+          excluded_repository_ids_json: [],
+          auto_include_personal: false,
+          auto_include_organizations_json: [],
+          baseline_by_repository_id_json: baseline,
+          last_synced_at: null,
+        },
+        error: null,
+      })
+      .mockResolvedValueOnce({ data: { github_id: 42 }, error: null })
+    const eq = vi.fn().mockReturnThis()
+    const query = {
+      select: vi.fn().mockReturnThis(),
+      update: vi.fn().mockReturnThis(),
+      eq,
+      maybeSingle,
+    }
+    mockedGetClient.mockReturnValue({ from: vi.fn().mockReturnValue(query) } as never)
+
+    const advanced = await new SupabaseGithubAccountStore()
+      .advanceBaseline(42, baseline, next, '2024-02-01T00:00:00.000Z')
+
+    expect(advanced).toBe(true)
+    const guard = eq.mock.calls.find((call) => call[0] === 'baseline_by_repository_id_json')
+    expect(guard).toBeDefined()
+    // A raw object here is the bug: PostgREST receives `[object Object]`.
+    expect(typeof guard?.[1]).toBe('string')
+    expect(JSON.parse(String(guard?.[1]))).toEqual(baseline)
   })
 })
