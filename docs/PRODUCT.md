@@ -146,6 +146,19 @@ deletes require the current server version and are conditional at the store,
 so an open identity chooser cannot erase a newer device's progress. Legacy
 rows that have no immutable GitHub ID are not adopted by mutable handle.
 
+If one legacy GitHub receipt no longer matches the canonical product payload,
+`/github` keeps the browser ledger, proofs, encounters, and signed checkpoint
+in the account-local recovery record instead of clearing them. **Repair receipts
+and retry** sends the bounded opaque event IDs together with the short-lived
+signed checkpoint that originally named them, or preserves the old server
+receipt for a legacy event, to `POST /api/github/repair`; the server re-reads
+the approved 16-repository window, checks GitHub attribution
+and ownership, and mints receipts only for independently confirmed activity.
+Unrecoverable events remain visible as blocked and are never downgraded to local
+provenance. Valid events may be backed up without advancing the checkpoint; the
+last successful checkpoint advances only after a repaired snapshot is stored.
+Repeated repair or sync is idempotent, and XP/caps are recomputed server-side.
+
 The `/companions` archive reads the trusted account product snapshot when a
 user is signed in and one exists. It shows that account-scoped XP and
 progression separately from the local garden archive. A signed-in user with no

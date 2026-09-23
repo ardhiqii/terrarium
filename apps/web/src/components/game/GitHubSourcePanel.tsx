@@ -21,16 +21,21 @@ import {
   ensureBrowserGuestProfile,
   loadBrowserEncounters,
   loadBrowserLedger,
+  loadGithubSyncRecovery,
   loadRevealedDraws,
   loadSyncRequestUsage,
   loadSyncScheduleState,
   loadVerifiedEventProofs,
   saveBrowserEncounters,
   saveBrowserLedger,
+  saveGithubSyncRecovery,
+  mergeVerifiedEventProofs,
   saveRevealedDraws,
   saveSyncRequestUsage,
   saveSyncScheduleState,
   saveVerifiedEventProofs,
+  clearGithubSyncRecovery,
+  type StoredGithubSyncRecovery,
 } from '@/lib/game/product-browser-storage'
 import { saveGuestProfile, type GuestProfile } from '@/lib/game/guest-profile'
 import {
@@ -60,6 +65,12 @@ import {
   type ProductSnapshot,
 } from '@/lib/sync/product-snapshot'
 import { productEventId } from '@/lib/sync/product-event-id'
+import {
+  blockedEventIds,
+  parseReceiptFailures,
+  parseReceiptRepairResponse,
+  type ReceiptFailure,
+} from '@/lib/sync/github-receipt-repair'
 import { loginHrefFor } from '@/lib/sync/oauth-return-path'
 import {
   addSyncRequestUsage,
@@ -484,6 +495,45 @@ async function uploadProductSnapshot(snapshot: ProductSnapshot, checkpoint: stri
   return { ok: response.ok, status: response.status, body: await responseBody(response) }
 }
 
+/** Keep invalid events out of a best-effort cloud projection without touching
+ * the browser ledger. The full snapshot stays in StoredGithubSyncRecovery so
+ * the blocked events remain visible and retryable. */
+function snapshotWithoutBlockedEvents(
+  snapshot: ProductSnapshot,
+  blockedIds: ReadonlySet<string>,
+): ProductSnapshot {
+  if (blockedIds.size === 0) return snapshot
+  return {
+    ...snapshot,
+    events: snapshot.events.filter((event) => !blockedIds.has(event.eventId)),
+  }
+}
+
+function sameReceiptPayload(
+  left: ProductSnapshot['events'][number],
+  right: ProductSnapshot['events'][number],
+): boolean {
+  return JSON.stringify({
+    eventId: left.eventId,
+    companionId: left.companionId,
+    source: left.source,
+    provenance: left.provenance,
+    category: left.category,
+    occurredAt: left.occurredAt,
+    cap: left.cap ?? null,
+    metadata: left.metadata ?? null,
+  }) === JSON.stringify({
+    eventId: right.eventId,
+    companionId: right.companionId,
+    source: right.source,
+    provenance: right.provenance,
+    category: right.category,
+    occurredAt: right.occurredAt,
+    cap: right.cap ?? null,
+    metadata: right.metadata ?? null,
+  })
+}
+
 /**
  * Read the account's cloud snapshot so the identity chooser can describe it.
  * Returns null when the copy cannot be read; the chooser then says so instead
@@ -578,6 +628,12 @@ export function GitHubSourcePanel() {
   const [draftAutoPersonal, setDraftAutoPersonal] = useState(false)
   const [draftOrganizations, setDraftOrganizations] = useState<string[]>([])
   const [productState, setProductState] = useState<ProductState | null>(null)
+  const [recovery, setRecovery] = useState<StoredGithubSyncRecovery | null>(null)
+  const recoveryRef = useRef<StoredGithubSyncRecovery | null>(null)
+  const setRecoveryState = useCallback((next: StoredGithubSyncRecovery | null) => {
+    recoveryRef.current = next
+    setRecovery(next)
+  }, [])
   const [revealedDraws, setRevealedDraws] = useState<string[]>([])
   const [accountNamespace, setAccountNamespace] = useState<string | null>(null)
   // `disconnected` keeps the progression panels visible after the user
@@ -656,13 +712,14 @@ export function GitHubSourcePanel() {
   const hydrateState = useCallback(() => {
     const state = browserState()
     setProductState(state)
+    setRecoveryState(null)
     setRevealedDraws(loadRevealedDraws(browserProductStorage()))
     const stored = loadSyncScheduleState(browserProductStorage())
     setSchedule(stored.interval)
     lastAttemptAtRef.current = stored.lastAttemptAt
     syncUsageRef.current = loadSyncRequestUsage(browserProductStorage())
     return state
-  }, [])
+  }, [setRecoveryState])
 
   const applySettings = useCallback((next: GithubSettings) => {
     setSettings(next)
@@ -787,6 +844,7 @@ export function GitHubSourcePanel() {
       confirmedGithubIdRef.current = accountGithubIdRef.current
       const namespace = `github-${data.githubId}`
       setAccountNamespace(namespace)
+      setRecoveryState(loadGithubSyncRecovery(browserProductStorage(), namespace))
       const storedSchedule = loadSyncScheduleState(browserProductStorage(), namespace)
       setSchedule(storedSchedule.interval)
       lastAttemptAtRef.current = storedSchedule.lastAttemptAt
@@ -803,7 +861,7 @@ export function GitHubSourcePanel() {
     } finally {
       setRefreshingList(false)
     }
-  }, [applySettings])
+  }, [applySettings, setRecoveryState])
 
   // A layout effect runs before the browser paints, so a remount paints the
   // cached listing in the first frame instead of flashing the loading state.
@@ -982,6 +1040,19 @@ export function GitHubSourcePanel() {
         accountNamespace ?? undefined,
       )
       const checkpoint = typeof body.checkpoint === 'string' ? body.checkpoint : null
+      // Persist the exact product payload and signed checkpoint before the
+      // network write. A receipt failure must survive a reload; the next retry
+      // repairs this preserved window instead of rescanning and losing the
+      // only token that can advance its baseline.
+      const pendingRecovery: StoredGithubSyncRecovery = {
+        snapshot: uploadSnapshot,
+        checkpoint,
+        failures: [],
+        blockedEventIds: [],
+        attemptedAt: new Date().toISOString(),
+      }
+      saveGithubSyncRecovery(storage, pendingRecovery, accountNamespace ?? undefined)
+      setRecoveryState(pendingRecovery)
       // The checkpoint travels in the BODY. A real account's signed checkpoint
       // is tens of kilobytes (measured ~21 KB at 500 events), far beyond the
       // request-header budget of the platform in front of the function, where
@@ -989,6 +1060,29 @@ export function GitHubSourcePanel() {
       // committed. A body has a megabyte-scale allowance instead.
       const upload = await uploadProductSnapshot(uploadSnapshot, checkpoint)
       const snapshotBody = upload.body
+      if (upload.ok) {
+        clearGithubSyncRecovery(storage, accountNamespace ?? undefined)
+        setRecoveryState(null)
+      }
+      if (!upload.ok) {
+        const failures = parseReceiptFailures(snapshotBody)
+        if (failures.length === 0) {
+          // A guest conflict, checkpoint race, or transient server failure is
+          // not a receipt-repair case. Keep the normal retry/chooser path
+          // explicit instead of presenting a misleading repair action.
+          clearGithubSyncRecovery(storage, accountNamespace ?? undefined)
+          setRecoveryState(null)
+        } else {
+          const failedRecovery: StoredGithubSyncRecovery = {
+            ...pendingRecovery,
+            failures,
+            blockedEventIds: [],
+            attemptedAt: new Date().toISOString(),
+          }
+          saveGithubSyncRecovery(storage, failedRecovery, accountNamespace ?? undefined)
+          setRecoveryState(failedRecovery)
+        }
+      }
       if (upload.ok && accountNamespace) {
         // The server may have merged a second device's events or refreshed a
         // receipt-backed aggregate. Keep this browser on the exact response,
@@ -1008,9 +1102,12 @@ export function GitHubSourcePanel() {
       const truncatedNote = body.truncated === true
         ? ' The scan window ended before the oldest activity; earlier history is not awarded.'
         : ''
+      const receiptFailures = upload.ok ? [] : parseReceiptFailures(snapshotBody)
       let cloudNote = upload.ok
-        ? ' Condition saved.'
-        : ` Local progress is safe, but cloud condition was not saved: ${errorMessage(snapshotBody, 'try again later')}`
+        ? ' Account backup committed successfully.'
+        : receiptFailures.length > 0
+          ? ` ${receiptFailures.length} verified receipt${receiptFailures.length === 1 ? '' : 's'} blocked the account backup. Repair and retry below.`
+          : ` New activity is kept locally, but the account backup was not committed: ${errorMessage(snapshotBody, 'try again later')}`
       // The identity guard is the one refusal that needs a decision rather than
       // a retry: the account already stores a different guest profile, so both
       // copies are described and the user chooses instead of dead-ending the
@@ -1094,7 +1191,198 @@ export function GitHubSourcePanel() {
         // Browser storage is unavailable; the in-memory cadence still holds.
       }
     }
-  }, [accountNamespace, loadRepositories, productState, saveSettings, settingsChanged, showGuestConflict])
+  }, [accountNamespace, loadRepositories, productState, saveSettings, settingsChanged, showGuestConflict, setRecoveryState])
+
+  /**
+   * Repair only the bounded receipt failures named by the product route, then
+   * replay the preserved snapshot/checkpoint. A blocked event is omitted from
+   * the best-effort cloud projection, never deleted from the browser ledger.
+   */
+  const repairAndRetry = useCallback(async () => {
+    const pending = recoveryRef.current
+    const namespace = accountNamespace
+    const state = productState
+    if (!pending || !namespace || !state || busy) return
+    const targets: ReceiptFailure[] = pending.failures.length > 0
+      ? [...pending.failures]
+      : pending.blockedEventIds.map((eventId) => ({
+          eventId,
+          reason: 'receipt-repair-pending',
+          payloadDigest: null,
+        }))
+    const pendingEvents = new Map(pending.snapshot.events.map((event) => [event.eventId, event]))
+    const legacyProofs = Object.fromEntries(
+      targets.flatMap((target) => {
+        const proof = pendingEvents.get(target.eventId)?.verifiedProof
+        return proof ? [[target.eventId, proof] as const] : []
+      }),
+    )
+    if (!pending.checkpoint && Object.keys(legacyProofs).length !== targets.length) {
+      setLastSyncSummary('Receipt repair needs a fresh signed checkpoint or a preserved server receipt. Run Sync again to retry this local condition.')
+      return
+    }
+
+    setBusy(true)
+    setMessage('')
+    requestsThisSyncRef.current = 0
+    try {
+      const storage = browserProductStorage()
+      let repairedSnapshot = pending.snapshot
+      const unresolved = new Map<string, ReceiptFailure>(targets.map((failure) => [failure.eventId, failure]))
+      const blocked = new Set(pending.blockedEventIds)
+      for (const eventId of pending.blockedEventIds) unresolved.set(eventId, {
+        eventId,
+        reason: 'receipt-repair-pending',
+        payloadDigest: null,
+      })
+
+      if (targets.length > 0) {
+        const response = await fetch('/api/github/repair', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            activeCompanionId: state.profile.activeCompanionId,
+            eventIds: targets.map((failure) => failure.eventId),
+            checkpoint: pending.checkpoint,
+            proofs: legacyProofs,
+          }),
+        })
+        const body = await responseBody(response)
+        const parsed = response.ok ? parseReceiptRepairResponse(body) : null
+        if (!response.ok || !parsed) {
+          // Keep the exact pending payload and checkpoint. A rate limit or
+          // deployment outage is not evidence that the browser record is bad.
+          setLastSyncSummary(`Receipt repair could not run: ${errorMessage(body, 'try again later')}`)
+          return
+        }
+        requestsThisSyncRef.current = Math.max(requestsThisSyncRef.current, parsed.requestsDone)
+
+        const localById = new Map(pending.snapshot.events.map((event) => [event.eventId, event]))
+        const accepted = new Map<string, string>()
+        for (const item of parsed.repaired) {
+          const local = localById.get(item.eventId)
+          // The server must independently confirm the same canonical payload.
+          // In particular, do not let a repair reassign a stable event to a new
+          // companion or change its timestamp/cap/metadata to make a receipt fit.
+          if (!local || !sameReceiptPayload(local, item.event)) {
+            blocked.add(item.eventId)
+            unresolved.set(item.eventId, {
+              eventId: item.eventId,
+              reason: 'payload-shape-mismatch',
+              payloadDigest: null,
+            })
+            continue
+          }
+          accepted.set(item.eventId, item.proof)
+          blocked.delete(item.eventId)
+          unresolved.delete(item.eventId)
+        }
+        for (const item of parsed.blocked) {
+          blocked.add(item.eventId)
+          const previous = unresolved.get(item.eventId)
+          unresolved.set(item.eventId, {
+            eventId: item.eventId,
+            reason: item.reason,
+            payloadDigest: previous?.payloadDigest ?? null,
+          })
+        }
+        for (const target of targets) {
+          if (!accepted.has(target.eventId)) blocked.add(target.eventId)
+        }
+        repairedSnapshot = {
+          ...pending.snapshot,
+          events: pending.snapshot.events.map((event) => {
+            const proof = accepted.get(event.eventId)
+            return proof ? { ...event, verifiedProof: proof } : event
+          }),
+        }
+
+        const remainingFailures = [...unresolved.values()].filter((failure) => blocked.has(failure.eventId))
+        const nextRecovery: StoredGithubSyncRecovery = {
+          snapshot: repairedSnapshot,
+          // Keep the signed token even while a best-effort projection is
+          // uploaded without it. It is needed when the remaining blocked
+          // events are repaired later.
+          checkpoint: pending.checkpoint,
+          failures: remainingFailures,
+          blockedEventIds: [...blocked],
+          attemptedAt: new Date().toISOString(),
+        }
+        saveGithubSyncRecovery(storage, nextRecovery, namespace)
+        setRecoveryState(nextRecovery)
+        const repairedProofs = proofsFromSnapshotEvents(repairedSnapshot.events)
+        mergeVerifiedEventProofs(storage, repairedProofs, namespace)
+      }
+
+      const blockedIds = blockedEventIds([...blocked].map((eventId) => ({ eventId, reason: 'blocked' })))
+      const uploadSnapshot = snapshotWithoutBlockedEvents(repairedSnapshot, blockedIds)
+      // A partial projection must not advance the baseline, but the original
+      // token remains durable for the eventual all-events retry.
+      const uploadCheckpoint = blocked.size > 0 ? null : pending.checkpoint
+      const upload = await uploadProductSnapshot(uploadSnapshot, uploadCheckpoint)
+      if (!upload.ok) {
+        const failures = parseReceiptFailures(upload.body)
+        const uploadBlocked = new Set(blocked)
+        for (const failure of failures) uploadBlocked.add(failure.eventId)
+        const failedRecovery: StoredGithubSyncRecovery = {
+          snapshot: repairedSnapshot,
+          checkpoint: pending.checkpoint,
+          failures: failures.length > 0 ? failures : [...unresolved.values()],
+          blockedEventIds: [...uploadBlocked],
+          attemptedAt: new Date().toISOString(),
+        }
+        saveGithubSyncRecovery(storage, failedRecovery, namespace)
+        setRecoveryState(failedRecovery)
+        setLastSyncSummary(`Receipt repair ran, but the account backup was not committed: ${errorMessage(upload.body, 'try again later')}`)
+        return
+      }
+
+      if (blocked.size > 0) {
+        // The server has the valid projection; retain the full local state and
+        // its blocked overlay rather than adopting a response that would hide
+        // the unrecoverable browser events or encounters.
+        setLastSyncSummary(`${targets.length - blocked.size} receipt${targets.length - blocked.size === 1 ? '' : 's'} repaired and valid progress backed up. ${blocked.size} event${blocked.size === 1 ? '' : 's'} remain blocked; the last successful checkpoint was not advanced.`)
+        return
+      }
+
+      clearGithubSyncRecovery(storage, namespace)
+      setRecoveryState(null)
+      const uploaded = adoptUploadedSnapshot(upload.body, state.profile, namespace)
+      if (uploaded) setProductState(uploaded)
+      setLastSyncSummary('Verified receipts repaired. Account backup committed successfully; the last successful checkpoint advanced.')
+    } catch (error) {
+      setLastSyncSummary(error instanceof Error ? error.message : 'Receipt repair could not be completed.')
+    } finally {
+      setBusy(false)
+      const attemptedAt = Date.now()
+      lastAttemptAtRef.current = attemptedAt
+      if (requestsThisSyncRef.current > 0) {
+        lastObservedRequestsRef.current = requestsThisSyncRef.current
+        syncUsageRef.current = addSyncRequestUsage(
+          syncUsageRef.current,
+          attemptedAt,
+          requestsThisSyncRef.current,
+        )
+      }
+      try {
+        const storage = browserProductStorage()
+        syncUsageRef.current = saveSyncRequestUsage(
+          storage,
+          syncUsageRef.current,
+          namespace ?? undefined,
+          attemptedAt,
+        )
+        saveSyncScheduleState(
+          storage,
+          { interval: scheduleRef.current, lastAttemptAt: attemptedAt },
+          namespace ?? undefined,
+        )
+      } catch {
+        // Browser storage is best effort; the recovery record itself was saved
+        // before the upload and remains the source of truth for a retry.
+      }
+    }
+  }, [accountNamespace, busy, productState, setRecoveryState])
 
   /**
    * Resolve the identity choice the 409 left open.
@@ -1178,6 +1466,8 @@ export function GitHubSourcePanel() {
           pending.checkpoint,
         )
         if (upload.ok) {
+          clearGithubSyncRecovery(storage, namespace)
+          setRecoveryState(null)
           const uploaded = adoptUploadedSnapshot(upload.body, state.profile, namespace)
           if (uploaded) setProductState(uploaded)
         }
@@ -1237,6 +1527,8 @@ export function GitHubSourcePanel() {
           }))
           return
         }
+        clearGithubSyncRecovery(storage, namespace)
+        setRecoveryState(null)
         const merged = adoptUploadedSnapshot(upload.body, adopted.profile, namespace)
         if (merged) setProductState(merged)
         showGuestConflict(null)
@@ -1268,6 +1560,8 @@ export function GitHubSourcePanel() {
           restored.ledger.events.map((event) => productEventId(event.eventId)),
           namespace,
         )
+        clearGithubSyncRecovery(storage, namespace)
+        setRecoveryState(null)
       } catch {
         setLastSyncSummary(guestIdentityActionSummary(action, {
           result: 'failed',
@@ -1292,6 +1586,8 @@ export function GitHubSourcePanel() {
         }))
         return
       }
+      clearGithubSyncRecovery(storage, namespace)
+      setRecoveryState(null)
       const uploaded = adoptUploadedSnapshot(upload.body, restored.profile, namespace)
       if (uploaded) setProductState(uploaded)
       showGuestConflict(null)
@@ -1300,7 +1596,7 @@ export function GitHubSourcePanel() {
       setResolvingGuestConflict(null)
       setGuestConflictStage('idle')
     }
-  }, [accountNamespace, guestConflict, productState, resolvingGuestConflict, showGuestConflict])
+  }, [accountNamespace, guestConflict, productState, resolvingGuestConflict, setRecoveryState, showGuestConflict])
 
   const changeSchedule = useCallback((next: SyncScheduleInterval) => {
     setSchedule(next)
@@ -1608,6 +1904,43 @@ export function GitHubSourcePanel() {
             dead end. Both copies are shown with what they actually hold, and
             every action reports its outcome back in the summary below.
           */}
+          {recovery && (
+            <section
+              aria-label="GitHub receipt recovery"
+              className="mt-6 border p-5 sm:p-6"
+              style={{ borderColor: 'var(--accent)', background: 'var(--paper-raised)' }}
+            >
+              <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--accent)' }}>Account backup recovery</p>
+              <h2 className="font-ui mt-2 text-2xl font-semibold tracking-tight">
+                {recovery.blockedEventIds.length > 0 ? 'Some verified activity is blocked' : 'Receipt repair is ready'}
+              </h2>
+              <p className="font-prose mt-2 max-w-2xl text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
+                {recovery.blockedEventIds.length > 0
+                  ? `${recovery.blockedEventIds.length} event${recovery.blockedEventIds.length === 1 ? '' : 's'} remain visible in this browser but could not be confirmed in the bounded GitHub repair window. Valid progress can still be backed up; the last successful checkpoint stays unchanged.`
+                  : `${recovery.failures.length || 'The'} verified receipt${recovery.failures.length === 1 ? '' : 's'} blocked the account backup. Your browser ledger and encounters are intact.`}
+              </p>
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => void repairAndRetry()}
+                  disabled={busy}
+                  aria-busy={busy}
+                  className="ui-row font-ui border px-4 py-2 text-sm disabled:cursor-wait disabled:opacity-50"
+                  style={{ borderColor: 'var(--accent)' }}
+                >
+                  {busy ? 'Repairing…' : 'Repair receipts and retry'}
+                </button>
+                <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>
+                  Attempted {new Date(recovery.attemptedAt).toLocaleString()}
+                </span>
+              </div>
+              <p className="font-prose mt-3 text-xs leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
+                Last successful checkpoint: {settings.lastSyncedAt ? new Date(settings.lastSyncedAt).toLocaleString() : 'not recorded'}.
+                {recovery.checkpoint ? ' The preserved signed checkpoint will be committed only after the repaired snapshot is stored.' : ' A fresh normal sync may be needed to issue a new checkpoint.'}
+              </p>
+            </section>
+          )}
+
           {guestConflict && (
             <section
               aria-label="Cloud backup needs a choice"

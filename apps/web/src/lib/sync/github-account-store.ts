@@ -179,6 +179,13 @@ function sameBaselineMap(
   )
 }
 
+/** Never let a replayed or delayed checkpoint move the successful time back. */
+function latestTimestamp(current: string | null, next: string | null): string | null {
+  if (!current || Number.isNaN(Date.parse(current))) return next && !Number.isNaN(Date.parse(next)) ? next : null
+  if (!next || Number.isNaN(Date.parse(next))) return current
+  return Date.parse(next) > Date.parse(current) ? next : current
+}
+
 export class GithubAccountSqliteStore implements GithubAccountStore {
   private readonly db: DatabaseSync
 
@@ -329,19 +336,30 @@ export class GithubAccountSqliteStore implements GithubAccountStore {
       const row = this.row(githubId)
       if (!row) throw new Error('GitHub account credential not found')
       const current = rowSettings(row)
-      if (sameBaselineMap(current.baselineByRepositoryId, nextBaselineByRepositoryId)) {
-        this.db.exec('COMMIT')
-        return true
-      }
-      if (!sameBaselineMap(current.baselineByRepositoryId, expectedBaselineByRepositoryId)) {
+      const nextSuccessfulAt = latestTimestamp(current.lastSyncedAt, lastSyncedAt)
+      const sameNextBaseline = sameBaselineMap(current.baselineByRepositoryId, nextBaselineByRepositoryId)
+      if (!sameNextBaseline && !sameBaselineMap(current.baselineByRepositoryId, expectedBaselineByRepositoryId)) {
         this.db.exec('COMMIT')
         return false
       }
+      // A product retry can legitimately carry the same baseline map after a
+      // prior product write failed or an old deployment left lastSyncedAt null.
+      // Record the newer successful checkpoint even when no repository key
+      // changed, while keeping timestamp updates monotonic.
       const clean = cleanSettings({
         ...current,
-        baselineByRepositoryId: nextBaselineByRepositoryId,
-        lastSyncedAt,
+        baselineByRepositoryId: sameNextBaseline
+          ? current.baselineByRepositoryId
+          : nextBaselineByRepositoryId,
+        lastSyncedAt: nextSuccessfulAt,
       })
+      if (
+        sameNextBaseline &&
+        clean.lastSyncedAt === current.lastSyncedAt
+      ) {
+        this.db.exec('COMMIT')
+        return true
+      }
       this.db
         .prepare(
           `UPDATE github_accounts SET

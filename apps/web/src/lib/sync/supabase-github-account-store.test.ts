@@ -176,6 +176,39 @@ describe('SupabaseGithubAccountStore', () => {
     )
   })
 
+  it('updates the successful timestamp for an unchanged baseline without moving it backwards', async () => {
+    const baseline = { 'repo-1': '2024-01-01T00:00:00.000Z' }
+    const currentRow = {
+      github_id: 42,
+      handle: 'torvalds',
+      token_iv: 'iv',
+      token_tag: 'tag',
+      token_ciphertext: 'ciphertext',
+      scopes_json: [],
+      tracked_repository_ids_json: [],
+      excluded_repository_ids_json: [],
+      auto_include_personal: false,
+      auto_include_organizations_json: [],
+      baseline_by_repository_id_json: baseline,
+      last_synced_at: null,
+    }
+    const maybeSingle = vi.fn()
+      .mockResolvedValueOnce({ data: currentRow, error: null })
+      .mockResolvedValueOnce({ data: { github_id: 42 }, error: null })
+    const query = {
+      select: vi.fn().mockReturnThis(),
+      update: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      maybeSingle,
+    }
+    mockedGetClient.mockReturnValue({ from: vi.fn().mockReturnValue(query) } as never)
+    const store = new SupabaseGithubAccountStore()
+
+    await expect(store.advanceBaseline(42, baseline, baseline, '2024-02-01T00:00:00.000Z')).resolves.toBe(true)
+    const sent = query.update.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(sent.last_synced_at).toBe('2024-02-01T00:00:00.000Z')
+  })
+
   it('clears the credential and baselines on disconnect while keeping choices', async () => {
     const update = vi.fn().mockReturnThis()
     const eq = vi.fn().mockReturnThis()

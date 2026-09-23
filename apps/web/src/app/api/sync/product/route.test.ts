@@ -457,7 +457,16 @@ describe('POST/GET/DELETE /api/sync/product', () => {
     const githubId = await seedGithubAccount('octocat')
     const { POST } = await import('./route')
     const { getGithubAccountStore } = await import('@/lib/sync/github-account-store')
-    const value = snapshot(['event-1'])
+    const local = snapshot(['event-1'])
+    const unsigned = {
+      ...local.events[0],
+      source: 'github' as const,
+      provenance: 'verified' as const,
+    }
+    const value: ProductSnapshot = {
+      ...local,
+      events: [{ ...unsigned, verifiedProof: issueVerifiedEventProof(unsigned, githubId) }],
+    }
     const checkpoint = checkpointFor(githubId, value, { '101': '2026-08-28T10:05:00.000Z' })
 
     const response = await POST(request('POST', JSON.stringify({ snapshot: value, checkpoint })))
@@ -467,6 +476,20 @@ describe('POST/GET/DELETE /api/sync/product', () => {
     expect(settings.baselineByRepositoryId).toEqual({ '101': '2026-08-28T10:05:00.000Z' })
     expect(settings.lastSyncedAt).toBe('2026-08-28T10:05:00.000Z')
     expect((await response.json()).events).toHaveLength(1)
+  })
+
+  it('rejects a checkpoint whose event ID is substituted with a local event', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const githubId = await seedGithubAccount('octocat')
+    const { POST } = await import('./route')
+    const value = snapshot(['event-1'])
+    const checkpoint = checkpointFor(githubId, value, { '101': '2026-08-28T10:05:00.000Z' })
+
+    const response = await POST(request('POST', JSON.stringify({ snapshot: value, checkpoint })))
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({ error: expect.stringMatching(/verified GitHub events/i) })
+    expect((await (await import('@/lib/sync/github-account-store')).getGithubAccountStore().getSettings(githubId)).baselineByRepositoryId).toEqual({})
   })
 
   it('rejects a body checkpoint whose issued events are missing from the snapshot', async () => {

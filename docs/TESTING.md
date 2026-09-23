@@ -42,6 +42,18 @@ payload validation, repository selection, browser receipt persistence, and size
 limits. Keep the focused command above scoped to the changed files when adding
 new sync hardening tests.
 
+Receipt recovery has a focused route contract with no live GitHub calls:
+`npx vitest run apps/web/src/app/api/github/repair/route.test.ts apps/web/src/lib/sync/github-receipt-repair.test.ts apps/web/src/lib/sync/github-source-policy.test.ts apps/web/src/lib/game/product-browser-storage.test.ts`.
+It covers server-owned re-reads, signed-checkpoint or preserved-receipt
+authorization, invented/untracked activity, partial reads, the 16-repository window, bounded
+diagnostics, namespace recovery persistence, and proof replacement without
+erasing unrelated receipts. The real-route
+round-trip in `apps/web/src/app/api/sync/product/github-sync-roundtrip.test.ts`
+also covers a legacy cap/metadata receipt mismatch, preserved encounters,
+checkpoint commit, and replay-safe XP. The product route rejects local-event
+substitution in a signed checkpoint, and both account-store adapters keep the
+successful checkpoint timestamp monotonic.
+
 The large-account baseline path has its own end-to-end contract:
 `apps/web/src/app/api/sync/product/github-sync-roundtrip.test.ts` drives both
 real routes and both SQLite stores with only the GitHub providers mocked. It
