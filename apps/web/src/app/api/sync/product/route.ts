@@ -312,10 +312,20 @@ export async function POST(request: NextRequest): Promise<Response> {
     : null
   if (checkpointToken && !checkpoint) return json(400, { error: 'Sync checkpoint is invalid or expired.' })
   if (checkpoint) {
+    const checkpointEvents = new Map(incoming.events.map((event) => [event.eventId, event]))
     const checkpointEventIds = new Set(checkpoint.eventIds)
-    const incomingEventIds = new Set(incoming.events.map((event) => event.eventId))
-    if ([...checkpointEventIds].some((eventId) => !incomingEventIds.has(eventId))) {
+    if ([...checkpointEventIds].some((eventId) => !checkpointEvents.has(eventId))) {
       return json(409, { error: 'Sync checkpoint events are missing from the product snapshot.' })
+    }
+    if ([...checkpointEventIds].some((eventId) => {
+      const event = checkpointEvents.get(eventId)
+      // A signed checkpoint is a baseline commit for verified GitHub activity,
+      // not a generic list of client-chosen IDs. This closes the substitution
+      // gap where a local event reused a checkpoint ID and advanced the source
+      // baseline without carrying the server-issued receipt.
+      return !event || event.source !== 'github' || event.provenance !== 'verified' || !event.verifiedProof
+    })) {
+      return json(409, { error: 'Sync checkpoint events must be verified GitHub events.' })
     }
     const currentSettings = await getGithubAccountStore().getSettings(session.githubId)
     if (

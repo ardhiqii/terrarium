@@ -468,7 +468,18 @@ route ran and the computed baseline was never committed. The token is still
 HMAC-signed and account-bound, the events it names must all be present in the
 submitted snapshot, and the stored baseline must still match the checkpoint, so
 moving the transport does not weaken the tamper-proof property. The old request
-header is still accepted for compatibility.
+header is still accepted for compatibility. A checkpoint event ID is also
+required to be a verified GitHub event with its receipt; a local event cannot
+be substituted to advance a source baseline. When a legacy receipt fails, the
+browser stores the exact cumulative snapshot and token in the account namespace
+and may call `POST /api/github/repair` with the bounded failed IDs plus the
+short-lived signed checkpoint that named them, or with a preserved old server
+receipt for a legacy event. The server re-fetches only its own approved
+repository window and reissues a receipt
+for activity it independently confirms. It does not write a snapshot or advance
+the baseline; the existing product upload remains the commit point. A blocked
+repair can upload a valid projection without a checkpoint while retaining the
+full local ledger and encounter state for a later retry.
 
 ## Hosted sync storage
 

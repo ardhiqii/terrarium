@@ -127,6 +127,13 @@ function sameBaselineMap(
   )
 }
 
+/** Never let a replayed or delayed checkpoint move the successful time back. */
+function latestTimestamp(current: string | null, next: string | null): string | null {
+  if (!current || Number.isNaN(Date.parse(current))) return next && !Number.isNaN(Date.parse(next)) ? next : null
+  if (!next || Number.isNaN(Date.parse(next))) return current
+  return Date.parse(next) > Date.parse(current) ? next : current
+}
+
 function throwDatabaseError(operation: string, error: { message: string }): never {
   throw new Error(`Supabase ${operation} failed: ${error.message}`)
 }
@@ -245,14 +252,18 @@ export class SupabaseGithubAccountStore implements GithubAccountStore {
   ): Promise<boolean> {
     const current = await this.get(githubId)
     if (!current) throw new Error('GitHub account credential not found')
-    if (sameBaselineMap(current.settings.baselineByRepositoryId, nextBaselineByRepositoryId)) return true
-    if (!sameBaselineMap(current.settings.baselineByRepositoryId, expectedBaselineByRepositoryId)) return false
+    const sameNextBaseline = sameBaselineMap(current.settings.baselineByRepositoryId, nextBaselineByRepositoryId)
+    if (!sameNextBaseline && !sameBaselineMap(current.settings.baselineByRepositoryId, expectedBaselineByRepositoryId)) return false
 
     const cleanNext = cleanSettings({
       ...current.settings,
-      baselineByRepositoryId: nextBaselineByRepositoryId,
-      lastSyncedAt,
+      baselineByRepositoryId: sameNextBaseline
+        ? current.settings.baselineByRepositoryId
+        : nextBaselineByRepositoryId,
+      lastSyncedAt: latestTimestamp(current.settings.lastSyncedAt, lastSyncedAt),
     })
+    if (sameNextBaseline && cleanNext.lastSyncedAt === current.settings.lastSyncedAt) return true
+
     const { data, error } = await getSupabaseAdminClient()
       .from('github_accounts')
       .update({

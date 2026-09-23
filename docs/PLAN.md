@@ -273,6 +273,138 @@ earning local XP.
 
 **Status: partial — `/write` onboarding/activity and extension payload compatibility are shipped; public collection/profile migration remains.**
 
+## Phase 5.1. GitHub receipt recovery and checkpoint repair
+
+**Status: implementation complete; hosted replay verification remains deployment work.**
+
+This is a recovery plan for the long-running case where GitHub activity appears
+in the browser but account XP and the last checkpoint do not move. It must be
+completed without clearing browser storage, disconnecting GitHub, deleting the
+cloud snapshot, or silently downgrading verified GitHub events to local events.
+
+### Confirmed incident evidence
+
+Observed on the signed-in `ardhiqii` browser session at
+`terrarium-aufa.vercel.app`:
+
+- GitHub access is healthy: **45 of 48 repositories** are tracked.
+- The browser ledger contains **38 verified GitHub events**, including events
+  from 23/09/2026, and 38 stored receipts.
+- The account API still reports `lastSyncedAt` on **18/09/2026**.
+- `GET /api/sync/product` returns a cloud snapshot with **0 events and 0 XP**.
+- The browser's retained diagnostic response records HTTP 400 with **four
+  `receipt-mismatch` events**.
+
+The checkpoint is the last successful server-side commit, not the number of
+sync button presses. The product route rejects the whole snapshot when one
+verified event has an invalid receipt; the signed GitHub checkpoint is advanced
+only after that product write succeeds. Therefore the current flow is:
+
+```text
+GitHub scan succeeds
+  -> events and receipts are kept locally
+  -> one legacy receipt fails product validation
+  -> whole product upload is rejected
+  -> checkpoint stays at 18/09
+  -> cloud snapshot stays at 0 XP
+```
+
+The original mismatch came from the old product-snapshot round trip: opaque cap
+keys could be hashed twice and receipt-bound metadata hashes could be dropped.
+The stable round-trip fix prevents new mismatches, but it does not repair the
+already-stored browser events whose old receipts are now incompatible.
+
+### Recovery design
+
+1. **Capture the failure without mutating state.**
+   - Record the `/api/github/sync` response, checkpoint token metadata, product
+     upload status, bounded receipt-failure IDs, and payload digests.
+   - Never clear `terrarium:guest-event-ledger:*`, proof storage, encounters,
+     or the account snapshot as a diagnostic shortcut.
+   - Confirm whether the user is on the Vercel deployment or the GHCR-backed
+     custom domain; deploy and verify the same host the user actually opens.
+
+2. **Add a server-authoritative receipt repair path.**
+   - `POST /api/github/repair` accepts only a bounded list of failed stable
+     event IDs, the active companion, and either the short-lived signed checkpoint
+     that originally named those IDs or a preserved old server receipt; it never
+     accepts client-supplied event facts or XP totals.
+   - Re-read and re-normalize the matching activity from GitHub using the
+     account's token, attribution rules, repository ownership, and current
+     canonical snapshot payload.
+   - Mint fresh server receipts for events that GitHub independently confirms.
+   - Preserve the original event ID, activity timestamp, cap, active-companion
+     ownership, and deduplication identity.
+   - Refuse events that cannot be recovered; never convert a failed GitHub event
+     into `local` provenance merely to make the upload pass. The repair scan uses
+     the same server-approved, 16-repository window as normal sync and reports
+     events outside that window as blocked.
+
+3. **Replay the preserved local condition and checkpoint.**
+   - Persist the exact product snapshot, signed checkpoint, bounded failure IDs,
+     and payload digests in the account namespace before upload.
+   - Replace only repaired receipt values in the browser ledger; retain every
+     other local event and encounter.
+   - Rebuild the product snapshot and retry the existing signed checkpoint.
+   - Commit the checkpoint only after the repaired product snapshot is stored.
+   - Keep optimistic row-version and baseline guards active so a stale repair
+     cannot overwrite newer account progress. A blocked projection may upload
+     unrelated valid events without a checkpoint, but the full browser ledger
+     remains local and retryable.
+
+4. **Make the failure visible and recoverable.**
+   - Show the number of blocked receipts and a repair/retry action instead of a
+     generic “cloud condition was not saved” message.
+   - Distinguish “new GitHub activity found locally” from “account backup
+     committed successfully.”
+   - Show the last successful checkpoint separately from the last attempted sync.
+
+5. **Deploy and verify the correct runtime.**
+   - Deploy the repaired client and server routes to the host used by the user.
+   - Apply and verify all three Supabase migrations before authenticated replay:
+     `20260914000000_initial_sync.sql`,
+     `20260914000001_harden_product_identity.sql`, and
+     `20260918000000_github_accounts_disconnect.sql`.
+   - Verify the GHCR-backed production image and the Vercel deployment are not
+     being confused; the previous GHCR workflow does not by itself update the
+     Vercel project.
+
+### Required regression coverage
+
+- Repair succeeds for an old cap/metadata receipt mismatch without losing the
+  local ledger or encounter state.
+- A repair cannot mint a receipt for invented activity, an unowned repository,
+  another GitHub account, or a client-modified XP value.
+- A mixed batch of repaired and new events stores once, advances the checkpoint
+  once, and does not double-award XP on replay.
+- An unrecoverable event remains visible as blocked and cannot poison unrelated
+  valid progress forever.
+- Stale checkpoint, guest identity, row-version, concurrent-device, empty
+  ledger, zero-event, and 16-repository scan cases remain safe.
+- Client-bundle safety continues to exclude receipt secrets and Node-only trust
+  code from client components.
+
+### Acceptance criteria
+
+This incident is resolved only when all of the following are true:
+
+1. Existing browser storage remains intact; no GitHub disconnect or cloud reset
+   is required.
+2. The preserved local events can be repaired or are explicitly reported as
+   unrecoverable with no silent deletion.
+3. `POST /api/sync/product` returns success for the repaired snapshot and the
+   signed checkpoint advances beyond 18/09/2026.
+4. `GET /api/sync/product` contains the preserved verified events and a
+   server-recomputed non-zero XP total.
+5. `/companions` shows the same persisted progression after reload and on a
+   second device/session.
+6. Repeating Sync does not duplicate events or XP, and a forged receipt remains
+   rejected.
+7. `npm run typecheck`, `npm test`, `npm run build`, `npx vitest run apps/web/src/app/api/github/repair/route.test.ts apps/web/src/app/api/sync/product/github-sync-roundtrip.test.ts`,
+   the scoped repair tests,
+   production deployment checks, and the Supabase migration verification all
+   pass.
+
 ## Phase 6. Surfaces and distribution
 
 **Depends on:** Phases 3 and 5.

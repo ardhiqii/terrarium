@@ -108,6 +108,28 @@ describe('GithubAccountSqliteStore', () => {
     })
   })
 
+  it('records the last successful checkpoint when the baseline map is unchanged and never moves it backwards', async () => {
+    vi.stubEnv('SESSION_SECRET', 'e2'.repeat(16))
+    const store = new GithubAccountSqliteStore(':memory:')
+    await store.putCredential(identity, 'token', ['repo'])
+    const baseline = { '101': '2026-09-12T00:00:00.000Z' }
+    await store.saveSettings(42, {
+      trackedRepositoryIds: ['101'],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+      baselineByRepositoryId: baseline,
+      lastSyncedAt: null,
+    })
+
+    await expect(store.advanceBaseline(42, baseline, baseline, '2026-09-14T01:00:00.000Z')).resolves.toBe(true)
+    await expect(store.advanceBaseline(42, baseline, baseline, '2026-09-13T01:00:00.000Z')).resolves.toBe(true)
+    await expect(store.getSettings(42)).resolves.toMatchObject({
+      baselineByRepositoryId: baseline,
+      lastSyncedAt: '2026-09-14T01:00:00.000Z',
+    })
+  })
+
   it('disconnects by dropping the credential and baselines, keeping the user choices', async () => {
     vi.stubEnv('SESSION_SECRET', 'f'.repeat(32))
     const store = new GithubAccountSqliteStore(':memory:')
