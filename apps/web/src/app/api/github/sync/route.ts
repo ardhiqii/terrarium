@@ -10,6 +10,8 @@
  */
 
 import { NextRequest } from 'next/server'
+import { asCompanionId } from '@/lib/game/events'
+import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
 import { normalizeGitHubEvents, type GitHubEventNormalizationInput } from '@/lib/game/github-events'
 import { fetchGitHubEvents, type GitHubEventsProgress, type GithubRepoRef } from '@/lib/game/github-events-fetch'
 import { checkRateLimit } from '@/lib/game/api-cache'
@@ -17,6 +19,8 @@ import { getGithubAccountStore, type GithubAccountSettings } from '@/lib/sync/gi
 import type { GithubRepository } from '@/lib/sync/github-repositories'
 import { getGithubRepositoriesCached } from '@/lib/sync/github-repository-cache'
 import { getSessionProvider } from '@/lib/sync/session'
+import { getProductStore } from '@/lib/sync/product-store'
+import { trustStoredProductSnapshot } from '@/lib/sync/trusted-product-snapshot'
 import { productSnapshotEvent } from '@/lib/sync/product-snapshot'
 import { issueGithubSyncCheckpoint } from '@/lib/sync/github-sync-checkpoint'
 import {
@@ -119,7 +123,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     // so the actual body is what is bounded. An oversized payload is rejected
     // instead of being parsed.
     const raw = await request.text()
-    if (raw.length > SYNC_PAYLOAD_LIMIT_BYTES) {
+    if (Buffer.byteLength(raw, 'utf8') > SYNC_PAYLOAD_LIMIT_BYTES) {
       return json(413, { error: 'Sync payload is too large.' })
     }
     payload = JSON.parse(raw) as unknown
@@ -131,12 +135,35 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
   const activeCompanionId = parseCompanionId((payload as Record<string, unknown>).activeCompanionId)
   if (!activeCompanionId) return json(400, { error: 'activeCompanionId is required.' })
+  if (!PROTOTYPE_COMPANION_CATALOG.get(activeCompanionId)) {
+    return json(400, { error: 'activeCompanionId is not a recognized companion.' })
+  }
 
   try {
     const store = getGithubAccountStore()
     const token = await store.getToken(session.githubId)
     if (!token) return json(401, { error: 'GitHub access is unavailable. Reconnect GitHub.' })
     const settings = await store.getSettings(session.githubId)
+    // A stable GitHub event belongs to the companion that first accepted it.
+    // Read the account condition before minting receipts so a later provider
+    // replay after an active-companion switch cannot move already-awarded XP.
+    // A concurrent first upload can still win the race; the product merge then
+    // applies the same stable-ID rule when that response is uploaded.
+    const existingGithubCompanionByEventId = new Map<string, string>()
+    try {
+      const productRecord = await getProductStore().getRecord(session.githubId, session.handle)
+      const trustedSnapshot = productRecord
+        ? trustStoredProductSnapshot(productRecord.snapshot, session.githubId)
+        : null
+      for (const event of trustedSnapshot?.events ?? []) {
+        if (event.source === 'github' && event.provenance === 'verified') {
+          existingGithubCompanionByEventId.set(event.eventId, event.companionId)
+        }
+      }
+    } catch {
+      // Product sync remains available if the optional existing-condition read
+      // is unavailable; the first successful upload establishes ownership.
+    }
     // The listing comes from the per-account TTL cache. Back-to-back syncs and
     // the picker share it, so a sync right after opening `/github` costs no
     // extra GitHub requests at all.
@@ -257,7 +284,14 @@ export async function POST(request: NextRequest): Promise<Response> {
        * payload. A digest is not the receipt: it cannot be replayed.
        */
       const verifiedEventProofDigests: Record<string, string> = {}
-      const snapshotEvents = events.map((event) => productSnapshotEvent(event))
+      const issuedEvents = events.map((event) => {
+        const candidate = productSnapshotEvent(event)
+        const existingCompanionId = existingGithubCompanionByEventId.get(candidate.eventId)
+        return existingCompanionId
+          ? { ...event, companionId: asCompanionId(existingCompanionId) }
+          : event
+      })
+      const snapshotEvents = issuedEvents.map((event) => productSnapshotEvent(event))
       for (const snapshotEvent of snapshotEvents) {
         verifiedEventProofs[snapshotEvent.eventId] = issueVerifiedEventProof(snapshotEvent, session.githubId)
         verifiedEventProofDigests[snapshotEvent.eventId] = verifiedEventProofPayloadDigest(snapshotEvent, session.githubId)
@@ -283,7 +317,7 @@ export async function POST(request: NextRequest): Promise<Response> {
           : events.length === 0 && newBaselineRepositoryIds.length > 0
             ? 'baseline'
             : 'synced',
-        events,
+        events: issuedEvents,
         repositoryCount: eligible.length,
         eligibleRepositoryCount: eligibleCandidates.length,
         skippedRepositoryCount,

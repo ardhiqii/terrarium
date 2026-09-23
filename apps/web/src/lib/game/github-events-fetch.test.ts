@@ -49,6 +49,7 @@ describe('fetchGitHubEvents', () => {
           id: 11,
           number: 7,
           state: 'closed',
+          user: { login: 'octo' },
           merged_at: now,
           merge_commit_sha: 'abc123',
           head: { sha: 'headsha1' },
@@ -59,6 +60,7 @@ describe('fetchGitHubEvents', () => {
           node_id: 'REL_node1',
           id: 21,
           tag_name: 'v1.0.0',
+          author: { login: 'octo' },
           draft: false,
           published_at: now,
         },
@@ -68,6 +70,7 @@ describe('fetchGitHubEvents', () => {
           node_id: 'ISS_node1',
           id: 31,
           number: 10,
+          user: { login: 'octo' },
           closed_at: now,
         },
         {
@@ -75,6 +78,7 @@ describe('fetchGitHubEvents', () => {
           node_id: 'PR_in_issue',
           id: 32,
           number: 7,
+          user: { login: 'octo' },
           closed_at: now,
           pull_request: { url: 'x' },
         },
@@ -111,6 +115,28 @@ describe('fetchGitHubEvents', () => {
     expect(result.input.ciChecks?.[0]).toMatchObject({ id: 'CHECK1', name: 'test' })
   })
 
+  it('does not treat missing actor metadata as proof of account attribution', async () => {
+    const now = '2026-09-12T12:00:00Z'
+    const repo = 'widgets'
+    const routes: Record<string, unknown> = {
+      [`https://api.github.com/repos/${repo}/pulls?state=closed&per_page=30&page=1`]: [
+        { node_id: 'PR_unattributed', merged_at: now },
+      ],
+      [`https://api.github.com/repos/${repo}/releases?per_page=30`]: [
+        { node_id: 'REL_unattributed', published_at: now, draft: false },
+      ],
+      [`https://api.github.com/repos/${repo}/issues?state=closed&per_page=30&page=1`]: [
+        { node_id: 'ISS_unattributed', closed_at: now },
+      ],
+    }
+
+    const result = await fetchGitHubEvents({ ...opts, fetch: stubFetch(routes) })
+
+    expect(result.input.mergedPullRequests).toEqual([])
+    expect(result.input.releases).toEqual([])
+    expect(result.input.linkedIssues).toEqual([])
+  })
+
   it('accepts GitHub\'s wrapped check-runs response and keeps the scan healthy', async () => {
     const now = '2026-09-12T12:00:00Z'
     const repo = 'widgets'
@@ -121,6 +147,7 @@ describe('fetchGitHubEvents', () => {
           id: 11,
           number: 7,
           state: 'closed',
+          user: { login: 'octo' },
           merged_at: now,
           merge_commit_sha: 'merge1',
           head: { sha: 'headsha1' },
@@ -168,6 +195,7 @@ describe('fetchGitHubEvents', () => {
           id: 11,
           number: 7,
           state: 'closed',
+          user: { login: 'octo' },
           merged_at: now,
           merge_commit_sha: 'merge1',
           head: { sha: 'headsha1' },
@@ -202,6 +230,7 @@ describe('fetchGitHubEvents', () => {
       node_id: `PR_${index + 1}`,
       id: index + 1,
       state: 'closed',
+      user: { login: 'octo' },
       merged_at: now,
     }))
     const routes: Record<string, unknown> = {
@@ -269,6 +298,7 @@ describe('fetchGitHubEvents', () => {
           id: 11,
           number: 7,
           state: 'closed',
+          user: { login: 'octo' },
           merged_at: now,
           merge_commit_sha: 'merge1',
           head: { sha: 'headsha1' },

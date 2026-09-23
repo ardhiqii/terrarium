@@ -188,6 +188,30 @@ function proofsFromSnapshotEvents(
   return proofs
 }
 
+/**
+ * Only attach a freshly minted receipt when the client kept that delivery's
+ * event record. If a provider replay is bound to a different active companion,
+ * the ledger intentionally keeps the original owner and must keep its older
+ * receipt as a matching pair instead of creating another mismatch.
+ */
+function proofsForAppliedEvents(
+  incoming: readonly NormalizedEvent[],
+  state: ProductState,
+  proofs: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const storedById = new Map(state.ledger.events.map((event) => [productEventId(event.eventId), event]))
+  const accepted: Record<string, string> = {}
+  for (const event of incoming) {
+    const eventId = productEventId(event.eventId)
+    const stored = storedById.get(eventId)
+    const proof = proofs[eventId]
+    if (stored && stored.provenance === 'verified' && stored.companionId === event.companionId && proof) {
+      accepted[eventId] = proof
+    }
+  }
+  return accepted
+}
+
 async function responseBody(response: Response): Promise<Record<string, unknown>> {
   const body: unknown = await response.json().catch(() => ({}))
   return isRecord(body) ? body : {}
@@ -410,16 +434,26 @@ async function restoreCloudProductState(
 
     let restored: ProductState
     let restoredProofs: Record<string, string>
+    let message: string
     if (cloud.guestId === local.profile.guestId) {
       const merged = mergeProductSnapshots(buildProductSnapshot(local, undefined, localProofs), cloud)
       restored = restoreProductStateFromSnapshot(merged, local.profile, PROTOTYPE_COMPANION_CATALOG)
       restoredProofs = proofsFromSnapshotEvents(merged.events)
+      // A failed identity-resolution upload can leave this browser on the
+      // account guest ID while the cloud row is still blank. Calling that
+      // "Cloud condition restored" is false: the local XP is present, but the
+      // backup still needs a successful upload.
+      const cloudSummary = summarizeGuestSnapshot(cloud)
+      message = !isBlankAccountState(local) && cloudSummary?.isBlank === true
+        ? 'Local condition restored. Cloud backup still needs a successful sync.'
+        : 'Cloud condition restored.'
     } else if (isBlankAccountState(local)) {
       // A fresh browser has a new local guest ID. Adopt the account's cloud ID
       // so future POSTs can continue the recovered profile instead of hitting
       // the route's different-guest conflict guard.
       restored = restoreProductStateFromSnapshot(cloud, local.profile, PROTOTYPE_COMPANION_CATALOG)
       restoredProofs = proofsFromSnapshotEvents(cloud.events)
+      message = 'Cloud condition restored.'
     } else {
       return {
         state: local,
@@ -428,7 +462,7 @@ async function restoreCloudProductState(
     }
     saveBrowserProductState(restored, namespace)
     saveVerifiedEventProofs(storage, restoredProofs, restored.ledger.events.map((event) => productEventId(event.eventId)), namespace)
-    return { state: restored, message: 'Cloud condition restored.' }
+    return { state: restored, message }
   } catch {
     return { state: local, message: 'Cloud condition could not be restored; local progress is safe.' }
   }
@@ -455,11 +489,24 @@ async function uploadProductSnapshot(snapshot: ProductSnapshot, checkpoint: stri
  * Returns null when the copy cannot be read; the chooser then says so instead
  * of inventing an identity to adopt.
  */
-async function readAccountSnapshot(): Promise<ProductSnapshot | null> {
+interface AccountSnapshotRead {
+  readonly snapshot: ProductSnapshot
+  /** Server row version used by the destructive identity action. */
+  readonly version: string | null
+}
+
+async function readAccountSnapshot(): Promise<AccountSnapshotRead | null> {
   try {
     const response = await fetch('/api/sync/product', { cache: 'no-store' })
     if (!response.ok) return null
-    return deserializeProductSnapshot(JSON.stringify(await responseBody(response)))
+    const snapshot = deserializeProductSnapshot(JSON.stringify(await responseBody(response)))
+    if (!snapshot) return null
+    return {
+      snapshot,
+      // The snapshot's updatedAt is not the store's concurrency token. Do not
+      // silently substitute it if an older deployment omitted the header.
+      version: response.headers.get('x-product-snapshot-version'),
+    }
   } catch {
     return null
   }
@@ -517,6 +564,8 @@ interface PendingGuestConflict {
   readonly view: GuestIdentityConflictView
   /** The account copy the chooser described; the restore action writes it locally. */
   readonly cloudSnapshot: ProductSnapshot | null
+  /** Server row version captured with the cloud copy, when available. */
+  readonly cloudVersion: string | null
   /** The refused sync's signed checkpoint, so its GitHub baseline can still commit. */
   readonly checkpoint: string | null
 }
@@ -920,7 +969,7 @@ export function GitHubSourcePanel() {
 
       const persistedProofs = {
         ...loadVerifiedEventProofs(storage, accountNamespace ?? undefined),
-        ...verifiedEventProofs,
+        ...proofsForAppliedEvents(incoming, next, verifiedEventProofs),
       }
       const uploadSnapshot = buildProductSnapshot(next, undefined, persistedProofs)
       // Save receipts before the cloud upload. The signed checkpoint sent with
@@ -940,6 +989,13 @@ export function GitHubSourcePanel() {
       // committed. A body has a megabyte-scale allowance instead.
       const upload = await uploadProductSnapshot(uploadSnapshot, checkpoint)
       const snapshotBody = upload.body
+      if (upload.ok && accountNamespace) {
+        // The server may have merged a second device's events or refreshed a
+        // receipt-backed aggregate. Keep this browser on the exact response,
+        // not merely on the pre-upload local state.
+        const uploadedState = adoptUploadedSnapshot(snapshotBody, next.profile, accountNamespace)
+        if (uploadedState) setProductState(uploadedState)
+      }
       const count = typeof body.repositoryCount === 'number' ? body.repositoryCount : 0
       const eventCount = Math.max(0, next.ledger.events.length - productState.ledger.events.length)
       const baselineCount = Array.isArray(body.newBaselineRepositoryIds) ? body.newBaselineRepositoryIds.length : 0
@@ -959,15 +1015,22 @@ export function GitHubSourcePanel() {
       // a retry: the account already stores a different guest profile, so both
       // copies are described and the user chooses instead of dead-ending the
       // backup. Any other 409 keeps its own retryable explanation.
-      let nextConflict: PendingGuestConflict | null = null
+      // Keep an existing chooser visible when a retry fails for a different
+      // reason. A checkpoint race or receipt error must not erase the user's
+      // still-valid identity-resolution choices.
+      let nextConflict: PendingGuestConflict | null = upload.ok
+        ? null
+        : guestConflictRef.current
       if (!upload.ok && isGuestIdentityConflict(upload.status, snapshotBody)) {
         const localSummary = summarizeGuestSnapshot(uploadSnapshot)
-        const cloudSnapshot = await readAccountSnapshot()
+        const cloudRead = await readAccountSnapshot()
+        const cloudSnapshot = cloudRead?.snapshot ?? null
         const cloudSummary = cloudSnapshot ? summarizeGuestSnapshot(cloudSnapshot) : null
         if (localSummary && !cancelled()) {
           nextConflict = {
             view: describeGuestIdentityConflict(localSummary, cloudSummary),
             cloudSnapshot,
+            cloudVersion: cloudRead?.version ?? null,
             checkpoint,
           }
           cloudNote += ' Choose how to continue in the box above.'
@@ -1063,7 +1126,41 @@ export function GitHubSourcePanel() {
       const storage = browserProductStorage()
 
       if (action === 'use-browser') {
-        const deletion = await fetch('/api/sync/product', { method: 'DELETE' })
+        // Refresh the row and carry its server version into DELETE. The
+        // chooser may have been open while another device earned progress;
+        // never let this destructive action remove that newer row blindly.
+        const latestCloud = await readAccountSnapshot()
+        if (!latestCloud || !pending.cloudVersion || latestCloud.version !== pending.cloudVersion) {
+          if (latestCloud) {
+            const localSnapshot = buildProductSnapshot(
+              state,
+              undefined,
+              loadVerifiedEventProofs(storage, namespace),
+            )
+            const localSummary = summarizeGuestSnapshot(localSnapshot)
+            if (localSummary) {
+              showGuestConflict({
+                view: describeGuestIdentityConflict(localSummary, summarizeGuestSnapshot(latestCloud.snapshot)),
+                cloudSnapshot: latestCloud.snapshot,
+                cloudVersion: latestCloud.version,
+                checkpoint: pending.checkpoint,
+              })
+            }
+          }
+          setLastSyncSummary(guestIdentityActionSummary(action, {
+            result: 'failed',
+            step: 'delete-cloud',
+            detail: latestCloud
+              ? 'the account copy changed while this chooser was open; review the refreshed choice'
+              : 'the account copy could not be read; nothing was deleted',
+          }))
+          return
+        }
+        const deletion = await fetch('/api/sync/product', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ expectedVersion: pending.cloudVersion }),
+        })
         if (!deletion.ok) {
           setLastSyncSummary(guestIdentityActionSummary(action, {
             result: 'failed',
@@ -1080,6 +1177,10 @@ export function GitHubSourcePanel() {
           buildProductSnapshot(state, undefined, loadVerifiedEventProofs(storage, namespace)),
           pending.checkpoint,
         )
+        if (upload.ok) {
+          const uploaded = adoptUploadedSnapshot(upload.body, state.profile, namespace)
+          if (uploaded) setProductState(uploaded)
+        }
         setLastSyncSummary(guestIdentityActionSummary(action, upload.ok
           ? { result: 'succeeded' }
           : { result: 'failed', step: 'upload', detail: errorMessage(upload.body, 'try again with Sync GitHub now') }))
@@ -1087,7 +1188,13 @@ export function GitHubSourcePanel() {
       }
 
       if (action === 'keep-both') {
-        if (!pending.cloudSnapshot) {
+        // Re-read immediately before changing the browser namespace. The card
+        // may have been open while another device resolved or replaced the
+        // account row, so the captured copy is only a description, not an
+        // authority for the destructive merge.
+        const latestCloudRead = pending.cloudSnapshot ? await readAccountSnapshot() : null
+        const latestCloud = latestCloudRead?.snapshot ?? null
+        if (!latestCloud) {
           setLastSyncSummary(guestIdentityActionSummary(action, {
             result: 'failed',
             step: 'read-cloud',
@@ -1098,11 +1205,11 @@ export function GitHubSourcePanel() {
         // Adopt the account's guest identity and keep this browser's ledger,
         // encounters, and XP. The account's starter reference is reused so the
         // next merge unions one starter entry, not two.
-        const accountStarterReferenceId = pending.cloudSnapshot.collection.find(
+        const accountStarterReferenceId = latestCloud.collection.find(
           (reference) => reference.acquisition === 'starter',
         )?.referenceId ?? null
         const adopted = createProductState(
-          adoptAccountGuestIdentity(state.profile, pending.cloudSnapshot.guestId, new Date().toISOString(), accountStarterReferenceId),
+          adoptAccountGuestIdentity(state.profile, latestCloud.guestId, new Date().toISOString(), accountStarterReferenceId),
           state.ledger,
           state.encounters,
           PROTOTYPE_COMPANION_CATALOG,
@@ -1137,7 +1244,13 @@ export function GitHubSourcePanel() {
         return
       }
 
-      if (!pending.cloudSnapshot) {
+      // Follow the account: replace this namespace's local product state with
+      // the latest cloud snapshot and adopt its guest identity. The chooser's
+      // earlier snapshot is intentionally re-read so a stale card cannot erase
+      // a newer resolution from another device.
+      const latestCloudRead = pending.cloudSnapshot ? await readAccountSnapshot() : null
+      const latestCloud = latestCloudRead?.snapshot ?? null
+      if (!latestCloud) {
         setLastSyncSummary(guestIdentityActionSummary(action, {
           result: 'failed',
           step: 'read-cloud',
@@ -1145,15 +1258,13 @@ export function GitHubSourcePanel() {
         }))
         return
       }
-      // Follow the account: replace this namespace's local product state with
-      // the cloud snapshot and adopt its guest identity.
       let restored: ProductState
       try {
-        restored = restoreProductStateFromSnapshot(pending.cloudSnapshot, state.profile, PROTOTYPE_COMPANION_CATALOG)
+        restored = restoreProductStateFromSnapshot(latestCloud, state.profile, PROTOTYPE_COMPANION_CATALOG)
         saveBrowserProductState(restored, namespace)
         saveVerifiedEventProofs(
           storage,
-          proofsFromSnapshotEvents(pending.cloudSnapshot.events),
+          proofsFromSnapshotEvents(latestCloud.events),
           restored.ledger.events.map((event) => productEventId(event.eventId)),
           namespace,
         )
@@ -1181,6 +1292,8 @@ export function GitHubSourcePanel() {
         }))
         return
       }
+      const uploaded = adoptUploadedSnapshot(upload.body, restored.profile, namespace)
+      if (uploaded) setProductState(uploaded)
       showGuestConflict(null)
       setLastSyncSummary(guestIdentityActionSummary(action, { result: 'succeeded' }))
     } finally {

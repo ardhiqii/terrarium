@@ -139,7 +139,18 @@ mutable login handle. Writes use an optimistic checkpoint so two devices do
 not silently replace one another's latest condition. GitHub activity receipts
 are issued by the server-side GitHub sync route and verified before a product
 upload can preserve `verified` provenance. A cloud restore keeps event IDs
-stable so the next provider delivery remains idempotent.
+stable so the next provider delivery remains idempotent. Replayed aggregate
+signals refresh their evidence without awarding the stable event twice, and
+ownership stays with the companion that first accepted the event. Account-row
+deletes require the current server version and are conditional at the store,
+so an open identity chooser cannot erase a newer device's progress. Legacy
+rows that have no immutable GitHub ID are not adopted by mutable handle.
+
+The `/companions` archive reads the trusted account product snapshot when a
+user is signed in and one exists. It shows that account-scoped XP and
+progression separately from the local garden archive. A signed-in user with no
+product row or an unavailable row sees an explicit not-synced/unavailable state;
+the legacy `github-cache.json` aggregate is not presented as account XP.
 
 ### 4.4 GitHub
 

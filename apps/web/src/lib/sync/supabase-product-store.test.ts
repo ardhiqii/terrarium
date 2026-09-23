@@ -29,20 +29,15 @@ describe('SupabaseProductStore', () => {
     expect(eq).toHaveBeenCalledWith('github_id', 42)
   })
 
-  it('also removes an old handle-keyed row when deleting an account', async () => {
+  it('deletes only the immutable GitHub ID row', async () => {
     const byId = vi.fn().mockResolvedValue({ error: null })
-    const legacyIs = vi.fn().mockResolvedValue({ error: null })
-    const legacyEq = vi.fn().mockReturnValue({ is: legacyIs })
-    const deleteQuery = vi.fn()
-      .mockReturnValueOnce({ eq: byId })
-      .mockReturnValueOnce({ eq: legacyEq })
+    const deleteQuery = vi.fn().mockReturnValue({ eq: byId })
     mockedGetClient.mockReturnValue({ from: vi.fn().mockReturnValue({ delete: deleteQuery }) } as never)
 
     await new SupabaseProductStore().remove(42, 'Torvalds')
 
     expect(byId).toHaveBeenCalledWith('github_id', 42)
-    expect(legacyEq).toHaveBeenCalledWith('handle', 'torvalds')
-    expect(legacyIs).toHaveBeenCalledWith('github_id', null)
+    expect(deleteQuery).toHaveBeenCalledTimes(1)
   })
 
   function snapshot(): ProductSnapshot {
@@ -53,6 +48,21 @@ describe('SupabaseProductStore', () => {
       now,
     )
   }
+
+  it('conditionally deletes only the current immutable row version', async () => {
+    const maybeSingle = vi.fn().mockResolvedValue({ data: { github_id: 42 }, error: null })
+    const query = {
+      delete: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      select: vi.fn().mockReturnThis(),
+      maybeSingle,
+    }
+    mockedGetClient.mockReturnValue({ from: vi.fn().mockReturnValue(query) } as never)
+
+    await expect(new SupabaseProductStore().removeIfVersion(42, 'row-version-1')).resolves.toBe(true)
+    expect(query.eq).toHaveBeenNthCalledWith(1, 'github_id', 42)
+    expect(query.eq).toHaveBeenNthCalledWith(2, 'row_version', 'row-version-1')
+  })
 
   it('serializes a snapshot as JSONB and reads both JSONB and string rows', async () => {
     const put = vi.fn().mockResolvedValue({ error: null })
@@ -67,8 +77,8 @@ describe('SupabaseProductStore', () => {
     )
 
     const maybeSingle = vi.fn()
-      .mockResolvedValueOnce({ data: { github_id: 42, handle: 'torvalds', snapshot_json: original, updated_at: original.updatedAt }, error: null })
-      .mockResolvedValueOnce({ data: { github_id: 42, handle: 'torvalds', snapshot_json: JSON.stringify(original), updated_at: original.updatedAt }, error: null })
+      .mockResolvedValueOnce({ data: { github_id: 42, handle: 'torvalds', snapshot_json: original, updated_at: original.updatedAt, row_version: 'row-version-1' }, error: null })
+      .mockResolvedValueOnce({ data: { github_id: 42, handle: 'torvalds', snapshot_json: JSON.stringify(original), updated_at: original.updatedAt, row_version: 'row-version-1' }, error: null })
     const getQuery = {
       select: vi.fn().mockReturnThis(),
       eq: vi.fn().mockReturnThis(),
@@ -99,63 +109,18 @@ describe('SupabaseProductStore', () => {
     )
   })
 
-  it('does not fall back from an immutable ID to a handle already owned by another ID', async () => {
-    const maybeSingle = vi.fn()
-      .mockResolvedValueOnce({ data: null, error: null })
-      .mockResolvedValueOnce({ data: null, error: null })
+  it('does not adopt an unbound legacy row by mutable handle', async () => {
+    const maybeSingle = vi.fn().mockResolvedValue({ data: null, error: null })
     const query = {
       select: vi.fn().mockReturnThis(),
       eq: vi.fn().mockReturnThis(),
-      is: vi.fn().mockReturnThis(),
       maybeSingle,
     }
     mockedGetClient.mockReturnValue({ from: vi.fn().mockReturnValue(query) } as never)
 
-    await expect(new SupabaseProductStore().get(42, 'renamed-user')).resolves.toBeNull()
-    expect(query.is).toHaveBeenCalledWith('github_id', null)
-  })
-
-  it('claims a legacy handle row only when the conditional update returns it', async () => {
-    const legacySnapshot = snapshot()
-    const byId = {
-      select: vi.fn().mockReturnThis(),
-      eq: vi.fn().mockReturnThis(),
-      maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
-    }
-    const legacy = {
-      select: vi.fn().mockReturnThis(),
-      eq: vi.fn().mockReturnThis(),
-      is: vi.fn().mockReturnThis(),
-      maybeSingle: vi.fn().mockResolvedValue({
-        data: { github_id: null, handle: 'torvalds', snapshot_json: legacySnapshot, updated_at: legacySnapshot.updatedAt },
-        error: null,
-      }),
-    }
-    const migrate = {
-      update: vi.fn().mockReturnThis(),
-      eq: vi.fn().mockReturnThis(),
-      is: vi.fn().mockReturnThis(),
-      select: vi.fn().mockReturnThis(),
-      maybeSingle: vi.fn().mockResolvedValue({
-        data: { github_id: 42, handle: 'torvalds', snapshot_json: legacySnapshot, updated_at: legacySnapshot.updatedAt },
-        error: null,
-      }),
-    }
-    mockedGetClient.mockReturnValue({
-      from: vi.fn()
-        .mockReturnValueOnce(byId)
-        .mockReturnValueOnce(legacy)
-        .mockReturnValueOnce(migrate),
-    } as never)
-
-    await expect(new SupabaseProductStore().getRecord(42, 'TORVALDS')).resolves.toEqual({
-      githubId: 42,
-      handle: 'torvalds',
-      snapshot: legacySnapshot,
-      updatedAt: legacySnapshot.updatedAt,
-    })
-    expect(migrate.update).toHaveBeenCalledWith({ github_id: 42 })
-    expect(migrate.select).toHaveBeenCalledWith('github_id, handle, snapshot_json, updated_at')
+    await expect(new SupabaseProductStore().get(42, 'torvalds')).resolves.toBeNull()
+    expect(query.maybeSingle).toHaveBeenCalledTimes(1)
+    expect(query.eq).toHaveBeenCalledWith('github_id', 42)
   })
 
   it('uses the stored timestamp as an optimistic concurrency check', async () => {

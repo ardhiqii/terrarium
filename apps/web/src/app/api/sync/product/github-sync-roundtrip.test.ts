@@ -111,10 +111,10 @@ function providerInput(requestedIds: readonly string[]): {
   }
 }
 
-function syncRequest(): NextRequest {
+function syncRequest(activeCompanionId = 'pikachu-family'): NextRequest {
   return new NextRequest('http://localhost/api/github/sync', {
     method: 'POST',
-    body: JSON.stringify({ activeCompanionId: 'pikachu-family' }),
+    body: JSON.stringify({ activeCompanionId }),
     headers: { 'Content-Type': 'application/json' },
   })
 }
@@ -357,5 +357,93 @@ describe('large-account GitHub sync → product checkpoint commit', () => {
     // The baseline map was already at this checkpoint, so it is left as-is
     // rather than being written twice; the legacy transport still commits.
     expect((await accountStore.getSettings(GITHUB_ID)).baselineByRepositoryId).toEqual({ '1000': BASELINE })
+  })
+
+  it('replaces a replayed GitHub event with its newer proof without awarding XP twice', async () => {
+    const accountStore = getGithubAccountStore()
+    const repository = repositories[0]
+    await accountStore.putCredential({ githubId: GITHUB_ID, handle: 'octo', avatarUrl: null }, 'server-token', ['repo'])
+    await accountStore.saveSettings(GITHUB_ID, {
+      trackedRepositoryIds: [repository.id],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+      baselineByRepositoryId: { [repository.id]: BASELINE },
+      lastSyncedAt: BASELINE,
+    })
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: [repository] })
+
+    const firstCommit = {
+      id: 'stable-commit',
+      repositoryId: repository.id,
+      occurredAt: '2026-08-28T10:00:00Z',
+      additions: 2,
+      changedFiles: 1,
+    }
+    const secondCommit = {
+      id: 'new-commit',
+      repositoryId: repository.id,
+      occurredAt: '2026-08-28T10:30:00Z',
+      additions: 3,
+      changedFiles: 1,
+    }
+    mocks.fetchEvents
+      .mockResolvedValueOnce({
+        login: 'octo',
+        input: { sourceId: String(GITHUB_ID), companionId: 'octo', commits: [firstCommit] },
+        status: 'ok',
+        truncated: false,
+      })
+      .mockResolvedValueOnce({
+        login: 'octo',
+        input: { sourceId: String(GITHUB_ID), companionId: 'octo', commits: [firstCommit, secondCommit] },
+        status: 'ok',
+        truncated: false,
+      })
+
+    const snapshotForScan = (body: Record<string, unknown>, triggerId: string) => {
+      const event = (body.events as NormalizedEvent[]).find((candidate) => candidate.category === 'work-session')
+      if (!event) throw new Error('The mocked GitHub scan did not produce a work-session event')
+      const profile = createGuestProfile({ guestId: 'guest-1', starterCompanionId: 'pikachu-family', now: '2026-08-28T10:00:00.000Z' })
+      const state = applyProductEvents(
+        createProductState(profile, { events: [] }, createEncounterState(), PROTOTYPE_COMPANION_CATALOG),
+        [event],
+        PROTOTYPE_COMPANION_CATALOG,
+        { triggerId, encounterProgress: 0 },
+      )
+      return buildProductSnapshot(
+        state,
+        '2026-08-28T10:00:00.000Z',
+        body.verifiedEventProofs as Record<string, string>,
+      )
+    }
+
+    const firstScan = await readSyncResult(await syncGithub(syncRequest()))
+    const firstSnapshot = snapshotForScan(firstScan, 'github-sync-roundtrip')
+    const firstEvent = firstSnapshot.events[0]
+    expect(firstEvent.metadata?.activityCount).toBe(1)
+    const firstResponse = await syncProduct(productRequest({ snapshot: firstSnapshot }))
+    expect(firstResponse.status).toBe(200)
+    const secondScan = await readSyncResult(await syncGithub(syncRequest('ditto-like')))
+    const secondRawEvent = (secondScan.events as NormalizedEvent[]).find((candidate) => candidate.category === 'work-session')
+    expect(secondRawEvent?.companionId).toBe('pikachu-family')
+    const secondSnapshot = snapshotForScan(secondScan, 'github-sync-roundtrip')
+    const secondEvent = secondSnapshot.events[0]
+    expect(secondEvent.eventId).toBe(firstEvent.eventId)
+    expect(secondEvent.metadata?.activityCount).toBe(2)
+    expect(secondEvent.verifiedProof).not.toBe(firstEvent.verifiedProof)
+    const secondResponse = await syncProduct(productRequest({ snapshot: secondSnapshot }))
+    expect(secondResponse.status).toBe(200)
+
+    const record = await getProductStore().getRecord(GITHUB_ID, 'octo')
+    expect(record).not.toBeNull()
+    if (!record) return
+    const storedEvent = record.snapshot.events.find((event) => event.eventId === secondEvent.eventId)
+    expect(storedEvent).toBeDefined()
+    if (!storedEvent) return
+    expect(storedEvent.metadata).toEqual(secondEvent.metadata)
+    expect(storedEvent.verifiedProof).toBe(secondEvent.verifiedProof)
+    expect(record.snapshot.events).toHaveLength(1)
+    expect(record.snapshot.companions.find((companion) => companion.companionId === 'pikachu-family')?.xp).toBe(10)
   })
 })

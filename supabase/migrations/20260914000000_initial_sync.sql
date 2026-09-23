@@ -4,6 +4,8 @@
 -- intentionally absent. The application writes only derived companion state
 -- and encrypted GitHub credentials here.
 
+create extension if not exists pgcrypto;
+
 create table if not exists public.synced_users (
   handle text primary key,
   github_id bigint not null,
@@ -34,6 +36,7 @@ create table if not exists public.product_snapshots (
   handle text not null,
   snapshot_json jsonb not null,
   updated_at timestamptz not null,
+  row_version text not null default gen_random_uuid()::text,
   constraint product_snapshots_handle_lowercase check (handle = lower(handle) and btrim(handle) <> '')
 );
 

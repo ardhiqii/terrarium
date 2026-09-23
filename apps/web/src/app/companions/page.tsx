@@ -1,13 +1,21 @@
 import type { Metadata } from 'next'
+import Link from 'next/link'
 import { getCreatureState } from '@/lib/game/state'
 import { STAGES } from '@/lib/game/types'
 import { slotLabel } from '@/lib/game/stages'
 import { getOwnerCollection, getClusterCollection } from '@/lib/game/collection'
+import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
+import { createGuestProfile } from '@/lib/game/guest-profile'
+import { restoreProductStateFromSnapshot } from '@/lib/sync/product-snapshot'
+import type { ProductState } from '@/lib/game/product-state'
+import { getProductStore } from '@/lib/sync/product-store'
+import { trustStoredProductSnapshot } from '@/lib/sync/trusted-product-snapshot'
+import { getSessionProvider } from '@/lib/sync/session'
 import { CreatureSprite } from '@/components/game/CreatureSprite'
 import { StageLine } from '@/components/game/StageLine'
 import { ItemDrawer } from '@/components/game/ItemDrawer'
 import { CollectionGrid } from '@/components/game/CollectionGrid'
-import Link from 'next/link'
+import { ProductActivityPanel } from '@/components/game/ProductActivityPanel'
 
 const OWNER_LOGIN = process.env.GITHUB_LOGIN
 const TOKEN = process.env.GITHUB_TOKEN
@@ -18,7 +26,50 @@ export const metadata: Metadata = {
     'The full evolution line and item archive for the primary companion, including stages and items not yet reached.',
 }
 
+// The account-specific product condition changes per request and must never be
+// served from a static page cache. The legacy garden archive below remains
+// useful when no account condition exists, but it is not a substitute for the
+// verified product-sync state.
+export const dynamic = 'force-dynamic'
+
+type AccountProductResult =
+  | { status: 'signed-out'; state: null }
+  | { status: 'missing' | 'unavailable'; state: null }
+  | { status: 'available'; state: ProductState }
+
+async function loadAccountProductState(): Promise<AccountProductResult> {
+  const session = await getSessionProvider().current()
+  if (!session) return { status: 'signed-out', state: null }
+
+  try {
+    const record = await getProductStore().getRecord(session.githubId, session.handle)
+    if (!record) return { status: 'missing', state: null }
+    const snapshot = trustStoredProductSnapshot(record.snapshot, session.githubId)
+    const fallbackProfile = createGuestProfile({
+      guestId: snapshot.guestId,
+      starterCompanionId: snapshot.activeCompanionId,
+      now: snapshot.createdAt,
+    })
+    return {
+      status: 'available',
+      state: restoreProductStateFromSnapshot(
+        snapshot,
+        fallbackProfile,
+        PROTOTYPE_COMPANION_CATALOG,
+      ),
+    }
+  } catch {
+    // A broken or unavailable product row must not take down the public
+    // archive. The page reports that account state separately instead of
+    // presenting the global legacy GitHub cache as if it were this account.
+    return { status: 'unavailable', state: null }
+  }
+}
+
 export default async function CompanionsPage() {
+  const accountProduct = await loadAccountProductState()
+  const productState = accountProduct.state
+  const accountIsSignedIn = accountProduct.status !== 'signed-out'
   // No argument: getCreatureState reads the cached GitHub stats automatically
   // (see apps/web/src/lib/game/state.ts), and renders correctly when that cache is
   // absent, since garden data alone is enough to compute a stage.
@@ -51,9 +102,7 @@ export default async function CompanionsPage() {
   const collection = [...clusterCollection, ...repoCollection]
 
   const stats = state.stats
-  const statRows: { label: string; value: string }[] = [
-    { label: 'Total XP', value: state.totalXp.toLocaleString() },
-    { label: 'Stage', value: `${state.stage.name} (${state.stage.index}/${STAGES.length})` },
+  const gardenStatRows: { label: string; value: string }[] = [
     { label: 'Notes', value: stats.noteCount.toLocaleString() },
     { label: 'Projects', value: stats.projectCount.toLocaleString() },
     { label: 'Words', value: stats.totalWords.toLocaleString() },
@@ -61,6 +110,12 @@ export default async function CompanionsPage() {
     { label: 'Backlinks', value: stats.backlinksReceived.toLocaleString() },
     { label: 'Tags', value: stats.tagCount.toLocaleString() },
   ]
+  const legacyStatRows: { label: string; value: string }[] = [
+    { label: 'Total XP', value: state.totalXp.toLocaleString() },
+    { label: 'Stage', value: `${state.stage.name} (${state.stage.index}/${STAGES.length})` },
+    ...gardenStatRows,
+  ]
+  const statRows = productState || accountIsSignedIn ? gardenStatRows : legacyStatRows
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-16">
@@ -101,19 +156,48 @@ export default async function CompanionsPage() {
         </p>
       </div>
 
+      {productState && (
+        <section className="mb-10" aria-label="Synced product condition">
+          <ProductActivityPanel state={productState} sourceLabel="Synced product condition" />
+        </section>
+      )}
+      {accountIsSignedIn && !productState && (
+        <section
+          className="mb-10 border-l-2 px-5 py-4"
+          style={{ borderColor: 'var(--accent)', background: 'var(--paper-raised)' }}
+          aria-label="Synced product condition"
+        >
+          <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--accent)' }}>
+            Account condition
+          </p>
+          <h2 className="font-ui mt-2 text-xl font-semibold tracking-tight">
+            {accountProduct.status === 'missing' ? 'No synced condition yet' : 'Account condition unavailable'}
+          </h2>
+          <p className="font-prose mt-2 max-w-2xl text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
+            {accountProduct.status === 'missing'
+              ? 'The garden archive below is local. Connect GitHub and complete a product sync before account XP appears here.'
+              : 'The account condition could not be read right now. The garden archive below is local and does not represent account XP.'}
+          </p>
+          {accountProduct.status === 'missing' && (
+            <Link href="/github" className="font-ui mt-4 inline-block text-sm underline underline-offset-2" style={{ color: 'var(--accent)' }}>
+              Open GitHub sync
+            </Link>
+          )}
+        </section>
+      )}
+
       {/* Stats summary */}
       <section className="mb-14">
+        {accountIsSignedIn && (
+          <p className="font-data mb-3 text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>
+            Garden signals
+          </p>
+        )}
         {/*
-          Fixed Tailwind columns, not auto-fill/auto-fit: statRows is a
-          known-length list (8), but auto-fit only collapses a track that is
-          empty across every row it spans. At this page's actual content
-          width (capped by max-w-5xl, ~976px), minmax(140px, 1fr) fits 6
-          columns, so 8 items split 6 + 2. Row 1 fills all 6 tracks, which
-          keeps them "in use" for row 2 too, so auto-fit could not collapse
-          the leftover 4 tracks in that short second row, only reserved
-          per-row emptiness collapses. grid-cols-2 sm:grid-cols-4 divides 8
-          evenly at every breakpoint (4x2 or 2x4), so there is never a
-          partial row to leave dead space in.
+          Fixed Tailwind columns keep the six garden metrics (or the eight
+          legacy metrics for a signed-out visitor) evenly distributed at every
+          breakpoint. Product XP is deliberately rendered by the synced
+          condition above rather than the legacy github-cache aggregate.
         */}
         <div
           className="grid grid-cols-2 sm:grid-cols-4"
@@ -137,25 +221,24 @@ export default async function CompanionsPage() {
         </div>
       </section>
 
-      {/* Evolution line */}
-      <section className="mb-14">
-        <h2 className="font-ui text-xl font-semibold tracking-tighter mb-1">
-          Progression
-        </h2>
-        <p className="font-prose text-sm leading-relaxed mb-5 max-w-2xl" style={{ color: 'var(--ink-muted)' }}>
-          The first three stages are evolutions; the final stage is the
-          family&apos;s mastery form ({slotLabel(STAGES[STAGES.length - 1])}).
-        </p>
-        <StageLine stages={STAGES} currentStageIndex={state.stage.index} sprites={stageSprites} />
-      </section>
+      {!accountIsSignedIn && (
+        <>
+          {/* Evolution line: only the signed-out owner archive uses the legacy cache. */}
+          <section className="mb-14">
+            <h2 className="font-ui text-xl font-semibold tracking-tighter mb-1">Progression</h2>
+            <p className="font-prose text-sm leading-relaxed mb-5 max-w-2xl" style={{ color: 'var(--ink-muted)' }}>
+              The first three stages are evolutions; the final stage is the family&apos;s mastery form ({slotLabel(STAGES[STAGES.length - 1])}).
+            </p>
+            <StageLine stages={STAGES} currentStageIndex={state.stage.index} sprites={stageSprites} />
+          </section>
 
-      {/* Item archive */}
-      <section className="mb-14">
-        <h2 className="font-ui text-xl font-semibold tracking-tighter mb-5">
-          Item archive
-        </h2>
-        <ItemDrawer items={state.items} />
-      </section>
+          {/* Item archive */}
+          <section className="mb-14">
+            <h2 className="font-ui text-xl font-semibold tracking-tighter mb-5">Item archive</h2>
+            <ItemDrawer items={state.items} />
+          </section>
+        </>
+      )}
 
       {/*
         The collection. A separate section, deliberately never merged into
@@ -165,18 +248,15 @@ export default async function CompanionsPage() {
       */}
       <section>
         <h2 className="font-ui text-xl font-semibold tracking-tighter mb-2">
-          Collection
+          {accountIsSignedIn ? 'Garden collection' : 'Collection'}
         </h2>
         <p
           className="font-prose text-sm leading-relaxed mb-5 max-w-2xl"
           style={{ color: 'var(--ink-muted)' }}
         >
-          A tag that reaches five notes hatches its own companion, themed by
-          what the cluster is about and already grown from that cluster&apos;s
-          own words, links, and backlinks. Every repo also creates its own
-          creature from that repo&apos;s own commit activity, species-assigned
-          by primary language, so the collection actually looks like a
-          collection.
+          {accountIsSignedIn
+            ? 'This local archive is kept separate from the account-scoped product collection shown in the synced condition above.'
+            : <>A tag that reaches five notes hatches its own companion, themed by what the cluster is about and already grown from that cluster&apos;s own words, links, and backlinks. Every repo also creates its own creature from that repo&apos;s own commit activity, species-assigned by primary language, so the collection actually looks like a collection.</>}
         </p>
         <CollectionGrid entries={collection} />
       </section>

@@ -27,6 +27,7 @@ import {
   type GuestProfile,
 } from '@/lib/game/guest-profile'
 import { normalizeMarkdownEvents, type MarkdownFileSnapshot } from '@/lib/game/markdown-events'
+import { canonicalizeProductEvent } from '@/lib/sync/product-event-id'
 
 const LEDGER_KEY = 'terrarium:guest-event-ledger'
 const ENCOUNTER_KEY = 'terrarium:guest-encounters'
@@ -60,7 +61,10 @@ function loadLedger(): EventLedger {
     if (!parsed || typeof parsed !== 'object' || !('events' in parsed) || !Array.isArray(parsed.events)) {
       return { events: [] }
     }
-    return addEvents({ events: [] }, parsed.events as NormalizedEvent[])
+    return addEvents(
+      { events: [] },
+      (parsed.events as NormalizedEvent[]).map(canonicalizeProductEvent),
+    )
   } catch {
     return { events: [] }
   }

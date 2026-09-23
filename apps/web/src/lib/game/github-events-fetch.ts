@@ -782,9 +782,10 @@ function attributedToLogin(
 ): boolean {
   const actor = itemRecord(item[field])
   const actorLogin = actor ? stringField(actor, 'login') : null
-  // Real GitHub REST responses include this field. The permissive fallback is
-  // useful for provider fixtures and does not weaken live attribution.
-  return actorLogin === null || actorLogin.toLowerCase() === login.trim().toLowerCase()
+  // These list endpoints are not filtered to the signed-in user. Missing
+  // attribution is therefore not evidence of ownership and must not receive a
+  // server-issued product receipt.
+  return actorLogin !== null && actorLogin.toLowerCase() === login.trim().toLowerCase()
 }
 
 function attributedCommitToLogin(item: Record<string, unknown>, login: string): boolean {
@@ -792,10 +793,10 @@ function attributedCommitToLogin(item: Record<string, unknown>, login: string): 
   const authors = [itemRecord(item.author), itemRecord(item.committer)]
     .map((actor) => actor ? stringField(actor, 'login')?.toLowerCase() ?? null : null)
     .filter((actor): actor is string => actor !== null)
-  // GitHub normally supplies at least one linked actor. The fallback keeps
-  // fixture/provider adapters useful when a source only supplies a SHA; live
-  // activity is still constrained by the `author=login` API query.
-  return authors.length === 0 || authors.includes(normalizedLogin)
+  // The list query is user-filtered, but a missing actor still leaves the
+  // adapter without evidence to carry into a server-issued receipt. Fail
+  // closed rather than crediting an unattributed commit.
+  return authors.length > 0 && authors.includes(normalizedLogin)
 }
 
 function recordWithStats(item: Record<string, unknown>): Record<string, unknown> | null {

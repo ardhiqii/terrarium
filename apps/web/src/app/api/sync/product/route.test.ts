@@ -15,6 +15,7 @@ import {
   issueGithubSyncCheckpoint,
   MAX_CHECKPOINT_TOKEN_LENGTH,
 } from '@/lib/sync/github-sync-checkpoint'
+import { issueVerifiedEventProof } from '@/lib/sync/verified-event-proof'
 import { GUEST_IDENTITY_CONFLICT_ERROR } from '@/lib/game/guest-identity-conflict'
 
 function request(method: string, body?: string, headers?: HeadersInit): NextRequest {
@@ -108,7 +109,7 @@ describe('POST/GET/DELETE /api/sync/product', () => {
 
     await expect(POST(request('POST', serialized))).resolves.toHaveProperty('status', 401)
     await expect(GET()).resolves.toHaveProperty('status', 401)
-    await expect(DELETE()).resolves.toHaveProperty('status', 401)
+    await expect(DELETE(request('DELETE'))).resolves.toHaveProperty('status', 401)
   })
 
   it('persists a valid snapshot, restores it with GET, and deletes it', async () => {
@@ -123,9 +124,63 @@ describe('POST/GET/DELETE /api/sync/product', () => {
     const get = await GET()
     expect(get.status).toBe(200)
     expect((await get.json()).guestId).toBe('guest-1')
+    const version = get.headers.get('x-product-snapshot-version')
+    expect(version).toBeTruthy()
 
-    expect((await DELETE()).status).toBe(204)
+    expect((await DELETE(request(
+      'DELETE',
+      JSON.stringify({ expectedVersion: version }),
+      { 'content-type': 'application/json' },
+    ))).status).toBe(204)
     expect((await GET()).status).toBe(404)
+  })
+
+  it('recomputes derived XP before the first snapshot is stored', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST, GET } = await import('./route')
+    const value = snapshot(['event-1'])
+    const forged: ProductSnapshot = {
+      ...value,
+      companions: value.companions.map((companion) => ({
+        ...companion,
+        xp: 9999,
+        essence: 9999,
+        encounterCount: 999,
+        progression: null,
+      })),
+    }
+
+    const response = await POST(request('POST', JSON.stringify(forged)))
+
+    expect(response.status).toBe(200)
+    expect((await response.json()).companions[0].xp).toBe(10)
+    const restored = await GET()
+    expect(await restored.json()).toMatchObject({ companions: [{ xp: 10 }] })
+  })
+
+  it('recomputes stale stored companion totals before returning a trusted snapshot', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST, GET } = await import('./route')
+    const { getProductStore } = await import('@/lib/sync/product-store')
+
+    await POST(request('POST', JSON.stringify(snapshot(['event-1']))))
+    const store = getProductStore()
+    const record = await store.getRecord(fakeGithubId('octocat'), 'octocat')
+    expect(record).not.toBeNull()
+    if (!record) return
+    const stale: ProductSnapshot = {
+      ...record.snapshot,
+      companions: record.snapshot.companions.map((companion) => ({
+        ...companion,
+        xp: 9999,
+        progression: null,
+      })),
+    }
+    expect(await store.put(record.githubId, record.handle, stale, '2026-08-28T10:01:00.000Z', record.updatedAt)).toBe(true)
+
+    const restored = await GET()
+    expect(restored.status).toBe(200)
+    expect((await restored.json()).companions[0].xp).toBe(10)
   })
 
   it('merges new events without double-counting replayed events', async () => {
@@ -171,11 +226,52 @@ describe('POST/GET/DELETE /api/sync/product', () => {
 
     // This is the server half of the destructive "Use this browser" action:
     // delete the account's row, then re-upload the browser's snapshot.
-    expect((await DELETE()).status).toBe(204)
+    const current = await GET()
+    const version = current.headers.get('x-product-snapshot-version')
+    expect(version).toBeTruthy()
+    expect((await DELETE(request(
+      'DELETE',
+      JSON.stringify({ expectedVersion: version }),
+      { 'content-type': 'application/json' },
+    ))).status).toBe(204)
     const replaced = await POST(request('POST', JSON.stringify(snapshot(['event-2'], 'guest-2'))))
     expect(replaced.status).toBe(200)
     expect((await replaced.json()).guestId).toBe('guest-2')
     expect((await GET()).status).toBe(200)
+  })
+
+  it('refuses an unversioned destructive delete', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST, DELETE, GET } = await import('./route')
+
+    await POST(request('POST', JSON.stringify(snapshot(['event-1']))))
+    expect((await DELETE(request('DELETE', JSON.stringify({})))).status).toBe(428)
+    expect((await GET()).status).toBe(200)
+  })
+
+  it('refuses a stale destructive delete without removing the newer cloud row', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST, DELETE, GET } = await import('./route')
+
+    await POST(request('POST', JSON.stringify(snapshot(['event-1'], 'guest-1'))))
+    const current = await GET()
+    const version = current.headers.get('x-product-snapshot-version')
+    expect(version).toBeTruthy()
+
+    const staleDelete = await DELETE(request(
+      'DELETE',
+      JSON.stringify({ expectedVersion: `${version}-stale` }),
+      { 'content-type': 'application/json' },
+    ))
+    expect(staleDelete.status).toBe(409)
+    expect((await GET()).status).toBe(200)
+
+    const currentDelete = await DELETE(request(
+      'DELETE',
+      JSON.stringify({ expectedVersion: version }),
+      { 'content-type': 'application/json' },
+    ))
+    expect(currentDelete.status).toBe(204)
   })
 
   it('rejects malformed, widened, newer, and oversized payloads before storage', async () => {
@@ -190,6 +286,45 @@ describe('POST/GET/DELETE /api/sync/product', () => {
       'content-length': String(2 * 1024 * 1024 + 1),
     }))).status).toBe(413)
     expect((await GET()).status).toBe(404)
+  })
+
+  it('rejects a snapshot that invents a companion outside the server catalog', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST } = await import('./route')
+    const value = snapshot(['event-1'])
+    const forged: ProductSnapshot = {
+      ...value,
+      activeCompanionId: 'invented-companion',
+      companions: value.companions.map((companion) => ({ ...companion, companionId: 'invented-companion' })),
+      collection: value.collection.map((reference) => ({ ...reference, companionId: 'invented-companion' })),
+      events: value.events.map((event) => ({ ...event, companionId: 'invented-companion' })),
+    }
+
+    const response = await POST(request('POST', JSON.stringify(forged)))
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: expect.stringMatching(/unrecognized companion/i) })
+  })
+
+  it('rejects a known companion that is not owned by the snapshot collection', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST } = await import('./route')
+    const value = snapshot()
+    const forged: ProductSnapshot = {
+      ...value,
+      activeCompanionId: 'ditto-like',
+      companions: [...value.companions, {
+        companionId: 'ditto-like',
+        familyId: 'ditto-family',
+        xp: 0,
+        essence: 0,
+        encounterCount: 0,
+        progression: null,
+      }],
+    }
+
+    const response = await POST(request('POST', JSON.stringify(forged)))
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: expect.stringMatching(/outside its collection/i) })
   })
 
   it('rejects a client-forged verified GitHub event without a server receipt', async () => {
@@ -263,6 +398,27 @@ describe('POST/GET/DELETE /api/sync/product', () => {
 
     expect(response.status).toBe(400)
     expect(body.receiptFailures?.[0]?.reason).toBe('missing-receipt')
+  })
+
+  it('preserves a valid verified GitHub event at the trusted snapshot boundary', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    vi.stubEnv('SESSION_SECRET', 's'.repeat(32))
+    const { POST, GET } = await import('./route')
+    const githubId = fakeGithubId('octocat')
+    const value = snapshot(['trusted-event'])
+    const unsigned = { ...value.events[0], source: 'github' as const, provenance: 'verified' as const }
+    const trusted: ProductSnapshot = {
+      ...value,
+      events: [{ ...unsigned, verifiedProof: issueVerifiedEventProof(unsigned, githubId) }],
+    }
+
+    expect((await POST(request('POST', JSON.stringify(trusted)))).status).toBe(200)
+    const response = await GET()
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body.events).toHaveLength(1)
+    expect(body.events[0].source).toBe('github')
+    expect(body.companions[0].xp).toBe(10)
   })
 
   it('drops legacy verified events without a valid receipt and recomputes XP before returning them', async () => {
