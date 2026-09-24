@@ -146,6 +146,7 @@ describe('GithubAccountSqliteStore', () => {
     await store.clearCredential(42)
 
     expect(await store.getToken(42)).toBeNull()
+    await expect(store.advanceBaseline(42, {}, { '101': '2026-09-13T00:00:00.000Z' }, '2026-09-13T01:00:00.000Z')).resolves.toBe(false)
     expect(await store.get(42)).toMatchObject({
       githubId: 42,
       handle: 'octo',

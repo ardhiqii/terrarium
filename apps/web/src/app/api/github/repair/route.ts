@@ -22,6 +22,7 @@ import { getGithubRepositoriesCached } from '@/lib/sync/github-repository-cache'
 import { getProductStore } from '@/lib/sync/product-store'
 import { trustStoredProductSnapshot } from '@/lib/sync/trusted-product-snapshot'
 import { getSessionProvider } from '@/lib/sync/session'
+import { requestAccountMatchesSession } from '@/lib/sync/request-account-guard'
 import { productSnapshotEvent } from '@/lib/sync/product-snapshot'
 import {
   issueVerifiedEventProof,
@@ -113,6 +114,9 @@ function blocked(eventIds: readonly string[], reason: string): Array<{ eventId: 
 export async function POST(request: NextRequest): Promise<Response> {
   const session = await getSessionProvider().current()
   if (!session) return json(401, { error: 'Sign in with GitHub to repair receipts.' })
+  if (!requestAccountMatchesSession(request, session.githubId)) {
+    return json(409, { error: 'account_changed' })
+  }
 
   const rateLimit = checkRateLimit(`github-receipt-repair:${session.githubId}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS)
   if (!rateLimit.allowed) return json(429, { error: 'Receipt repair limit reached. Try again shortly.' })
@@ -250,6 +254,7 @@ export async function POST(request: NextRequest): Promise<Response> {
       event: ReturnType<typeof productSnapshotEvent>
     }>()
     const proofAuthorizedIds = new Set<string>()
+    const ownerUnavailableIds = new Set<string>()
     if (
       fetched.status !== 'unavailable' &&
       fetched.input.sourceId === String(session.githubId) &&
@@ -292,6 +297,21 @@ export async function POST(request: NextRequest): Promise<Response> {
           }
         }
         const checkpointAuthorizes = checkpointEventIds.has(candidate.eventId)
+        // A checkpoint proves that the server observed this stable event, but
+        // the legacy token does not bind its companion owner. Never mint a new
+        // receipt for an ownerless checkpoint event: require either the
+        // preserved receipt or a trusted cloud owner. The browser keeps the
+        // event and can retry once that ownership evidence is available.
+        // A preserved legacy receipt may have been signed over an older
+        // canonical cap/metadata shape, so it can fail verification against
+        // today's provider payload while still being the only ownership hint
+        // the recovery has. The client must compare the returned owner-bound
+        // payload with its preserved local event before upload. A checkpoint
+        // with no receipt or cloud owner remains blocked.
+        if (checkpointAuthorizes && !storedOwner && !proofAuthorizes && !existingProof) {
+          ownerUnavailableIds.add(candidate.eventId)
+          continue
+        }
         if (!checkpointAuthorizes && !proofAuthorizes) continue
         if (proofAuthorizes) proofAuthorizedIds.add(candidate.eventId)
         const proof = issueVerifiedEventProof(ownedEvent, session.githubId)
@@ -312,21 +332,23 @@ export async function POST(request: NextRequest): Promise<Response> {
       .filter((eventId) => !repairedIds.has(eventId))
       .map((eventId) => ({
         eventId,
-        reason: !checkpointEventIds.has(eventId) && proofAuthorizedIds.has(eventId)
-          ? 'activity-not-found'
-          : !checkpointEventIds.has(eventId) && parsed.proofs[eventId]
-            ? 'legacy-receipt-invalid'
-            : !checkpointEventIds.has(eventId)
-              ? parsed.checkpoint && !checkpoint
-                ? 'checkpoint-invalid-or-expired'
-                : 'repair-authorization-missing'
-              : fetched.status === 'unavailable'
-                ? 'activity-unavailable'
-                : fetched.status === 'partial'
-                  ? 'activity-read-incomplete'
-                  : window.skippedCount > 0
-                    ? 'outside-repair-window-or-not-found'
-                    : 'activity-not-found',
+        reason: ownerUnavailableIds.has(eventId)
+          ? 'event-owner-unavailable'
+          : !checkpointEventIds.has(eventId) && proofAuthorizedIds.has(eventId)
+            ? 'activity-not-found'
+            : !checkpointEventIds.has(eventId) && parsed.proofs[eventId]
+              ? 'legacy-receipt-invalid'
+              : !checkpointEventIds.has(eventId)
+                ? parsed.checkpoint && !checkpoint
+                  ? 'checkpoint-invalid-or-expired'
+                  : 'repair-authorization-missing'
+                : fetched.status === 'unavailable'
+                  ? 'activity-unavailable'
+                  : fetched.status === 'partial'
+                    ? 'activity-read-incomplete'
+                    : window.skippedCount > 0
+                      ? 'outside-repair-window-or-not-found'
+                      : 'activity-not-found',
       }))
 
     return json(200, {

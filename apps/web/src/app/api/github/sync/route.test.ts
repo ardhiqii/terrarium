@@ -61,11 +61,11 @@ const repository = {
   canRead: true,
 }
 
-function request(): NextRequest {
+function request(extraHeaders: HeadersInit = {}): NextRequest {
   return new NextRequest('http://localhost/api/github/sync', {
     method: 'POST',
     body: JSON.stringify({ activeCompanionId: 'pikachu-family' }),
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...extraHeaders },
   })
 }
 
@@ -129,6 +129,36 @@ describe('POST /api/github/sync', () => {
       status: 'ok',
       truncated: false,
     })
+  })
+
+  it('rejects a malformed or mismatched account header before sync work', async () => {
+    const malformed = await POST(request({ 'x-terrarium-github-id': '9001.0' }))
+    expect(malformed.status).toBe(409)
+    expect(await malformed.json()).toEqual({ error: 'account_changed' })
+
+    const mismatched = await POST(new NextRequest('http://localhost/api/github/sync', {
+      method: 'POST',
+      body: '{bad json',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-terrarium-github-id': '9002',
+      },
+    }))
+    expect(mismatched.status).toBe(409)
+    expect(await mismatched.json()).toEqual({ error: 'account_changed' })
+    expect(mocks.getToken).not.toHaveBeenCalled()
+    expect(mocks.getSettings).not.toHaveBeenCalled()
+    expect(mocks.fetchRepositories).not.toHaveBeenCalled()
+    expect(mocks.fetchEvents).not.toHaveBeenCalled()
+  })
+
+  it('accepts a matching account header as well as older requests without one', async () => {
+    const response = await POST(request({ 'x-terrarium-github-id': '9001' }))
+    expect(response.status).toBe(200)
+    await readSyncEvents(response)
+
+    const legacy = await POST(request())
+    expect(legacy.status).toBe(200)
   })
 
   it('rejects an unrecognized active companion before minting receipts', async () => {

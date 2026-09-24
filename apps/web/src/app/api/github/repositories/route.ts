@@ -15,6 +15,7 @@ import {
   purgeGithubRepositoryCache,
 } from '@/lib/sync/github-repository-cache'
 import { getSessionProvider } from '@/lib/sync/session'
+import { requestAccountMatchesSession } from '@/lib/sync/request-account-guard'
 import type { Session } from '@/lib/sync/types'
 
 export const runtime = 'nodejs'
@@ -49,13 +50,16 @@ function repositoryIsTracked(
   return settings.autoIncludeOrganizations.includes(repository.ownerLogin.toLowerCase())
 }
 
-async function context(): Promise<{
+async function context(request?: NextRequest): Promise<{
   session: Session
   token: string
   settings: GithubAccountSettings
 } | { error: Response }> {
   const session = await getSessionProvider().current()
   if (!session) return { error: json(401, { error: 'Sign in with GitHub to manage repositories.' }) }
+  if (!requestAccountMatchesSession(request, session.githubId)) {
+    return { error: json(409, { error: 'account_changed' }) }
+  }
   const store = getGithubAccountStore()
   const token = await store.getToken(session.githubId)
   if (!token) return { error: json(401, { error: 'GitHub access is unavailable. Reconnect GitHub.' }) }
@@ -118,7 +122,7 @@ function refreshRequested(request: NextRequest | undefined): boolean {
 
 export async function GET(request: NextRequest): Promise<Response> {
   try {
-    const value = await context()
+    const value = await context(request)
     if ('error' in value) return value.error
     const available = await availableRepositories(
       value.session.githubId,
@@ -174,7 +178,7 @@ function isOrganizationLogin(value: unknown): value is string {
 
 export async function PUT(request: NextRequest): Promise<Response> {
   try {
-    const value = await context()
+    const value = await context(request)
     if ('error' in value) return value.error
     const contentLength = request.headers.get('content-length')
     if (contentLength && Number(contentLength) > SETTINGS_PAYLOAD_LIMIT_BYTES) {
@@ -286,10 +290,13 @@ export async function PUT(request: NextRequest): Promise<Response> {
  * must never reach this function. Nothing here runs unless the user asked for
  * it: automatic failures only purge caches and ask for a reconnect.
  */
-export async function DELETE(): Promise<Response> {
+export async function DELETE(request?: NextRequest): Promise<Response> {
   try {
     const session = await getSessionProvider().current()
     if (!session) return json(401, { error: 'Sign in with GitHub to manage repositories.' })
+    if (!requestAccountMatchesSession(request, session.githubId)) {
+      return json(409, { error: 'account_changed' })
+    }
     await getGithubAccountStore().clearCredential(session.githubId)
     purgeGithubRepositoryCache(session.githubId)
     return json(204, undefined)

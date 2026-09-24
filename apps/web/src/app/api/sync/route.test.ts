@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { NextRequest } from 'next/server'
+import type { SyncedSnapshot } from '@/lib/sync/types'
 
 function fakeRequest(method: string, body?: unknown): NextRequest {
   return new NextRequest('http://localhost/api/sync', {
@@ -18,7 +19,7 @@ function fakeRequest(method: string, body?: unknown): NextRequest {
   })
 }
 
-function validSnapshotBody(overrides: Record<string, unknown> = {}) {
+function validSnapshotBody(overrides: Record<string, unknown> = {}): SyncedSnapshot {
   return {
     schemaVersion: 1,
     totalXp: 1234,
@@ -32,7 +33,7 @@ function validSnapshotBody(overrides: Record<string, unknown> = {}) {
     unlockedItemIds: ['spore-jar'],
     generatedAt: '2024-06-01T00:00:00.000Z',
     ...overrides,
-  }
+  } as SyncedSnapshot
 }
 
 describe('POST/GET/DELETE /api/sync', () => {
@@ -67,6 +68,24 @@ describe('POST/GET/DELETE /api/sync', () => {
     expect(getRes.status).toBe(200)
     const fetched = await getRes.json()
     expect(fetched.snapshot).toEqual(posted.snapshot)
+  })
+
+  it('rejects a mutable-handle row that belongs to another GitHub identity', async () => {
+    process.env.STUB_SESSION_HANDLE = 'octocat'
+    const { POST, GET, DELETE } = await import('./route')
+    const { getSyncStore } = await import('@/lib/sync/store')
+    await getSyncStore().put({
+      handle: 'octocat',
+      githubId: 999999,
+      avatarUrl: null,
+      snapshot: validSnapshotBody(),
+      updatedAt: '2024-06-01T00:00:00.000Z',
+    })
+
+    expect((await POST(fakeRequest('POST', validSnapshotBody({ totalXp: 9 })))).status).toBe(409)
+    expect((await GET()).status).toBe(409)
+    expect((await DELETE()).status).toBe(409)
+    expect((await getSyncStore().get('octocat'))?.snapshot.totalXp).toBe(1234)
   })
 
   it('3. a body with an extra unknown field is a 400, not a silent drop', async () => {

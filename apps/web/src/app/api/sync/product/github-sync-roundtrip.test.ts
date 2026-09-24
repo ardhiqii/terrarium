@@ -142,10 +142,14 @@ function productRequest(body: unknown, headers?: HeadersInit): NextRequest {
   })
 }
 
-function repairRequest(eventIds: readonly string[], checkpoint: string): NextRequest {
+function repairRequest(
+  eventIds: readonly string[],
+  checkpoint: string,
+  proofs: Readonly<Record<string, string>> = {},
+): NextRequest {
   return new NextRequest('http://localhost/api/github/repair', {
     method: 'POST',
-    body: JSON.stringify({ activeCompanionId: 'pikachu-family', eventIds, checkpoint, proofs: {} }),
+    body: JSON.stringify({ activeCompanionId: 'pikachu-family', eventIds, checkpoint, proofs }),
     headers: { 'Content-Type': 'application/json' },
   })
 }
@@ -431,7 +435,11 @@ describe('large-account GitHub sync → product checkpoint commit', () => {
     expect((await getProductStore().getRecord(GITHUB_ID, 'octo'))).toBeNull()
     expect((await accountStore.getSettings(GITHUB_ID)).baselineByRepositoryId).toEqual({ [repository.id]: BASELINE })
 
-    const repair = await repairGithub(repairRequest([failed.eventId], scan.checkpoint as string))
+    const repair = await repairGithub(repairRequest(
+      [failed.eventId],
+      scan.checkpoint as string,
+      { [failed.eventId]: failed.verifiedProof as string },
+    ))
     const repairBody = await repair.json()
     expect(repair.status).toBe(200)
     expect(repairBody.repaired).toHaveLength(1)

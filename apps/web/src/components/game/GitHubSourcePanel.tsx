@@ -37,7 +37,38 @@ import {
   clearGithubSyncRecovery,
   type StoredGithubSyncRecovery,
 } from '@/lib/game/product-browser-storage'
-import { saveGuestProfile, type GuestProfile } from '@/lib/game/guest-profile'
+import {
+  createGuestProfile,
+  GUEST_PROFILE_STORAGE_KEY,
+  loadGuestProfile,
+  saveGuestProfile,
+  type GuestProfile,
+} from '@/lib/game/guest-profile'
+import {
+  accountNamespaceForGithubId,
+  beginAccountHydration as beginAccountHydrationState,
+  commitAccountHydration as commitAccountHydrationState,
+  createAccountNamespaceGate,
+  invalidateAccountNamespace,
+  isCurrentAccountNamespace,
+  type AccountHydrationToken,
+  type AccountNamespaceGate,
+  type HydratedAccountNamespace,
+} from '@/lib/game/github-account-scope'
+import {
+  mergeLegacyGithubEvents,
+  retainUnmigratedLegacyGithubData,
+} from '@/lib/game/github-legacy-event-migration'
+import {
+  ACCOUNT_CHANGED_RELOAD_MESSAGE,
+  githubAccountHeaders,
+  isAccountChangedBody,
+  isAccountChangedError,
+} from '@/lib/game/github-account-request'
+import {
+  canStartReceiptRepair,
+  projectPartialProductSnapshot,
+} from '@/lib/game/github-repair-projection'
 import {
   clearGithubRepositoryCache,
   decideFailedListingRefresh,
@@ -61,6 +92,7 @@ import {
   buildProductSnapshot,
   deserializeProductSnapshot,
   mergeProductSnapshots,
+  productSnapshotEvent,
   restoreProductStateFromSnapshot,
   type ProductSnapshot,
 } from '@/lib/sync/product-snapshot'
@@ -397,9 +429,28 @@ function repositoryOwnerId(owner: string): string {
   return owner.toLowerCase().replace(/[^a-z0-9]+/gu, '-') || 'unknown'
 }
 
-function browserState(namespace?: string): ProductState {
+function createUnsavedBrowserGuestProfile(starterCompanionId: string): GuestProfile {
+  const randomId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  const now = new Date().toISOString()
+  return createGuestProfile({
+    guestId: `guest-${randomId}`,
+    starterCompanionId,
+    now,
+  })
+}
+
+function browserState(namespace?: string, persistProfile = true): ProductState {
   const storage = browserProductStorage()
-  const profile = ensureBrowserGuestProfile(storage, PROTOTYPE_COMPANION_CATALOG.list()[0].id, namespace)
+  const starterCompanionId = PROTOTYPE_COMPANION_CATALOG.list()[0].id
+  const profile = namespace
+    ? loadGuestProfile(storage, `${GUEST_PROFILE_STORAGE_KEY}:${namespace}`) ??
+      createUnsavedBrowserGuestProfile(starterCompanionId)
+    : ensureBrowserGuestProfile(storage, starterCompanionId)
+  if (namespace && persistProfile && !loadGuestProfile(storage, `${GUEST_PROFILE_STORAGE_KEY}:${namespace}`)) {
+    saveGuestProfile(storage, profile, `${GUEST_PROFILE_STORAGE_KEY}:${namespace}`)
+  }
   return createProductState(
     profile,
     loadBrowserLedger(storage, namespace),
@@ -422,25 +473,109 @@ function isBlankAccountState(state: ProductState): boolean {
     state.profile.collection[0]?.acquisition === 'starter'
 }
 
+/**
+ * Reuse collection references that already prove ownership in the generic
+ * profile. An event name is not enough to mint a new `history` reference: an
+ * unowned or unsupported generic companion must stay in the generic archive.
+ * The helper deliberately copies no generic encounters or guest identity.
+ */
+function hasSafeDemonstratedGithubOwner(
+  state: ProductState,
+  companionId: string,
+  genericProfile: GuestProfile | null,
+): boolean {
+  if (state.profile.collection.some((reference) => reference.companionId === companionId)) return true
+  const genericReferences = genericProfile?.collection.filter((reference) => reference.companionId === companionId) ?? []
+  if (genericReferences.length === 0) return false
+  const accountReferences = new Map(state.profile.collection.map((reference) => [reference.referenceId, reference]))
+  return genericReferences.every((reference) => {
+    const existing = accountReferences.get(reference.referenceId)
+    return existing === undefined || existing.companionId === reference.companionId
+  })
+}
+
+function adoptDemonstratedGithubOwners(
+  state: ProductState,
+  events: readonly NormalizedEvent[],
+  genericProfile: GuestProfile | null,
+): ProductState {
+  const owned = new Set(state.profile.collection.map((reference) => reference.companionId))
+  const referencesById = new Map(state.profile.collection.map((reference) => [reference.referenceId, reference]))
+  const genericReferencesByCompanion = new Map<string, GuestProfile['collection'][number][]>()
+  for (const reference of genericProfile?.collection ?? []) {
+    const references = genericReferencesByCompanion.get(reference.companionId) ?? []
+    references.push(reference)
+    genericReferencesByCompanion.set(reference.companionId, references)
+  }
+  const additions = new Map<string, GuestProfile['collection'][number]>()
+  for (const event of events) {
+    if (owned.has(event.companionId)) continue
+    const references = genericReferencesByCompanion.get(event.companionId) ?? []
+    // No collection-backed proof means this event cannot be made uploadable
+    // for the account. In particular, do not synthesize an event-derived ref.
+    if (references.length === 0) continue
+    if (references.some((reference) => {
+      const existing = referencesById.get(reference.referenceId)
+      return existing !== undefined && existing.companionId !== reference.companionId
+    })) continue
+    for (const reference of references) {
+      if (referencesById.has(reference.referenceId)) continue
+      additions.set(reference.referenceId, reference)
+      referencesById.set(reference.referenceId, reference)
+    }
+    owned.add(event.companionId)
+  }
+  if (additions.size === 0) return state
+  return createProductState(
+    {
+      ...state.profile,
+      collection: [...state.profile.collection, ...additions.values()],
+    },
+    state.ledger,
+    state.encounters,
+    PROTOTYPE_COMPANION_CATALOG,
+  )
+}
+
+interface CloudRestoreResult {
+  readonly state: ProductState
+  readonly proofs: Readonly<Record<string, string>>
+  readonly message?: string
+  readonly accountChanged?: boolean
+}
+
 async function restoreCloudProductState(
   local: ProductState,
   namespace: string,
-): Promise<{ state: ProductState; message?: string }> {
+  githubId: number,
+): Promise<CloudRestoreResult> {
   try {
     const storage = browserProductStorage()
     const localProofs = loadVerifiedEventProofs(storage, namespace)
-    const response = await fetch('/api/sync/product', { cache: 'no-store' })
-    if (response.status === 401 || response.status === 404) return { state: local }
+    const response = await fetch('/api/sync/product', {
+      cache: 'no-store',
+      headers: githubAccountHeaders(githubId),
+    })
+    if (response.status === 401 || response.status === 404) return { state: local, proofs: localProofs }
     const body = await responseBody(response)
+    if (isAccountChangedBody(body)) {
+      return {
+        state: local,
+        proofs: localProofs,
+        accountChanged: true,
+        message: ACCOUNT_CHANGED_RELOAD_MESSAGE,
+      }
+    }
     if (!response.ok) {
       return {
         state: local,
+        proofs: localProofs,
         message: errorMessage(body, 'Cloud condition could not be restored; local progress is safe.'),
       }
     }
     const cloud = deserializeProductSnapshot(JSON.stringify(body))
     if (!cloud) {
-      return { state: local, message: 'Cloud condition was invalid; local progress is safe.' }
+      return { state: local, proofs: localProofs, message: 'Cloud condition was invalid; local progress is safe.' }
     }
 
     let restored: ProductState
@@ -468,14 +603,16 @@ async function restoreCloudProductState(
     } else {
       return {
         state: local,
+        proofs: localProofs,
         message: 'A different local guest profile is already active. Local progress was kept; export or review it before restoring the cloud condition.',
       }
     }
-    saveBrowserProductState(restored, namespace)
-    saveVerifiedEventProofs(storage, restoredProofs, restored.ledger.events.map((event) => productEventId(event.eventId)), namespace)
-    return { state: restored, message }
+    // The caller commits the account namespace first, then persists this
+    // result. A slow response therefore cannot write stale cloud state into a
+    // namespace that has since been superseded.
+    return { state: restored, proofs: restoredProofs, message }
   } catch {
-    return { state: local, message: 'Cloud condition could not be restored; local progress is safe.' }
+    return { state: local, proofs: loadVerifiedEventProofs(browserProductStorage(), namespace), message: 'Cloud condition could not be restored; local progress is safe.' }
   }
 }
 
@@ -483,29 +620,26 @@ interface ProductUploadResult {
   readonly ok: boolean
   readonly status: number
   readonly body: Record<string, unknown>
+  readonly accountChanged: boolean
 }
 
 /** Upload one product snapshot, carrying the signed checkpoint when the sync issued one. */
-async function uploadProductSnapshot(snapshot: ProductSnapshot, checkpoint: string | null): Promise<ProductUploadResult> {
+async function uploadProductSnapshot(
+  snapshot: ProductSnapshot,
+  checkpoint: string | null,
+  githubId: number,
+): Promise<ProductUploadResult> {
   const response = await fetch('/api/sync/product', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: githubAccountHeaders(githubId, { 'Content-Type': 'application/json' }),
     body: JSON.stringify(checkpoint ? { snapshot, checkpoint } : snapshot),
   })
-  return { ok: response.ok, status: response.status, body: await responseBody(response) }
-}
-
-/** Keep invalid events out of a best-effort cloud projection without touching
- * the browser ledger. The full snapshot stays in StoredGithubSyncRecovery so
- * the blocked events remain visible and retryable. */
-function snapshotWithoutBlockedEvents(
-  snapshot: ProductSnapshot,
-  blockedIds: ReadonlySet<string>,
-): ProductSnapshot {
-  if (blockedIds.size === 0) return snapshot
+  const body = await responseBody(response)
   return {
-    ...snapshot,
-    events: snapshot.events.filter((event) => !blockedIds.has(event.eventId)),
+    ok: response.ok,
+    status: response.status,
+    body,
+    accountChanged: isAccountChangedBody(body),
   }
 }
 
@@ -517,7 +651,6 @@ function sameReceiptPayload(
     eventId: left.eventId,
     companionId: left.companionId,
     source: left.source,
-    provenance: left.provenance,
     category: left.category,
     occurredAt: left.occurredAt,
     cap: left.cap ?? null,
@@ -526,7 +659,6 @@ function sameReceiptPayload(
     eventId: right.eventId,
     companionId: right.companionId,
     source: right.source,
-    provenance: right.provenance,
     category: right.category,
     occurredAt: right.occurredAt,
     cap: right.cap ?? null,
@@ -540,22 +672,31 @@ function sameReceiptPayload(
  * of inventing an identity to adopt.
  */
 interface AccountSnapshotRead {
-  readonly snapshot: ProductSnapshot
+  readonly snapshot: ProductSnapshot | null
   /** Server row version used by the destructive identity action. */
   readonly version: string | null
+  readonly accountChanged: boolean
 }
 
-async function readAccountSnapshot(): Promise<AccountSnapshotRead | null> {
+async function readAccountSnapshot(githubId: number): Promise<AccountSnapshotRead | null> {
   try {
-    const response = await fetch('/api/sync/product', { cache: 'no-store' })
+    const response = await fetch('/api/sync/product', {
+      cache: 'no-store',
+      headers: githubAccountHeaders(githubId),
+    })
+    const body = await responseBody(response)
+    if (isAccountChangedBody(body)) {
+      return { snapshot: null, version: null, accountChanged: true }
+    }
     if (!response.ok) return null
-    const snapshot = deserializeProductSnapshot(JSON.stringify(await responseBody(response)))
+    const snapshot = deserializeProductSnapshot(JSON.stringify(body))
     if (!snapshot) return null
     return {
       snapshot,
       // The snapshot's updatedAt is not the store's concurrency token. Do not
       // silently substitute it if an older deployment omitted the header.
       version: response.headers.get('x-product-snapshot-version'),
+      accountChanged: false,
     }
   } catch {
     return null
@@ -588,6 +729,63 @@ function adoptUploadedSnapshot(
     // that already succeeded server-side.
   }
   return state
+}
+
+interface PendingLegacyGithubMigration {
+  readonly namespace: string
+  readonly eventIds: readonly string[]
+}
+
+/**
+ * Legacy keys are not touched during hydration or a failed upload. Once the
+ * account response has been accepted, remove only the exact stable GitHub
+ * records that were staged and are present with the same receipt-bound shape
+ * in the successful cloud snapshot. Unrelated generic notes/events and a
+ * changed generic key remain untouched.
+ */
+function clearMigratedLegacyGithubData(
+  storage: ReturnType<typeof browserProductStorage>,
+  migration: PendingLegacyGithubMigration,
+  uploadedSnapshot: ProductSnapshot | null,
+): void {
+  if (migration.eventIds.length === 0 || !uploadedSnapshot) return
+  try {
+    const genericLedger = loadBrowserLedger(storage)
+    const genericProofs = loadVerifiedEventProofs(storage)
+    const migrated = new Set(migration.eventIds)
+    const genericById = new Map(
+      genericLedger.events.map((event) => [String(productEventId(event.eventId)), event]),
+    )
+    // A stable ID alone is not enough: a concurrent account copy could carry
+    // the same ID with different receipt-bound fields. Remove a generic record
+    // only when the validated server response contains the exact staged shape.
+    const uploadedEventIds = uploadedSnapshot.events
+      .filter((event) => event.provenance === 'verified' && Boolean(event.verifiedProof))
+      .filter((event) => migrated.has(event.eventId))
+      .filter((event) => {
+        const generic = genericById.get(event.eventId)
+        const genericProof = genericProofs[event.eventId]
+        if (!generic || genericProof !== event.verifiedProof) return false
+        const genericSnapshot = productSnapshotEvent(generic, genericProof)
+        return sameReceiptPayload(genericSnapshot, event)
+      })
+      .map((event) => event.eventId)
+    if (uploadedEventIds.length === 0) return
+    const retained = retainUnmigratedLegacyGithubData(
+      genericLedger,
+      genericProofs,
+      uploadedEventIds,
+    )
+    if (retained.ledger.events.length !== genericLedger.events.length) {
+      saveBrowserLedger(storage, retained.ledger)
+    }
+    if (Object.keys(retained.proofs).length !== Object.keys(genericProofs).length) {
+      saveVerifiedEventProofs(storage, retained.proofs)
+    }
+  } catch {
+    // Keeping the generic bytes is the safe failure mode. A later successful
+    // upload can retry this cleanup without rescanning GitHub.
+  }
 }
 
 /** One side of the identity chooser: what this copy actually holds. */
@@ -708,9 +906,116 @@ export function GitHubSourcePanel() {
   // refresh can keep unsaved edits without making `loadRepositories` depend on
   // draft state.
   const unsavedDraftRef = useRef(false)
+  // A repository response identifies the account before its local/cloud
+  // product state has been read. Keep the scope in refs so every async
+  // continuation can compare the immutable generation synchronously; React
+  // state alone would leave a window where `null` means "not hydrated yet".
+  const accountGateRef = useRef<AccountNamespaceGate>(createAccountNamespaceGate())
+  const accountScopeRef = useRef<HydratedAccountNamespace | null>(null)
+  const genericStateRef = useRef<ProductState | null>(null)
+  const legacyMigrationRef = useRef<PendingLegacyGithubMigration | null>(null)
+  const repositoryRequestRef = useRef(0)
+  const syncRunRef = useRef(0)
+  const settingsRequestRef = useRef(0)
+  const accountActionRef = useRef(0)
+
+  const beginAccountHydration = useCallback((githubId: number): AccountHydrationToken => {
+    const next = beginAccountHydrationState(accountGateRef.current, githubId)
+    accountGateRef.current = next.gate
+    accountScopeRef.current = null
+    syncRunRef.current += 1
+    settingsRequestRef.current += 1
+    accountActionRef.current += 1
+    syncAbortRef.current?.abort()
+    syncAbortRef.current = null
+    setAccountNamespace(null)
+    setStatus('loading')
+    setBusy(false)
+    setSavingSettings(false)
+    setProgress(null)
+    setReadingPhase(false)
+    setResolvingGuestConflict(null)
+    setGuestConflictStage('idle')
+    guestConflictRef.current = null
+    setGuestConflict(null)
+    setProductState(null)
+    setRecoveryState(null)
+    legacyMigrationRef.current = null
+    return next.token
+  }, [setRecoveryState])
+
+  const invalidateAccountScope = useCallback((restoreGeneric = false) => {
+    // Invalidate repository reads as well as product/account continuations.
+    // Otherwise a delayed listing response can repaint private repositories or
+    // settings after the account scope has been discarded.
+    repositoryRequestRef.current += 1
+    accountGateRef.current = invalidateAccountNamespace(accountGateRef.current)
+    accountScopeRef.current = null
+    syncRunRef.current += 1
+    settingsRequestRef.current += 1
+    accountActionRef.current += 1
+    syncAbortRef.current?.abort()
+    syncAbortRef.current = null
+    accountGithubIdRef.current = null
+    confirmedGithubIdRef.current = null
+    unsavedDraftRef.current = false
+    try {
+      clearGithubRepositoryCache(browserProductStorage())
+    } catch {
+      // Storage is best effort; the in-memory listing is still cleared below.
+    }
+    setAccountNamespace(null)
+    setRepositories([])
+    setSettings(null)
+    setDraftTrackedIds([])
+    setDraftExcludedIds([])
+    setDraftAutoPersonal(false)
+    setDraftOrganizations([])
+    setListFetchedAt(null)
+    setListStale(false)
+    setRefreshingList(false)
+    setBusy(false)
+    setSavingSettings(false)
+    setProgress(null)
+    setReadingPhase(false)
+    setLastSyncSummary(null)
+    setResolvingGuestConflict(null)
+    setGuestConflictStage('idle')
+    guestConflictRef.current = null
+    setGuestConflict(null)
+    setRecoveryState(null)
+    legacyMigrationRef.current = null
+    if (restoreGeneric) {
+      const generic = genericStateRef.current ?? browserState()
+      genericStateRef.current = generic
+      setProductState(generic)
+    } else {
+      setProductState(null)
+    }
+  }, [setRecoveryState])
+
+  const handleAccountChanged = useCallback(() => {
+    invalidateAccountScope(true)
+    setStatus('error')
+    setMessage(ACCOUNT_CHANGED_RELOAD_MESSAGE)
+  }, [invalidateAccountScope])
+
+  const commitAccountHydration = useCallback((token: AccountHydrationToken): HydratedAccountNamespace | null => {
+    const committed = commitAccountHydrationState(accountGateRef.current, token)
+    if (!committed.scope) return null
+    accountGateRef.current = committed.gate
+    accountScopeRef.current = committed.scope
+    setAccountNamespace(committed.scope.namespace)
+    return committed.scope
+  }, [])
 
   const hydrateState = useCallback(() => {
     const state = browserState()
+    genericStateRef.current = state
+    accountGateRef.current = invalidateAccountNamespace(accountGateRef.current)
+    accountScopeRef.current = null
+    legacyMigrationRef.current = null
+    setAccountNamespace(null)
     setProductState(state)
     setRecoveryState(null)
     setRevealedDraws(loadRevealedDraws(browserProductStorage()))
@@ -741,11 +1046,18 @@ export function GitHubSourcePanel() {
    */
   const loadRepositories = useCallback(async (options?: { refresh?: boolean }) => {
     const refresh = options?.refresh === true
+    const requestId = ++repositoryRequestRef.current
     const storage = browserProductStorage()
+    const isCurrentRequest = (): boolean => requestId === repositoryRequestRef.current
     // Paint the stored copy only when it is known to belong to this account.
     // Before a response confirms the account this is a best guess that the
-    // answer below replaces or discards.
+    // answer below replaces or discards. It never authorizes sync by itself.
     const cached = loadGithubRepositoryCache(storage, accountGithubIdRef.current ?? undefined)
+    // The first discovery request may have no committed scope yet. If a
+    // browser-held listing has an account ID, capture it too so a session
+    // switch is rejected instead of returning another account's list. Once a
+    // scope exists it is always the authority for this request.
+    const capturedGithubId = accountScopeRef.current?.githubId ?? accountGithubIdRef.current ?? cached?.githubId ?? null
     /**
      * Applies server settings unless the user has unsaved draft edits. The
      * server's settings did not change while a refresh ran, so reverting the
@@ -758,16 +1070,24 @@ export function GitHubSourcePanel() {
       }
       applySettings(next)
     }
+    const canPaintCachedListing = Boolean(
+      cached &&
+      accountGithubIdRef.current !== null &&
+      cached.githubId === accountGithubIdRef.current &&
+      confirmedGithubIdRef.current === accountGithubIdRef.current,
+    )
     if (refresh) {
       setRefreshingList(true)
-    } else if (cached) {
-      // Instant paint from the last successful listing; the fetch below still
-      // runs and stays the source of truth for settings.
+    } else if (canPaintCachedListing && cached) {
+      // Instant paint is only allowed after this mount has already confirmed
+      // the same immutable account. A cached private listing must never be
+      // shown while the first account response is still in flight.
       setRepositories([...cached.repositories])
       applyServerSettings(cached.settings)
       setListFetchedAt(cached.savedAt)
       setListStale(false)
-      setStatus('ready')
+      if (accountScopeRef.current) setStatus('ready')
+      else setStatus('loading')
     } else {
       setStatus('loading')
     }
@@ -775,15 +1095,24 @@ export function GitHubSourcePanel() {
     try {
       const response = await fetch(
         `/api/github/repositories${refresh ? '?refresh=1' : ''}`,
-        { cache: 'no-store' },
+        {
+          cache: 'no-store',
+          ...(capturedGithubId === null ? {} : { headers: githubAccountHeaders(capturedGithubId) }),
+        },
       )
       const body = await responseBody(response)
+      if (!isCurrentRequest()) return
+      if (isAccountChangedBody(body)) {
+        handleAccountChanged()
+        return
+      }
       if (response.status === 401) {
         // The stored copy belongs to a session that is over. A different
         // account signing in on this profile must not inherit it.
         clearGithubRepositoryCache(storage)
         accountGithubIdRef.current = null
         confirmedGithubIdRef.current = null
+        invalidateAccountScope(true)
         setStatus('signed-out')
         setMessage(errorMessage(body, 'Sign in with GitHub to connect a repository.'))
         return
@@ -804,33 +1133,32 @@ export function GitHubSourcePanel() {
           confirmedGithubId: confirmedGithubIdRef.current,
           failedGithubId: failedAccountId,
         })
-        if (outcome === 'keep-listing') {
+        if (outcome === 'keep-listing' && accountScopeRef.current) {
           setListStale(true)
           setStatus('ready')
           setMessage(`${failure} Showing the last known repository list.`)
           return
         }
-        if (outcome === 'drop-listing') {
-          confirmedGithubIdRef.current = null
-          accountGithubIdRef.current = null
-          setRepositories([])
-          setSettings(null)
-          setDraftTrackedIds([])
-          setDraftExcludedIds([])
-          setDraftAutoPersonal(false)
-          setDraftOrganizations([])
-        }
-        throw new Error(failure)
+        // A failed load that cannot prove the visible copy belongs to the
+        // answering account must clear both the private listing and its
+        // settings. `invalidateAccountScope` also invalidates this request,
+        // so its delayed finally block cannot repaint the stale copy.
+        invalidateAccountScope(false)
+        setStatus('error')
+        setMessage(failure)
+        return
       }
       const data = body as unknown as RepositoryResponse
-      const nextAccountId = typeof data.githubId === 'number' && Number.isFinite(data.githubId)
+      const nextAccountId = typeof data.githubId === 'number' && Number.isSafeInteger(data.githubId)
         ? data.githubId
         : null
+      if (nextAccountId === null) throw new Error('GitHub account identity was not returned.')
       // A successful answer for a different account means the drafts on screen
       // belong to the old account. They must not survive as "unsaved edits"
       // over the new account's settings: their repository IDs are foreign, and
       // saving them would only be rejected as unavailable.
-      const accountChanged = accountGithubIdRef.current !== null && nextAccountId !== accountGithubIdRef.current
+      const previousAccountId = accountGithubIdRef.current
+      const accountChanged = previousAccountId !== null && nextAccountId !== previousAccountId
       accountGithubIdRef.current = nextAccountId
       setRepositories(Array.isArray(data.repositories) ? data.repositories : [])
       if (accountChanged) {
@@ -841,27 +1169,160 @@ export function GitHubSourcePanel() {
       }
       setListFetchedAt(persistRepositoryCache(data))
       setListStale(data.stale === true)
-      confirmedGithubIdRef.current = accountGithubIdRef.current
-      const namespace = `github-${data.githubId}`
-      setAccountNamespace(namespace)
-      setRecoveryState(loadGithubSyncRecovery(browserProductStorage(), namespace))
-      const storedSchedule = loadSyncScheduleState(browserProductStorage(), namespace)
+      confirmedGithubIdRef.current = nextAccountId
+
+      const existingScope = accountScopeRef.current
+      const needsHydration = existingScope === null || existingScope.githubId !== nextAccountId
+      if (!needsHydration) {
+        // A repository refresh must not re-apply a possibly older cloud
+        // snapshot over a sync that just completed in this tab.
+        setStatus('ready')
+        return
+      }
+
+      const namespace = accountNamespaceForGithubId(nextAccountId)
+      const hydrationToken = beginAccountHydration(nextAccountId)
+      const hydrationStillCurrent = (): boolean =>
+        isCurrentRequest() &&
+        accountGateRef.current.generation === hydrationToken.generation &&
+        accountGateRef.current.namespace === hydrationToken.namespace &&
+        !accountGateRef.current.hydrated
+      const localState = browserState(namespace, false)
+      const hydrated = await restoreCloudProductState(localState, namespace, hydrationToken.githubId)
+      if (!hydrationStillCurrent()) return
+      if (hydrated.accountChanged) {
+        handleAccountChanged()
+        return
+      }
+
+      const accountProofs = {
+        ...loadVerifiedEventProofs(storage, namespace),
+        ...hydrated.proofs,
+      }
+      const genericState = genericStateRef.current
+      // Ownership is read from collection references, never inferred from an
+      // event's companionId. The generic profile is kept as an archive, but a
+      // real reference may prove that a generic event is safe to stage.
+      const genericProfile = loadGuestProfile(storage) ?? genericState?.profile ?? null
+      const genericLedger = loadBrowserLedger(storage)
+      const genericProofs = loadVerifiedEventProofs(storage)
+      const migration = mergeLegacyGithubEvents({
+        genericLedger,
+        accountLedger: hydrated.state.ledger,
+        genericProofs,
+        accountProofs,
+        genericOwnedCompanionIds: genericProfile?.collection.map((reference) => reference.companionId),
+        accountOwnedCompanionIds: hydrated.state.profile.collection.map((reference) => reference.companionId),
+        genericGuestId: genericProfile?.guestId ?? null,
+        accountGuestId: hydrated.state.profile.guestId,
+      })
+      const migratableGenericEvents = migration.genericOnlyEvents.filter((event) =>
+        PROTOTYPE_COMPANION_CATALOG.get(event.companionId) !== undefined &&
+        hasSafeDemonstratedGithubOwner(hydrated.state, event.companionId, genericProfile),
+      )
+      const migratableOwnerEvents = migration.migratedGenericEvents.filter((event) =>
+        PROTOTYPE_COMPANION_CATALOG.get(event.companionId) !== undefined &&
+        hasSafeDemonstratedGithubOwner(hydrated.state, event.companionId, genericProfile),
+      )
+      // Establish real generic-profile ownership before the encounter engine
+      // runs. Otherwise a migration draw can claim the same reference ID first
+      // and make the already-proven generic companion look unowned.
+      const migratedOwnerState = adoptDemonstratedGithubOwners(
+        hydrated.state,
+        migratableOwnerEvents,
+        genericProfile,
+      )
+      const migrationSeed = migratableGenericEvents
+        .map((event) => productEventId(event.eventId))
+        .sort()
+        .join('|')
+      const migratedProgress = migratableGenericEvents.length > 0
+        ? applyProductEvents(
+            migratedOwnerState,
+            migratableGenericEvents,
+            PROTOTYPE_COMPANION_CATALOG,
+            {
+              triggerId: `legacy-github-migration:${migrationSeed}`,
+              seed: migrationSeed,
+            },
+          )
+        : migratedOwnerState
+      const migratableGenericIds = new Set<string>(
+        migratableGenericEvents.map((event) => String(productEventId(event.eventId))),
+      )
+      const skippedGenericIds = new Set(
+        migration.genericOnlyEvents
+          .map((event) => productEventId(event.eventId))
+          .filter((eventId) => !migratableGenericIds.has(eventId)),
+      )
+      // The migration helper may retain a stable event whose companion is no
+      // longer in the current catalog so its generic bytes can be retried
+      // later. Do not put that unknown record into the account upload, but do
+      // adopt compatible local-to-verified upgrades from the safe merged
+      // ledger so their proof cannot be paired with a local provenance.
+      const safeMergedLedger = {
+        events: migration.ledger.events.filter((event) => !skippedGenericIds.has(productEventId(event.eventId))),
+      }
+      const migratedState = createProductState(
+        migratedProgress.profile,
+        safeMergedLedger,
+        migratedProgress.encounters,
+        PROTOTYPE_COMPANION_CATALOG,
+      )
+      const committedScope = commitAccountHydration(hydrationToken)
+      if (!committedScope || !isCurrentRequest()) return
+
+      // From this point on the immutable namespace is hydrated and writes are
+      // authorized. The generic ledger/proofs above have not been changed;
+      // they are cleared only after a later account upload succeeds.
+      let hydrationStorageMessage = ''
+      try {
+        saveBrowserProductState(migratedState, namespace)
+        saveVerifiedEventProofs(
+          storage,
+          migration.migratedEventIds.length > 0 ? migration.proofs : accountProofs,
+          migratedState.ledger.events.map((event) => productEventId(event.eventId)),
+          namespace,
+        )
+      } catch {
+        // The runtime still has the correct state. Storage refusal is surfaced
+        // without touching the generic source, which remains recoverable.
+        hydrationStorageMessage = ' Account condition loaded, but browser storage refused the local backup. Your generic browser archive was kept.'
+      }
+      setProductState(migratedState)
+      const storedRecovery = loadGithubSyncRecovery(storage, namespace)
+      setRecoveryState(storedRecovery)
+      const storedSchedule = loadSyncScheduleState(storage, namespace)
       setSchedule(storedSchedule.interval)
       lastAttemptAtRef.current = storedSchedule.lastAttemptAt
-      syncUsageRef.current = loadSyncRequestUsage(browserProductStorage(), namespace)
-      const localState = browserState(namespace)
-      const hydrated = await restoreCloudProductState(localState, namespace)
-      setProductState(hydrated.state)
-      if (hydrated.message && !guestConflictRef.current) setMessage(hydrated.message)
-      setRevealedDraws(loadRevealedDraws(browserProductStorage(), namespace))
+      syncUsageRef.current = loadSyncRequestUsage(storage, namespace)
+      setRevealedDraws(loadRevealedDraws(storage, namespace))
+      // Only generic-only events that actually entered the staged account
+      // ledger are candidates for later generic-key cleanup. Overlaps already
+      // belong to the account; unsupported generic records stay archived.
+      const stagedMigrationIds = migration.migratedEventIds.filter((eventId) => migratableGenericIds.has(eventId))
+      legacyMigrationRef.current = stagedMigrationIds.length > 0
+        ? { namespace, eventIds: stagedMigrationIds }
+        : null
+      if (!guestConflictRef.current) {
+        const migrationNote = stagedMigrationIds.length > 0
+          ? migration.guestIdentityMismatch
+            ? ` ${migratableGenericEvents.length} new verified GitHub event${migratableGenericEvents.length === 1 ? '' : 's'} from the older browser archive were staged for this account. Its different guest identity was kept separate; only stable verified events were merged.`
+            : ` ${migratableGenericEvents.length} new verified GitHub event${migratableGenericEvents.length === 1 ? '' : 's'} from the older browser archive were staged for this account.`
+          : ''
+        setMessage(`${hydrated.message ?? 'Account condition ready.'}${migrationNote}${hydrationStorageMessage}`)
+      }
       setStatus('ready')
     } catch (error) {
+      if (!isCurrentRequest()) return
+      const failure = error instanceof Error ? error.message : 'Repositories could not be loaded.'
+      invalidateAccountScope(false)
       setStatus('error')
-      setMessage(error instanceof Error ? error.message : 'Repositories could not be loaded.')
+      setMessage(failure)
     } finally {
-      setRefreshingList(false)
+      if (isCurrentRequest()) setRefreshingList(false)
     }
-  }, [applySettings, setRecoveryState])
+  }, [applySettings, beginAccountHydration, commitAccountHydration, handleAccountChanged, invalidateAccountScope, setRecoveryState])
 
   // A layout effect runs before the browser paints, so a remount paints the
   // cached listing in the first frame instead of flashing the loading state.
@@ -869,6 +1330,19 @@ export function GitHubSourcePanel() {
     hydrateState()
     void loadRepositories()
   }, [hydrateState, loadRepositories])
+
+  useEffect(() => () => {
+    // Strict Mode and route changes can leave a cloud read in flight. Its
+    // response must become a no-op rather than repainting a later account.
+    repositoryRequestRef.current += 1
+    syncRunRef.current += 1
+    settingsRequestRef.current += 1
+    accountActionRef.current += 1
+    syncAbortRef.current?.abort()
+    syncAbortRef.current = null
+    accountGateRef.current = invalidateAccountNamespace(accountGateRef.current)
+    accountScopeRef.current = null
+  }, [])
 
   const organizations = useMemo(
     () => [...new Set(repositories.filter((repo) => repo.ownerType === 'Organization').map((repo) => repo.ownerLogin))].sort(),
@@ -918,18 +1392,30 @@ export function GitHubSourcePanel() {
   useEffect(() => {
     unsavedDraftRef.current = settingsChanged
   }, [settingsChanged])
-  const sourceControlsDisabled = savingSettings || busy || resolvingGuestConflict !== null
+  const sourceControlsDisabled = savingSettings || busy || disconnecting || resolvingGuestConflict !== null
   const listControlsDisabled = sourceControlsDisabled || refreshingList
   const listFreshnessLabel = repositoryListFreshnessLabel(listFetchedAt, listStale)
 
-  const saveSettings = useCallback(async (): Promise<boolean> => {
-    if (savingSettings) return false
+  const saveSettings = useCallback(async (expectedScope?: HydratedAccountNamespace): Promise<boolean> => {
+    if (savingSettings || status !== 'ready') return false
+    const scope = expectedScope ?? accountScopeRef.current
+    if (!scope || !isCurrentAccountNamespace(accountGateRef.current, scope)) {
+      setMessage('GitHub choices are waiting for the account condition to finish loading.')
+      return false
+    }
+    const requestId = ++settingsRequestRef.current
+    // A listing refresh may have an older settings payload in flight. The PUT
+    // response is authoritative, so invalidate that read before sending it.
+    repositoryRequestRef.current += 1
+    setRefreshingList(false)
+    const isCurrentSave = (): boolean =>
+      requestId === settingsRequestRef.current && isCurrentAccountNamespace(accountGateRef.current, scope)
     setSavingSettings(true)
     setMessage('')
     try {
       const response = await fetch('/api/github/repositories', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: githubAccountHeaders(scope.githubId, { 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           trackedRepositoryIds: [...draftTrackedIds].sort(),
           excludedRepositoryIds: [...draftExcludedIds].sort(),
@@ -938,32 +1424,51 @@ export function GitHubSourcePanel() {
         }),
       })
       const body = await responseBody(response)
+      if (!isCurrentSave()) return false
+      if (isAccountChangedBody(body)) {
+        handleAccountChanged()
+        return false
+      }
       if (!response.ok) {
         setMessage(errorMessage(body, 'Repository settings could not be saved.'))
         return false
       }
       const data = body as unknown as RepositoryResponse
-      accountGithubIdRef.current = typeof data.githubId === 'number' && Number.isFinite(data.githubId)
+      const responseAccountId = typeof data.githubId === 'number' && Number.isSafeInteger(data.githubId)
         ? data.githubId
         : null
-      setRepositories(data.repositories)
+      if (responseAccountId !== scope.githubId) {
+        handleAccountChanged()
+        return false
+      }
+      accountGithubIdRef.current = responseAccountId
+      setRepositories(Array.isArray(data.repositories) ? data.repositories : [])
       applySettings(data.settings)
       // The save response carries the authoritative settings too, so the
       // browser copy must not keep an older selection.
       setListFetchedAt(persistRepositoryCache(data))
       setListStale(data.stale === true)
-      confirmedGithubIdRef.current = accountGithubIdRef.current
+      confirmedGithubIdRef.current = responseAccountId
       return true
     } catch {
-      setMessage('Repository settings could not be saved. Try again.')
+      if (isCurrentSave()) setMessage('Repository settings could not be saved. Try again.')
       return false
     } finally {
-      setSavingSettings(false)
+      if (requestId === settingsRequestRef.current) setSavingSettings(false)
     }
-  }, [applySettings, draftAutoPersonal, draftOrganizations, draftTrackedIds, savingSettings])
+  }, [applySettings, draftAutoPersonal, draftExcludedIds, draftOrganizations, draftTrackedIds, handleAccountChanged, savingSettings, status])
 
   const syncNow = useCallback(async () => {
-    if (!productState) return
+    const state = productState
+    const scope = accountScopeRef.current
+    if (status !== 'ready' || !state || !scope || !isCurrentAccountNamespace(accountGateRef.current, scope) || syncAbortRef.current) {
+      if (!scope) setMessage('GitHub sync is waiting for the account condition to finish loading.')
+      return
+    }
+    const namespace = scope.namespace
+    const runId = ++syncRunRef.current
+    const isCurrentRun = (): boolean =>
+      runId === syncRunRef.current && isCurrentAccountNamespace(accountGateRef.current, scope)
     setBusy(true)
     setMessage('')
     setProgress(null)
@@ -973,11 +1478,12 @@ export function GitHubSourcePanel() {
     syncAbortRef.current = controller
     const cancelled = (): boolean => controller.signal.aborted
     try {
-      if (settingsChanged && !(await saveSettings())) return
+      if (settingsChanged && !(await saveSettings(scope))) return
+      if (!isCurrentRun()) return
       const response = await fetch('/api/github/sync', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ activeCompanionId: productState.profile.activeCompanionId }),
+        headers: githubAccountHeaders(scope.githubId, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ activeCompanionId: state.profile.activeCompanionId }),
         signal: controller.signal,
       })
       let body: Record<string, unknown> = {}
@@ -985,21 +1491,31 @@ export function GitHubSourcePanel() {
         body = await readSyncResponse(response, (next) => {
           // The progress stream is the only honest measure of what this sync
           // cost the account's hourly GitHub request budget.
+          if (!isCurrentRun()) return
           requestsThisSyncRef.current = Math.max(requestsThisSyncRef.current, next.requestsDone)
           setProgress(next)
         }, controller.signal)
       } catch (error) {
         // An aborted read is the user's own doing, not a failure.
         if (cancelled()) {
-          setLastSyncSummary('Sync cancelled. No new activity was awarded.')
+          if (isCurrentRun()) setLastSyncSummary('Sync cancelled. No new activity was awarded.')
+          return
+        }
+        if (!isCurrentRun()) return
+        if (isAccountChangedError(error)) {
+          handleAccountChanged()
           return
         }
         throw error
       } finally {
-        setReadingPhase(false)
+        if (isCurrentRun()) setReadingPhase(false)
       }
-      if (cancelled()) {
-        setLastSyncSummary('Sync cancelled. No new activity was awarded.')
+      if (cancelled() || !isCurrentRun()) {
+        if (cancelled() && isCurrentRun()) setLastSyncSummary('Sync cancelled. No new activity was awarded.')
+        return
+      }
+      if (isAccountChangedBody(body)) {
+        handleAccountChanged()
         return
       }
       if (!response.ok) {
@@ -1014,19 +1530,22 @@ export function GitHubSourcePanel() {
           .filter((event) => Boolean(verifiedEventProofs[productEventId(event.eventId)]))
         : []
       const next = applyProductEvents(
-        productState,
+        state,
         incoming,
         PROTOTYPE_COMPANION_CATALOG,
         { triggerId: `github-sync:${body.lastSyncedAt ?? 'unknown'}` },
       )
+      if (!isCurrentRun()) return
       const storage = browserProductStorage()
-      saveGuestProfile(storage, next.profile, accountNamespace ? `terrarium:guest-profile:${accountNamespace}` : undefined)
-      saveBrowserLedger(storage, next.ledger, accountNamespace ?? undefined)
-      saveBrowserEncounters(storage, next.encounters, accountNamespace ?? undefined)
+      // Every write below uses the namespace captured before the network read.
+      // It can never fall back to the generic key if React state is still null.
+      saveGuestProfile(storage, next.profile, `terrarium:guest-profile:${namespace}`)
+      saveBrowserLedger(storage, next.ledger, namespace)
+      saveBrowserEncounters(storage, next.encounters, namespace)
       setProductState(next)
 
       const persistedProofs = {
-        ...loadVerifiedEventProofs(storage, accountNamespace ?? undefined),
+        ...loadVerifiedEventProofs(storage, namespace),
         ...proofsForAppliedEvents(incoming, next, verifiedEventProofs),
       }
       const uploadSnapshot = buildProductSnapshot(next, undefined, persistedProofs)
@@ -1037,7 +1556,7 @@ export function GitHubSourcePanel() {
         storage,
         proofsFromSnapshotEvents(uploadSnapshot.events),
         uploadSnapshot.events.map((event) => event.eventId),
-        accountNamespace ?? undefined,
+        namespace,
       )
       const checkpoint = typeof body.checkpoint === 'string' ? body.checkpoint : null
       // Persist the exact product payload and signed checkpoint before the
@@ -1051,27 +1570,46 @@ export function GitHubSourcePanel() {
         blockedEventIds: [],
         attemptedAt: new Date().toISOString(),
       }
-      saveGithubSyncRecovery(storage, pendingRecovery, accountNamespace ?? undefined)
+      saveGithubSyncRecovery(storage, pendingRecovery, namespace)
       setRecoveryState(pendingRecovery)
       // The checkpoint travels in the BODY. A real account's signed checkpoint
       // is tens of kilobytes (measured ~21 KB at 500 events), far beyond the
       // request-header budget of the platform in front of the function, where
       // it was rejected upstream as a bodyless 500 and the baseline was never
       // committed. A body has a megabyte-scale allowance instead.
-      const upload = await uploadProductSnapshot(uploadSnapshot, checkpoint)
+      const upload = await uploadProductSnapshot(uploadSnapshot, checkpoint, scope.githubId)
+      if (!isCurrentRun()) return
+      if (upload.accountChanged) {
+        handleAccountChanged()
+        return
+      }
       const snapshotBody = upload.body
       if (upload.ok) {
-        clearGithubSyncRecovery(storage, accountNamespace ?? undefined)
+        clearGithubSyncRecovery(storage, namespace)
         setRecoveryState(null)
+        const migration = legacyMigrationRef.current
+        if (migration?.namespace === namespace) {
+          // This is the commit point for the legacy migration. A failed upload
+          // above leaves the original generic ledger/proofs available for a retry.
+          // Cleanup is based on the validated server response, not merely the
+          // request body that was attempted.
+          clearMigratedLegacyGithubData(
+            storage,
+            migration,
+            deserializeProductSnapshot(JSON.stringify(upload.body)),
+          )
+        }
       }
       if (!upload.ok) {
         const failures = parseReceiptFailures(snapshotBody)
         if (failures.length === 0) {
-          // A guest conflict, checkpoint race, or transient server failure is
-          // not a receipt-repair case. Keep the normal retry/chooser path
-          // explicit instead of presenting a misleading repair action.
-          clearGithubSyncRecovery(storage, accountNamespace ?? undefined)
-          setRecoveryState(null)
+          // A guest conflict, checkpoint race, schema outage, or baseline
+          // commit failure is not a receipt-repair case, but the exact
+          // snapshot/checkpoint is still the only safe retry payload. Keep it
+          // durable so a reload cannot strand a successful product write with
+          // an uncommitted baseline or lose the identity-chooser checkpoint.
+          saveGithubSyncRecovery(storage, pendingRecovery, namespace)
+          setRecoveryState(pendingRecovery)
         } else {
           const failedRecovery: StoredGithubSyncRecovery = {
             ...pendingRecovery,
@@ -1079,19 +1617,19 @@ export function GitHubSourcePanel() {
             blockedEventIds: [],
             attemptedAt: new Date().toISOString(),
           }
-          saveGithubSyncRecovery(storage, failedRecovery, accountNamespace ?? undefined)
+          saveGithubSyncRecovery(storage, failedRecovery, namespace)
           setRecoveryState(failedRecovery)
         }
       }
-      if (upload.ok && accountNamespace) {
+      if (upload.ok) {
         // The server may have merged a second device's events or refreshed a
         // receipt-backed aggregate. Keep this browser on the exact response,
         // not merely on the pre-upload local state.
-        const uploadedState = adoptUploadedSnapshot(snapshotBody, next.profile, accountNamespace)
-        if (uploadedState) setProductState(uploadedState)
+        const uploadedState = adoptUploadedSnapshot(snapshotBody, next.profile, namespace)
+        if (uploadedState && isCurrentRun()) setProductState(uploadedState)
       }
       const count = typeof body.repositoryCount === 'number' ? body.repositoryCount : 0
-      const eventCount = Math.max(0, next.ledger.events.length - productState.ledger.events.length)
+      const eventCount = Math.max(0, next.ledger.events.length - state.ledger.events.length)
       const baselineCount = Array.isArray(body.newBaselineRepositoryIds) ? body.newBaselineRepositoryIds.length : 0
       const skippedCount = typeof body.skippedRepositoryCount === 'number' ? body.skippedRepositoryCount : 0
       const limitNote = skippedCount > 0
@@ -1120,7 +1658,12 @@ export function GitHubSourcePanel() {
         : guestConflictRef.current
       if (!upload.ok && isGuestIdentityConflict(upload.status, snapshotBody)) {
         const localSummary = summarizeGuestSnapshot(uploadSnapshot)
-        const cloudRead = await readAccountSnapshot()
+        const cloudRead = await readAccountSnapshot(scope.githubId)
+        if (!isCurrentRun()) return
+        if (cloudRead?.accountChanged) {
+          handleAccountChanged()
+          return
+        }
         const cloudSnapshot = cloudRead?.snapshot ?? null
         const cloudSummary = cloudSnapshot ? summarizeGuestSnapshot(cloudSnapshot) : null
         if (localSummary && !cancelled()) {
@@ -1135,6 +1678,7 @@ export function GitHubSourcePanel() {
       }
       // A successful upload clears any earlier choice; a new conflict replaces
       // the displayed one with the state that just came back from the server.
+      if (!isCurrentRun()) return
       showGuestConflict(nextConflict)
       if (body.kind === 'baseline') {
         setLastSyncSummary(`Baseline recorded for ${baselineCount} ${baselineCount === 1 ? 'repository' : 'repositories'} · no old history awarded.${limitNote}${truncatedNote}${cloudNote}`)
@@ -1145,12 +1689,16 @@ export function GitHubSourcePanel() {
       }
       await loadRepositories()
     } catch (error) {
+      if (!isCurrentRun()) return
       if (cancelled()) {
         setLastSyncSummary('Sync cancelled. No new activity was awarded.')
       } else {
         setMessage(error instanceof Error ? error.message : 'GitHub activity could not be synced.')
       }
     } finally {
+      // A stale operation must not clear a newer account's busy state or write
+      // its request budget into a namespace that is no longer active.
+      if (runId !== syncRunRef.current) return
       // The panel's own state is restored first and unconditionally: a browser
       // storage write can be refused (private mode, quota), and a write must
       // never leave the panel busy or the scheduler blocked on a dead abort
@@ -1158,7 +1706,8 @@ export function GitHubSourcePanel() {
       setBusy(false)
       setProgress(null)
       setReadingPhase(false)
-      syncAbortRef.current = null
+      if (syncAbortRef.current === controller) syncAbortRef.current = null
+      if (!isCurrentAccountNamespace(accountGateRef.current, scope)) return
 
       // A cancelled or failed attempt still spent requests against the account's
       // hourly ceiling, so the budget counts what was really issued.
@@ -1179,19 +1728,19 @@ export function GitHubSourcePanel() {
         syncUsageRef.current = saveSyncRequestUsage(
           storage,
           syncUsageRef.current,
-          accountNamespace ?? undefined,
+          namespace,
           attemptedAt,
         )
         saveSyncScheduleState(
           storage,
           { interval: scheduleRef.current, lastAttemptAt: attemptedAt },
-          accountNamespace ?? undefined,
+          namespace,
         )
       } catch {
         // Browser storage is unavailable; the in-memory cadence still holds.
       }
     }
-  }, [accountNamespace, loadRepositories, productState, saveSettings, settingsChanged, showGuestConflict, setRecoveryState])
+  }, [handleAccountChanged, loadRepositories, productState, saveSettings, settingsChanged, showGuestConflict, setRecoveryState, status])
 
   /**
    * Repair only the bounded receipt failures named by the product route, then
@@ -1200,9 +1749,14 @@ export function GitHubSourcePanel() {
    */
   const repairAndRetry = useCallback(async () => {
     const pending = recoveryRef.current
-    const namespace = accountNamespace
+    const scope = accountScopeRef.current
+    const namespace = scope?.namespace
     const state = productState
-    if (!pending || !namespace || !state || busy) return
+    if (!pending || !scope || !namespace || !state || busy || disconnecting || !isCurrentAccountNamespace(accountGateRef.current, scope) || syncAbortRef.current) return
+    // Validate the durable recovery capability before taking the busy/abort
+    // lock. A legacy record without a checkpoint or a complete set of old
+    // receipts is a retry message, not a repair run; returning here must leave
+    // the scheduler and the cancel button usable.
     const targets: ReceiptFailure[] = pending.failures.length > 0
       ? [...pending.failures]
       : pending.blockedEventIds.map((eventId) => ({
@@ -1217,10 +1771,18 @@ export function GitHubSourcePanel() {
         return proof ? [[target.eventId, proof] as const] : []
       }),
     )
-    if (!pending.checkpoint && Object.keys(legacyProofs).length !== targets.length) {
+    if (!canStartReceiptRepair(pending.checkpoint, targets.map((target) => target.eventId), new Set(Object.keys(legacyProofs)))) {
       setLastSyncSummary('Receipt repair needs a fresh signed checkpoint or a preserved server receipt. Run Sync again to retry this local condition.')
       return
     }
+
+    const runId = ++syncRunRef.current
+    const isCurrentRepair = (): boolean =>
+      runId === syncRunRef.current && isCurrentAccountNamespace(accountGateRef.current, scope)
+    // The repair has no user cancel button, but it still occupies the one
+    // account-sync slot so the scheduler cannot start a normal sync beside it.
+    const repairController = new AbortController()
+    syncAbortRef.current = repairController
 
     setBusy(true)
     setMessage('')
@@ -1239,15 +1801,21 @@ export function GitHubSourcePanel() {
       if (targets.length > 0) {
         const response = await fetch('/api/github/repair', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: githubAccountHeaders(scope.githubId, { 'Content-Type': 'application/json' }),
           body: JSON.stringify({
             activeCompanionId: state.profile.activeCompanionId,
             eventIds: targets.map((failure) => failure.eventId),
             checkpoint: pending.checkpoint,
             proofs: legacyProofs,
           }),
+          signal: repairController.signal,
         })
         const body = await responseBody(response)
+        if (!isCurrentRepair()) return
+        if (isAccountChangedBody(body)) {
+          handleAccountChanged()
+          return
+        }
         const parsed = response.ok ? parseReceiptRepairResponse(body) : null
         if (!response.ok || !parsed) {
           // Keep the exact pending payload and checkpoint. A rate limit or
@@ -1264,7 +1832,12 @@ export function GitHubSourcePanel() {
           // The server must independently confirm the same canonical payload.
           // In particular, do not let a repair reassign a stable event to a new
           // companion or change its timestamp/cap/metadata to make a receipt fit.
-          if (!local || !sameReceiptPayload(local, item.event)) {
+          if (
+            !local ||
+            item.event.source !== 'github' ||
+            item.event.provenance !== 'verified' ||
+            !sameReceiptPayload(local, item.event)
+          ) {
             blocked.add(item.eventId)
             unresolved.set(item.eventId, {
               eventId: item.eventId,
@@ -1293,10 +1866,13 @@ export function GitHubSourcePanel() {
           ...pending.snapshot,
           events: pending.snapshot.events.map((event) => {
             const proof = accepted.get(event.eventId)
-            return proof ? { ...event, verifiedProof: proof } : event
+            return proof
+              ? { ...event, provenance: 'verified' as const, verifiedProof: proof }
+              : event
           }),
         }
 
+        if (!isCurrentRepair()) return
         const remainingFailures = [...unresolved.values()].filter((failure) => blocked.has(failure.eventId))
         const nextRecovery: StoredGithubSyncRecovery = {
           snapshot: repairedSnapshot,
@@ -1315,11 +1891,19 @@ export function GitHubSourcePanel() {
       }
 
       const blockedIds = blockedEventIds([...blocked].map((eventId) => ({ eventId, reason: 'blocked' })))
-      const uploadSnapshot = snapshotWithoutBlockedEvents(repairedSnapshot, blockedIds)
+      // A partial projection must not carry blocked-derived collection or
+      // encounter rewards into the cloud. `repairedSnapshot` remains the full
+      // local recovery record; only this upload is projected.
+      const uploadSnapshot = projectPartialProductSnapshot(repairedSnapshot, blockedIds)
       // A partial projection must not advance the baseline, but the original
       // token remains durable for the eventual all-events retry.
       const uploadCheckpoint = blocked.size > 0 ? null : pending.checkpoint
-      const upload = await uploadProductSnapshot(uploadSnapshot, uploadCheckpoint)
+      const upload = await uploadProductSnapshot(uploadSnapshot, uploadCheckpoint, scope.githubId)
+      if (!isCurrentRepair()) return
+      if (upload.accountChanged) {
+        handleAccountChanged()
+        return
+      }
       if (!upload.ok) {
         const failures = parseReceiptFailures(upload.body)
         const uploadBlocked = new Set(blocked)
@@ -1338,6 +1922,7 @@ export function GitHubSourcePanel() {
       }
 
       if (blocked.size > 0) {
+        if (!isCurrentRepair()) return
         // The server has the valid projection; retain the full local state and
         // its blocked overlay rather than adopting a response that would hide
         // the unrecoverable browser events or encounters.
@@ -1345,15 +1930,27 @@ export function GitHubSourcePanel() {
         return
       }
 
+      if (!isCurrentRepair()) return
       clearGithubSyncRecovery(storage, namespace)
       setRecoveryState(null)
+      const migration = legacyMigrationRef.current
+      if (migration?.namespace === namespace) {
+        clearMigratedLegacyGithubData(
+          storage,
+          migration,
+          deserializeProductSnapshot(JSON.stringify(upload.body)),
+        )
+      }
       const uploaded = adoptUploadedSnapshot(upload.body, state.profile, namespace)
-      if (uploaded) setProductState(uploaded)
+      if (uploaded && isCurrentRepair()) setProductState(uploaded)
       setLastSyncSummary('Verified receipts repaired. Account backup committed successfully; the last successful checkpoint advanced.')
     } catch (error) {
-      setLastSyncSummary(error instanceof Error ? error.message : 'Receipt repair could not be completed.')
+      if (isCurrentRepair()) setLastSyncSummary(error instanceof Error ? error.message : 'Receipt repair could not be completed.')
     } finally {
+      if (runId !== syncRunRef.current) return
       setBusy(false)
+      if (syncAbortRef.current === repairController) syncAbortRef.current = null
+      if (!isCurrentAccountNamespace(accountGateRef.current, scope)) return
       const attemptedAt = Date.now()
       lastAttemptAtRef.current = attemptedAt
       if (requestsThisSyncRef.current > 0) {
@@ -1369,20 +1966,20 @@ export function GitHubSourcePanel() {
         syncUsageRef.current = saveSyncRequestUsage(
           storage,
           syncUsageRef.current,
-          namespace ?? undefined,
+          namespace,
           attemptedAt,
         )
         saveSyncScheduleState(
           storage,
           { interval: scheduleRef.current, lastAttemptAt: attemptedAt },
-          namespace ?? undefined,
+          namespace,
         )
       } catch {
         // Browser storage is best effort; the recovery record itself was saved
         // before the upload and remains the source of truth for a retry.
       }
     }
-  }, [accountNamespace, busy, productState, setRecoveryState])
+  }, [busy, disconnecting, handleAccountChanged, productState, setRecoveryState])
 
   /**
    * Resolve the identity choice the 409 left open.
@@ -1398,8 +1995,12 @@ export function GitHubSourcePanel() {
   ): Promise<void> => {
     const pending = guestConflict
     const state = productState
-    const namespace = accountNamespace
-    if (!pending || !state || !namespace || resolvingGuestConflict) return
+    const scope = accountScopeRef.current
+    const namespace = scope?.namespace
+    if (!pending || !state || !scope || !namespace || resolvingGuestConflict || busy || syncAbortRef.current || !isCurrentAccountNamespace(accountGateRef.current, scope)) return
+    const actionToken = ++accountActionRef.current
+    const isCurrentAction = (): boolean =>
+      actionToken === accountActionRef.current && isCurrentAccountNamespace(accountGateRef.current, scope)
     const plan = guestIdentityActionPlan(pending.view, action)
     if (!plan || !plan.available) return
     if (!canRunGuestIdentityAction(pending.view, action, confirmed)) {
@@ -1417,9 +2018,15 @@ export function GitHubSourcePanel() {
         // Refresh the row and carry its server version into DELETE. The
         // chooser may have been open while another device earned progress;
         // never let this destructive action remove that newer row blindly.
-        const latestCloud = await readAccountSnapshot()
-        if (!latestCloud || !pending.cloudVersion || latestCloud.version !== pending.cloudVersion) {
-          if (latestCloud) {
+        const latestCloud = await readAccountSnapshot(scope.githubId)
+        if (!isCurrentAction()) return
+        if (latestCloud?.accountChanged) {
+          handleAccountChanged()
+          return
+        }
+        const latestCloudSnapshot = latestCloud?.snapshot ?? null
+        if (!latestCloud || !latestCloudSnapshot || !pending.cloudVersion || latestCloud.version !== pending.cloudVersion) {
+          if (latestCloudSnapshot) {
             const localSnapshot = buildProductSnapshot(
               state,
               undefined,
@@ -1428,9 +2035,9 @@ export function GitHubSourcePanel() {
             const localSummary = summarizeGuestSnapshot(localSnapshot)
             if (localSummary) {
               showGuestConflict({
-                view: describeGuestIdentityConflict(localSummary, summarizeGuestSnapshot(latestCloud.snapshot)),
-                cloudSnapshot: latestCloud.snapshot,
-                cloudVersion: latestCloud.version,
+                view: describeGuestIdentityConflict(localSummary, summarizeGuestSnapshot(latestCloudSnapshot)),
+                cloudSnapshot: latestCloudSnapshot,
+                cloudVersion: latestCloud?.version ?? null,
                 checkpoint: pending.checkpoint,
               })
             }
@@ -1438,7 +2045,7 @@ export function GitHubSourcePanel() {
           setLastSyncSummary(guestIdentityActionSummary(action, {
             result: 'failed',
             step: 'delete-cloud',
-            detail: latestCloud
+            detail: latestCloudSnapshot
               ? 'the account copy changed while this chooser was open; review the refreshed choice'
               : 'the account copy could not be read; nothing was deleted',
           }))
@@ -1446,14 +2053,21 @@ export function GitHubSourcePanel() {
         }
         const deletion = await fetch('/api/sync/product', {
           method: 'DELETE',
-          headers: { 'Content-Type': 'application/json' },
+          headers: githubAccountHeaders(scope.githubId, { 'Content-Type': 'application/json' }),
           body: JSON.stringify({ expectedVersion: pending.cloudVersion }),
         })
+        if (!isCurrentAction()) return
+        const deletionBody = await responseBody(deletion)
+        if (isAccountChangedBody(deletionBody)) {
+          handleAccountChanged()
+          return
+        }
         if (!deletion.ok) {
+          if (!isCurrentAction()) return
           setLastSyncSummary(guestIdentityActionSummary(action, {
             result: 'failed',
             step: 'delete-cloud',
-            detail: errorMessage(await responseBody(deletion), `try again (HTTP ${deletion.status})`),
+            detail: errorMessage(deletionBody, `try again (HTTP ${deletion.status})`),
           }))
           return
         }
@@ -1461,13 +2075,28 @@ export function GitHubSourcePanel() {
         // chooser closes even if the upload itself fails, because an ordinary
         // sync can retry that upload.
         showGuestConflict(null)
+        const replacementSnapshot = buildProductSnapshot(state, undefined, loadVerifiedEventProofs(storage, namespace))
         const upload = await uploadProductSnapshot(
-          buildProductSnapshot(state, undefined, loadVerifiedEventProofs(storage, namespace)),
+          replacementSnapshot,
           pending.checkpoint,
+          scope.githubId,
         )
+        if (!isCurrentAction()) return
+        if (upload.accountChanged) {
+          handleAccountChanged()
+          return
+        }
         if (upload.ok) {
           clearGithubSyncRecovery(storage, namespace)
           setRecoveryState(null)
+          const migration = legacyMigrationRef.current
+          if (migration?.namespace === namespace) {
+            clearMigratedLegacyGithubData(
+              storage,
+              migration,
+              deserializeProductSnapshot(JSON.stringify(upload.body)),
+            )
+          }
           const uploaded = adoptUploadedSnapshot(upload.body, state.profile, namespace)
           if (uploaded) setProductState(uploaded)
         }
@@ -1482,7 +2111,12 @@ export function GitHubSourcePanel() {
         // may have been open while another device resolved or replaced the
         // account row, so the captured copy is only a description, not an
         // authority for the destructive merge.
-        const latestCloudRead = pending.cloudSnapshot ? await readAccountSnapshot() : null
+        const latestCloudRead = pending.cloudSnapshot ? await readAccountSnapshot(scope.githubId) : null
+        if (!isCurrentAction()) return
+        if (latestCloudRead?.accountChanged) {
+          handleAccountChanged()
+          return
+        }
         const latestCloud = latestCloudRead?.snapshot ?? null
         if (!latestCloud) {
           setLastSyncSummary(guestIdentityActionSummary(action, {
@@ -1515,10 +2149,17 @@ export function GitHubSourcePanel() {
           return
         }
         setProductState(adopted)
+        const combinedSnapshot = buildProductSnapshot(adopted, undefined, loadVerifiedEventProofs(storage, namespace))
         const upload = await uploadProductSnapshot(
-          buildProductSnapshot(adopted, undefined, loadVerifiedEventProofs(storage, namespace)),
+          combinedSnapshot,
           pending.checkpoint,
+          scope.githubId,
         )
+        if (!isCurrentAction()) return
+        if (upload.accountChanged) {
+          handleAccountChanged()
+          return
+        }
         if (!upload.ok) {
           setLastSyncSummary(guestIdentityActionSummary(action, {
             result: 'failed',
@@ -1529,6 +2170,14 @@ export function GitHubSourcePanel() {
         }
         clearGithubSyncRecovery(storage, namespace)
         setRecoveryState(null)
+        const migration = legacyMigrationRef.current
+        if (migration?.namespace === namespace) {
+          clearMigratedLegacyGithubData(
+            storage,
+            migration,
+            deserializeProductSnapshot(JSON.stringify(upload.body)),
+          )
+        }
         const merged = adoptUploadedSnapshot(upload.body, adopted.profile, namespace)
         if (merged) setProductState(merged)
         showGuestConflict(null)
@@ -1540,7 +2189,12 @@ export function GitHubSourcePanel() {
       // the latest cloud snapshot and adopt its guest identity. The chooser's
       // earlier snapshot is intentionally re-read so a stale card cannot erase
       // a newer resolution from another device.
-      const latestCloudRead = pending.cloudSnapshot ? await readAccountSnapshot() : null
+      const latestCloudRead = pending.cloudSnapshot ? await readAccountSnapshot(scope.githubId) : null
+      if (!isCurrentAction()) return
+      if (latestCloudRead?.accountChanged) {
+        handleAccountChanged()
+        return
+      }
       const latestCloud = latestCloudRead?.snapshot ?? null
       if (!latestCloud) {
         setLastSyncSummary(guestIdentityActionSummary(action, {
@@ -1577,7 +2231,13 @@ export function GitHubSourcePanel() {
       const upload = await uploadProductSnapshot(
         buildProductSnapshot(restored, undefined, loadVerifiedEventProofs(storage, namespace)),
         null,
+        scope.githubId,
       )
+      if (!isCurrentAction()) return
+      if (upload.accountChanged) {
+        handleAccountChanged()
+        return
+      }
       if (!upload.ok) {
         setLastSyncSummary(guestIdentityActionSummary(action, {
           result: 'failed',
@@ -1588,26 +2248,38 @@ export function GitHubSourcePanel() {
       }
       clearGithubSyncRecovery(storage, namespace)
       setRecoveryState(null)
+      // This action deliberately replaced the staged local events with the
+      // account copy, so the generic archive remains available for a later,
+      // explicit migration rather than being cleared here.
       const uploaded = adoptUploadedSnapshot(upload.body, restored.profile, namespace)
       if (uploaded) setProductState(uploaded)
       showGuestConflict(null)
       setLastSyncSummary(guestIdentityActionSummary(action, { result: 'succeeded' }))
     } finally {
-      setResolvingGuestConflict(null)
-      setGuestConflictStage('idle')
+      if (actionToken === accountActionRef.current) {
+        setResolvingGuestConflict(null)
+        setGuestConflictStage('idle')
+      }
     }
-  }, [accountNamespace, guestConflict, productState, resolvingGuestConflict, setRecoveryState, showGuestConflict])
+  }, [busy, guestConflict, handleAccountChanged, productState, resolvingGuestConflict, setRecoveryState, showGuestConflict])
 
   const changeSchedule = useCallback((next: SyncScheduleInterval) => {
+    const scope = accountScopeRef.current
+    if (!scope || !isCurrentAccountNamespace(accountGateRef.current, scope)) {
+      setMessage('Automatic sync is waiting for the account condition to finish loading.')
+      return
+    }
     setSchedule(next)
     setScheduleNotice('')
     setNextSyncLabel('')
+    // A schedule belongs to the captured account namespace. Never write the
+    // generic browser schedule while account hydration is pending.
     saveSyncScheduleState(
       browserProductStorage(),
       { interval: next, lastAttemptAt: lastAttemptAtRef.current },
-      accountNamespace ?? undefined,
+      scope.namespace,
     )
-  }, [accountNamespace])
+  }, [])
 
   /**
    * Disconnect GitHub: the only control that removes the stored credential.
@@ -1618,13 +2290,31 @@ export function GitHubSourcePanel() {
    */
   const disconnectGitHub = useCallback(async () => {
     if (disconnecting) return
+    const scope = accountScopeRef.current
+    if (!scope || !isCurrentAccountNamespace(accountGateRef.current, scope)) {
+      setMessage('GitHub is still loading this account. Try disconnecting again when it is ready.')
+      return
+    }
+    const actionToken = ++accountActionRef.current
+    const isCurrentDisconnect = (): boolean =>
+      actionToken === accountActionRef.current && isCurrentAccountNamespace(accountGateRef.current, scope)
     setDisconnecting(true)
     setMessage('')
     try {
-      const response = await fetch('/api/github/repositories', { method: 'DELETE' })
+      const response = await fetch('/api/github/repositories', {
+        method: 'DELETE',
+        headers: githubAccountHeaders(scope.githubId),
+      })
+      const body = await responseBody(response)
+      if (!isCurrentDisconnect()) return
+      if (isAccountChangedBody(body)) {
+        handleAccountChanged()
+        return
+      }
       if (response.status === 401) {
         // The credential is still stored; the session cookie is what is
         // missing, so say that instead of claiming a disconnect happened.
+        invalidateAccountScope(true)
         setStatus('signed-out')
         setMessage('Your session expired. Sign in again to disconnect GitHub.')
         return
@@ -1633,6 +2323,15 @@ export function GitHubSourcePanel() {
         setMessage('GitHub could not be disconnected. Try again.')
         return
       }
+      // A repository read or identity action that started before this explicit
+      // disconnect must not repaint the now-disconnected account.
+      repositoryRequestRef.current += 1
+      syncRunRef.current += 1
+      settingsRequestRef.current += 1
+      accountActionRef.current += 1
+      setSavingSettings(false)
+      syncAbortRef.current?.abort()
+      syncAbortRef.current = null
       clearGithubRepositoryCache(browserProductStorage())
       setRepositories([])
       confirmedGithubIdRef.current = null
@@ -1659,7 +2358,7 @@ export function GitHubSourcePanel() {
       setDisconnecting(false)
       setDisconnectStage('idle')
     }
-  }, [disconnecting])
+  }, [disconnecting, handleAccountChanged, invalidateAccountScope])
 
   // The latest `syncNow` is reached through a ref so the ticker below does not
   // have to be torn down every time product state changes.
@@ -1675,7 +2374,9 @@ export function GitHubSourcePanel() {
    * two intervals can never double a sync.
    */
   useEffect(() => {
-    if (status !== 'ready') return
+    if (status !== 'ready' || disconnecting) return
+    const scope = accountScopeRef.current
+    if (!scope || !isCurrentAccountNamespace(accountGateRef.current, scope)) return
     // A manual cadence has no ticker at all; the rendered copy for `manual`
     // above ignores any notice left over from a previous cadence.
     if (scheduleIntervalMs(schedule) === null) return
@@ -1685,9 +2386,10 @@ export function GitHubSourcePanel() {
       try {
         // A peer tab may have spent requests we have not seen; fold its record
         // in before deciding, or two tabs each think the whole budget is free.
+        if (!isCurrentAccountNamespace(accountGateRef.current, scope)) return
         syncUsageRef.current = mergeSyncRequestUsage(
           syncUsageRef.current,
-          loadSyncRequestUsage(browserProductStorage(), accountNamespace ?? undefined, now),
+          loadSyncRequestUsage(browserProductStorage(), scope.namespace, now),
         )
       } catch {
         // Storage unavailable: decide from the in-memory record.
@@ -1702,12 +2404,12 @@ export function GitHubSourcePanel() {
         // an account whose window costs far less than its total.
         trackedRepositoryCount: Math.min(effectiveTrackedCount, MAX_SYNC_REPOSITORIES),
         lastObservedRequests: lastObservedRequestsRef.current,
-        busy: syncAbortRef.current !== null,
+        busy: syncAbortRef.current !== null || disconnecting,
       })
       syncUsageRef.current = [...result.usage]
       setScheduleNotice(result.notice)
       setNextSyncLabel(result.nextLabel)
-      if (result.run) {
+      if (result.run && isCurrentAccountNamespace(accountGateRef.current, scope)) {
         // The scheduler must never reject into the timer; syncNow reports its
         // own failures through the panel's message state.
         void syncNowRef.current().catch(() => undefined)
@@ -1717,7 +2419,7 @@ export function GitHubSourcePanel() {
     tick()
     const timer = window.setInterval(tick, SCHEDULE_TICK_MS)
     return () => window.clearInterval(timer)
-  }, [accountNamespace, effectiveTrackedCount, schedule, status])
+  }, [accountNamespace, disconnecting, effectiveTrackedCount, schedule, status])
 
   const toggleTracked = (repository: GithubRepository) => {
     const autoTracked = repository.ownerType === 'User'
@@ -1744,19 +2446,22 @@ export function GitHubSourcePanel() {
   }
 
   const dismissDraw = (drawId: string) => {
+    const scope = accountScopeRef.current
+    if (!scope || !isCurrentAccountNamespace(accountGateRef.current, scope)) return
     setRevealedDraws((current) => {
       const next = current.includes(drawId) ? current : [...current, drawId]
-      saveRevealedDraws(browserProductStorage(), next, accountNamespace ?? undefined)
+      saveRevealedDraws(browserProductStorage(), next, scope.namespace)
       return next
     })
   }
 
   const makeActive = (companionId: string) => {
-    if (!productState) return
+    const scope = accountScopeRef.current
+    if (!productState || !scope || !isCurrentAccountNamespace(accountGateRef.current, scope)) return
     const next = switchActiveCompanion(productState, companionId, PROTOTYPE_COMPANION_CATALOG)
     if (next === productState) return
     const storage = browserProductStorage()
-    saveGuestProfile(storage, next.profile, accountNamespace ? `terrarium:guest-profile:${accountNamespace}` : undefined)
+    saveGuestProfile(storage, next.profile, `terrarium:guest-profile:${scope.namespace}`)
     setProductState(next)
   }
 
@@ -1923,7 +2628,7 @@ export function GitHubSourcePanel() {
                 <button
                   type="button"
                   onClick={() => void repairAndRetry()}
-                  disabled={busy}
+                  disabled={busy || disconnecting}
                   aria-busy={busy}
                   className="ui-row font-ui border px-4 py-2 text-sm disabled:cursor-wait disabled:opacity-50"
                   style={{ borderColor: 'var(--accent)' }}
@@ -1993,7 +2698,7 @@ export function GitHubSourcePanel() {
                           <button
                             type="button"
                             onClick={() => void resolveGuestConflict(plan.action, true)}
-                            disabled={resolvingGuestConflict !== null}
+                            disabled={resolvingGuestConflict !== null || busy}
                             aria-busy={resolvingGuestConflict === plan.action}
                             className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50"
                             style={{ borderColor: 'var(--accent)', color: 'var(--ink)' }}

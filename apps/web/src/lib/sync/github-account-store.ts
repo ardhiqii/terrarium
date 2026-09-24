@@ -35,6 +35,8 @@ export interface GithubAccountRecord {
   readonly handle: string
   readonly scopes: readonly string[]
   readonly settings: GithubAccountSettings
+  /** A disconnected row cannot accept a delayed checkpoint commit. */
+  readonly disconnectedAt: string | null
 }
 
 export interface GithubAccountStore {
@@ -146,6 +148,7 @@ function rowToAccount(row: Row): GithubAccountRecord {
     handle: row.handle,
     scopes: uniqueStrings(parseJson<string[]>(row.scopes_json, [])),
     settings: rowSettings(row),
+    disconnectedAt: row.disconnected_at,
   }
 }
 
@@ -335,6 +338,10 @@ export class GithubAccountSqliteStore implements GithubAccountStore {
     try {
       const row = this.row(githubId)
       if (!row) throw new Error('GitHub account credential not found')
+      if (row.disconnected_at) {
+        this.db.exec('COMMIT')
+        return false
+      }
       const current = rowSettings(row)
       const nextSuccessfulAt = latestTimestamp(current.lastSyncedAt, lastSyncedAt)
       const sameNextBaseline = sameBaselineMap(current.baselineByRepositoryId, nextBaselineByRepositoryId)

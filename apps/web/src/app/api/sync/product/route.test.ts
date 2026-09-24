@@ -21,7 +21,8 @@ import { GUEST_IDENTITY_CONFLICT_ERROR } from '@/lib/game/guest-identity-conflic
 function request(method: string, body?: string, headers?: HeadersInit): NextRequest {
   return new NextRequest('http://localhost/api/sync/product', {
     method,
-    ...(body !== undefined ? { body, headers } : {}),
+    ...(body !== undefined ? { body } : {}),
+    ...(headers !== undefined ? { headers } : {}),
   })
 }
 
@@ -100,6 +101,7 @@ describe('POST/GET/DELETE /api/sync/product', () => {
   })
 
   afterEach(() => {
+    vi.restoreAllMocks()
     vi.unstubAllEnvs()
   })
 
@@ -116,12 +118,13 @@ describe('POST/GET/DELETE /api/sync/product', () => {
     vi.stubEnv('STUB_SESSION_HANDLE', 'Octocat')
     const { POST, GET, DELETE } = await import('./route')
     const serialized = JSON.stringify(snapshot())
+    const accountHeader = { 'x-terrarium-github-id': String(fakeGithubId('octocat')) }
 
-    const post = await POST(request('POST', serialized, { 'content-type': 'application/json' }))
+    const post = await POST(request('POST', serialized, { 'content-type': 'application/json', ...accountHeader }))
     expect(post.status).toBe(200)
     expect((await post.json()).guestId).toBe('guest-1')
 
-    const get = await GET()
+    const get = await GET(request('GET', undefined, accountHeader))
     expect(get.status).toBe(200)
     expect((await get.json()).guestId).toBe('guest-1')
     const version = get.headers.get('x-product-snapshot-version')
@@ -130,9 +133,92 @@ describe('POST/GET/DELETE /api/sync/product', () => {
     expect((await DELETE(request(
       'DELETE',
       JSON.stringify({ expectedVersion: version }),
-      { 'content-type': 'application/json' },
+      { 'content-type': 'application/json', ...accountHeader },
     ))).status).toBe(204)
     expect((await GET()).status).toBe(404)
+  })
+
+  it('rejects malformed or mismatched account headers before product work', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST, GET, DELETE } = await import('./route')
+    const mismatched = { 'x-terrarium-github-id': String(fakeGithubId('other-account')) }
+    const malformed = { 'x-terrarium-github-id': 'not-a-github-id' }
+
+    for (const headers of [mismatched, malformed]) {
+      const post = await POST(request('POST', '{bad json', headers))
+      expect(post.status).toBe(409)
+      expect(await post.json()).toEqual({ error: 'account_changed' })
+
+      const get = await GET(request('GET', undefined, headers))
+      expect(get.status).toBe(409)
+      expect(await get.json()).toEqual({ error: 'account_changed' })
+
+      const deletion = await DELETE(request('DELETE', undefined, headers))
+      expect(deletion.status).toBe(409)
+      expect(await deletion.json()).toEqual({ error: 'account_changed' })
+    }
+  })
+
+  it('keeps a missing account header backward compatible', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST } = await import('./route')
+
+    const response = await POST(request('POST', JSON.stringify(snapshot())))
+
+    expect(response.status).toBe(200)
+  })
+
+  it('returns a structured storage error when product reads fail', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { getProductStore } = await import('@/lib/sync/product-store')
+    vi.spyOn(getProductStore(), 'getRecord').mockRejectedValue(new Error('SQLITE_BUSY token=secret'))
+    const { GET } = await import('./route')
+
+    const response = await GET()
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('content-type')).toMatch(/application\/json/u)
+    expect(await response.json()).toEqual({ error: 'storage_unavailable' })
+  })
+
+  it('returns a structured storage error when product writes fail', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { getProductStore } = await import('@/lib/sync/product-store')
+    vi.spyOn(getProductStore(), 'put').mockRejectedValue(new Error('SQLITE_CONSTRAINT token=secret'))
+    const { POST } = await import('./route')
+
+    const response = await POST(request('POST', JSON.stringify(snapshot())))
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({ error: 'storage_unavailable' })
+  })
+
+  it('returns a structured storage error when product deletes fail', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { getProductStore } = await import('@/lib/sync/product-store')
+    vi.spyOn(getProductStore(), 'removeIfVersion').mockRejectedValue(new Error('SQLITE_BUSY token=secret'))
+    const { DELETE } = await import('./route')
+
+    const response = await DELETE(request(
+      'DELETE',
+      JSON.stringify({ expectedVersion: 'row-version-1' }),
+      { 'content-type': 'application/json' },
+    ))
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({ error: 'storage_unavailable' })
+  })
+
+  it('keeps validation errors ahead of product storage failures', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { getProductStore } = await import('@/lib/sync/product-store')
+    vi.spyOn(getProductStore(), 'put').mockRejectedValue(new Error('SQLITE_BUSY token=secret'))
+    const { POST } = await import('./route')
+
+    const response = await POST(request('POST', '{bad json'))
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: 'Body must be a valid ProductSnapshot.' })
   })
 
   it('recomputes derived XP before the first snapshot is stored', async () => {
@@ -327,6 +413,53 @@ describe('POST/GET/DELETE /api/sync/product', () => {
     expect(await response.json()).toMatchObject({ error: expect.stringMatching(/outside its collection/i) })
   })
 
+  it('rejects an encounter weight for a companion outside the collection', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST } = await import('./route')
+    const value = snapshot()
+    const forged: ProductSnapshot = {
+      ...value,
+      companions: [...value.companions, {
+        companionId: 'ditto-like',
+        familyId: 'ditto-family',
+        xp: 0,
+        essence: 0,
+        encounterCount: 0,
+        progression: null,
+      }],
+      encounters: {
+        ...value.encounters,
+        nextSequence: 2,
+        draws: [{
+          id: 'draw-1',
+          sequence: 1,
+          triggerId: 'trigger-1',
+          seed: 'seed-1',
+          selectedCompanionId: 'pikachu-family',
+          selectedFamilyId: 'pikachu-family',
+          isDuplicate: false,
+          essenceAwarded: 0,
+          weights: [{
+            companionId: 'ditto-like',
+            baseWeight: 1,
+            tagMatchCount: 0,
+            languageMatchCount: 0,
+            fileTypeMatchCount: 0,
+            tagBonus: 0,
+            languageBonus: 0,
+            fileTypeBonus: 0,
+            finalWeight: 1,
+          }],
+        }],
+      },
+    }
+
+    const response = await POST(request('POST', JSON.stringify(forged)))
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: expect.stringMatching(/outside its collection/i) })
+  })
+
   it('rejects a client-forged verified GitHub event without a server receipt', async () => {
     vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
     const { POST } = await import('./route')
@@ -478,7 +611,33 @@ describe('POST/GET/DELETE /api/sync/product', () => {
     expect((await response.json()).events).toHaveLength(1)
   })
 
-  it('rejects a checkpoint whose event ID is substituted with a local event', async () => {
+  it('keeps the stored condition retryable when baseline advancement loses a race', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const githubId = await seedGithubAccount('octocat')
+    const { POST, GET } = await import('./route')
+    const { getGithubAccountStore } = await import('@/lib/sync/github-account-store')
+    const local = snapshot(['event-baseline-race'])
+    const unsigned = {
+      ...local.events[0],
+      source: 'github' as const,
+      provenance: 'verified' as const,
+    }
+    const value: ProductSnapshot = {
+      ...local,
+      events: [{ ...unsigned, verifiedProof: issueVerifiedEventProof(unsigned, githubId) }],
+    }
+    const checkpoint = checkpointFor(githubId, value, { '101': '2026-08-28T10:05:00.000Z' })
+    vi.spyOn(getGithubAccountStore(), 'advanceBaseline').mockResolvedValue(false)
+
+    const response = await POST(request('POST', JSON.stringify({ snapshot: value, checkpoint })))
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ error: 'GitHub activity changed while this condition was being saved. Sync again.' })
+    expect((await GET()).status).toBe(200)
+    expect((await getGithubAccountStore().getSettings(githubId)).baselineByRepositoryId).toEqual({})
+  })
+
+  it('rejects a checkpoint whose event ID was substituted with a local event', async () => {
     vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
     const githubId = await seedGithubAccount('octocat')
     const { POST } = await import('./route')

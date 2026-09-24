@@ -13,9 +13,9 @@
  * One slot, one active GitHub account per profile. The entry carries its
  * `githubId` so a copy that does not belong to the account the server answers
  * for is discarded rather than merged. A fresh page load cannot know the
- * account id before that answer arrives, so the first paint of a session is a
- * best guess that the response replaces; it is never blended with the server's
- * settings or written back for a different account.
+ * account id before that answer arrives, so it does not paint the stored copy
+ * until this mount confirms the same immutable account; the response remains
+ * the source of truth.
  *
  * Pure browser module: no `node:*`, no server imports, no React, so the
  * client-bundle safety guard stays green.

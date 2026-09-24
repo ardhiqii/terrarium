@@ -6,6 +6,7 @@ import { createProductState } from './product-state'
 import { buildProductSnapshot } from '../sync/product-snapshot'
 import {
   DEFAULT_STORED_SYNC_SCHEDULE,
+  browserProductStorage,
   loadGithubSyncRecovery,
   loadSyncRequestUsage,
   loadSyncScheduleState,
@@ -38,6 +39,16 @@ function productSnapshot() {
 }
 
 describe('browser GitHub receipt storage', () => {
+  it('falls back to a session memory store when browser storage is unavailable', () => {
+    const value = browserProductStorage()
+    const key = `terrarium:test-storage-fallback:${Date.now()}`
+
+    expect(() => value.setItem(key, 'recoverable')).not.toThrow()
+    expect(value.getItem(key)).toBe('recoverable')
+    expect(() => value.removeItem(key)).not.toThrow()
+    expect(value.getItem(key)).toBeNull()
+  })
+
   it('keeps only valid receipts for the current event set', () => {
     const value = storage()
     const eventId = 'event-12345678-abcdef12'

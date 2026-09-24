@@ -83,6 +83,13 @@ export async function POST(request: NextRequest): Promise<Response> {
   // from `body`: `SyncedSnapshot` has no handle field to begin with, so
   // there is nothing in the validated payload that could overwrite another
   // user even if a caller tried.
+  // Legacy sync rows are keyed by mutable handle. Never replace a row that
+  // belongs to a different immutable GitHub identity after a handle reuse.
+  const store = getSyncStore()
+  const existing = await store.get(session.handle)
+  if (existing && existing.githubId !== session.githubId) {
+    return json(409, { error: 'account_changed' })
+  }
   const user: SyncedUser = {
     handle: session.handle.toLowerCase(),
     githubId: session.githubId,
@@ -91,7 +98,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     updatedAt: new Date().toISOString(),
   }
 
-  await getSyncStore().put(user)
+  await store.put(user)
   return json(200, user)
 }
 
@@ -105,6 +112,9 @@ export async function GET(): Promise<Response> {
   if (!user) {
     return json(404, { error: 'This account has never synced.' })
   }
+  if (user.githubId !== session.githubId) {
+    return json(409, { error: 'account_changed' })
+  }
 
   return json(200, user)
 }
@@ -115,6 +125,11 @@ export async function DELETE(): Promise<Response> {
     return json(401, { error: 'Sign in required.' })
   }
 
-  await getSyncStore().remove(session.handle.toLowerCase())
+  const store = getSyncStore()
+  const user = await store.get(session.handle.toLowerCase())
+  if (user && user.githubId !== session.githubId) {
+    return json(409, { error: 'account_changed' })
+  }
+  await store.remove(session.handle.toLowerCase())
   return json(204, undefined)
 }

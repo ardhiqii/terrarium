@@ -19,6 +19,7 @@ import { getGithubAccountStore, type GithubAccountSettings } from '@/lib/sync/gi
 import { getGithubRepositoriesCached } from '@/lib/sync/github-repository-cache'
 import { getSessionProvider } from '@/lib/sync/session'
 import { getProductStore } from '@/lib/sync/product-store'
+import { requestAccountMatchesSession } from '@/lib/sync/request-account-guard'
 import { trustStoredProductSnapshot } from '@/lib/sync/trusted-product-snapshot'
 import { productSnapshotEvent } from '@/lib/sync/product-snapshot'
 import { issueGithubSyncCheckpoint } from '@/lib/sync/github-sync-checkpoint'
@@ -64,6 +65,9 @@ function activitySummary(events: readonly { category: string }[]) {
 export async function POST(request: NextRequest): Promise<Response> {
   const session = await getSessionProvider().current()
   if (!session) return json(401, { error: 'Sign in with GitHub to sync activity.' })
+  if (!requestAccountMatchesSession(request, session.githubId)) {
+    return json(409, { error: 'account_changed' })
+  }
   const rateLimit = checkRateLimit(`github-sync:${session.githubId}`, 20, 60_000)
   if (!rateLimit.allowed) return json(429, { error: 'Sync limit reached. Try again shortly.' })
   const contentLength = request.headers.get('content-length')

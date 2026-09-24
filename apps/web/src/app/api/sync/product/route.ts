@@ -30,6 +30,7 @@ import { createGuestProfile } from '@/lib/game/guest-profile'
 import { getGithubAccountStore } from '@/lib/sync/github-account-store'
 import { getSessionProvider } from '@/lib/sync/session'
 import { getProductStore } from '@/lib/sync/product-store'
+import { requestAccountMatchesSession } from '@/lib/sync/request-account-guard'
 import { trustStoredProductSnapshot } from '@/lib/sync/trusted-product-snapshot'
 import {
   buildProductSnapshot,
@@ -85,6 +86,10 @@ function json(status: number, body: unknown, extraHeaders: HeadersInit = {}): Re
       ? extraHeaders
       : { 'Content-Type': 'application/json; charset=utf-8', ...extraHeaders },
   })
+}
+
+function storageUnavailable(): Response {
+  return json(503, { error: 'storage_unavailable' })
 }
 
 /**
@@ -182,7 +187,10 @@ function unownedCompanionIds(snapshot: ProductSnapshot): string[] {
     snapshot.activeCompanionId,
     ...snapshot.companions.map((companion) => companion.companionId),
     ...snapshot.events.map((event) => event.companionId),
-    ...snapshot.encounters.draws.map((draw) => draw.selectedCompanionId),
+    ...snapshot.encounters.draws.flatMap((draw) => [
+      draw.selectedCompanionId,
+      ...draw.weights.map((weight) => weight.companionId),
+    ]),
   ])
   return [...referenced].filter((id) => !owned.has(id)).sort()
 }
@@ -221,6 +229,9 @@ function canonicalizeDerivedSnapshot(snapshot: ProductSnapshot): ProductSnapshot
 export async function POST(request: NextRequest): Promise<Response> {
   const session = await getSessionProvider().current()
   if (!session) return json(401, { error: 'Sign in required.' })
+  if (!requestAccountMatchesSession(request, session.githubId)) {
+    return json(409, { error: 'account_changed' })
+  }
 
   const rl = checkRateLimit(`product-sync-write:${session.handle}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS)
   if (!rl.allowed) return json(429, { error: 'Rate limit exceeded. Try again shortly.' })
@@ -327,67 +338,85 @@ export async function POST(request: NextRequest): Promise<Response> {
     })) {
       return json(409, { error: 'Sync checkpoint events must be verified GitHub events.' })
     }
-    const currentSettings = await getGithubAccountStore().getSettings(session.githubId)
-    if (
-      !sameTimestampMap(currentSettings.baselineByRepositoryId, checkpoint.previousBaselineByRepositoryId) &&
-      !sameTimestampMap(currentSettings.baselineByRepositoryId, checkpoint.nextBaselineByRepositoryId)
-    ) {
-      return json(409, { error: 'GitHub activity changed while this condition was being saved. Sync again.' })
+    try {
+      const currentSettings = await getGithubAccountStore().getSettings(session.githubId)
+      if (
+        !sameTimestampMap(currentSettings.baselineByRepositoryId, checkpoint.previousBaselineByRepositoryId) &&
+        !sameTimestampMap(currentSettings.baselineByRepositoryId, checkpoint.nextBaselineByRepositoryId)
+      ) {
+        return json(409, { error: 'GitHub activity changed while this condition was being saved. Sync again.' })
+      }
+    } catch {
+      return storageUnavailable()
     }
   }
 
-  const store = getProductStore()
   const handle = session.handle.toLowerCase()
   const canonicalIncoming = canonicalizeDerivedSnapshot(incoming)
 
   // Retry a short optimistic-concurrency window. This keeps two tabs/devices
   // from silently replacing one another's event history while preserving the
   // simple provider-neutral store contract.
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const serverRecord = await store.getRecord(session.githubId, handle)
-    const server = serverRecord ? trustStoredProductSnapshot(serverRecord.snapshot, session.githubId) : null
-    if (server && server.guestId !== canonicalIncoming.guestId) {
-      return json(409, { error: 'This GitHub account already has a different guest profile.' })
-    }
-    const merged = server ? mergeProductSnapshots(canonicalIncoming, server) : canonicalIncoming
-    const saved = await store.put(
-      session.githubId,
-      handle,
-      merged,
-      new Date().toISOString(),
-      serverRecord?.updatedAt ?? null,
-    )
-    if (saved) {
-      if (checkpoint) {
-        const advanced = await getGithubAccountStore().advanceBaseline(
-          session.githubId,
-          checkpoint.previousBaselineByRepositoryId,
-          checkpoint.nextBaselineByRepositoryId,
-          checkpoint.nextLastSyncedAt,
-        )
-        if (!advanced) {
-          return json(409, { error: 'GitHub activity changed while this condition was being saved. Sync again.' })
-        }
+  try {
+    const store = getProductStore()
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const serverRecord = await store.getRecord(session.githubId, handle)
+      const server = serverRecord ? trustStoredProductSnapshot(serverRecord.snapshot, session.githubId) : null
+      if (server && server.guestId !== canonicalIncoming.guestId) {
+        return json(409, { error: 'This GitHub account already has a different guest profile.' })
       }
-      return json(200, merged)
+      const merged = server ? mergeProductSnapshots(canonicalIncoming, server) : canonicalIncoming
+      const saved = await store.put(
+        session.githubId,
+        handle,
+        merged,
+        new Date().toISOString(),
+        serverRecord?.updatedAt ?? null,
+      )
+      if (saved) {
+        if (checkpoint) {
+          const advanced = await getGithubAccountStore().advanceBaseline(
+            session.githubId,
+            checkpoint.previousBaselineByRepositoryId,
+            checkpoint.nextBaselineByRepositoryId,
+            checkpoint.nextLastSyncedAt,
+          )
+          if (!advanced) {
+            return json(409, { error: 'GitHub activity changed while this condition was being saved. Sync again.' })
+          }
+        }
+        return json(200, merged)
+      }
     }
+  } catch {
+    return storageUnavailable()
   }
 
   return json(409, { error: 'This condition changed on another device. Sync again to merge the latest state.' })
 }
 
-export async function GET(): Promise<Response> {
+export async function GET(request?: NextRequest): Promise<Response> {
   const session = await getSessionProvider().current()
   if (!session) return json(401, { error: 'Sign in required.' })
-  const record = await getProductStore().getRecord(session.githubId, session.handle)
-  const snapshot = record ? trustStoredProductSnapshot(record.snapshot, session.githubId) : null
-  if (!record || !snapshot) return json(404, { error: 'This account has never synced the product snapshot.' })
-  return json(200, snapshot, { 'X-Product-Snapshot-Version': record.version })
+  if (!requestAccountMatchesSession(request, session.githubId)) {
+    return json(409, { error: 'account_changed' })
+  }
+  try {
+    const record = await getProductStore().getRecord(session.githubId, session.handle)
+    const snapshot = record ? trustStoredProductSnapshot(record.snapshot, session.githubId) : null
+    if (!record || !snapshot) return json(404, { error: 'This account has never synced the product snapshot.' })
+    return json(200, snapshot, { 'X-Product-Snapshot-Version': record.version })
+  } catch {
+    return storageUnavailable()
+  }
 }
 
 export async function DELETE(request: NextRequest): Promise<Response> {
   const session = await getSessionProvider().current()
   if (!session) return json(401, { error: 'Sign in required.' })
+  if (!requestAccountMatchesSession(request, session.githubId)) {
+    return json(409, { error: 'account_changed' })
+  }
 
   // The identity chooser's destructive "Use this browser" action supplies the
   // server row version it just displayed. Deletion without that version is
@@ -418,12 +447,16 @@ export async function DELETE(request: NextRequest): Promise<Response> {
   if (expectedVersion === null) {
     return json(428, { error: 'A current product snapshot version is required before deleting.' })
   }
-  const store = getProductStore()
-  // The version check and delete must be one conditional store operation; a
-  // read followed by an unconditional delete has a race between them.
-  const deleted = await store.removeIfVersion(session.githubId, expectedVersion)
-  if (!deleted) {
-    return json(409, { error: 'Cloud condition changed on another device. Review it again before deleting.' })
+  try {
+    const store = getProductStore()
+    // The version check and delete must be one conditional store operation; a
+    // read followed by an unconditional delete has a race between them.
+    const deleted = await store.removeIfVersion(session.githubId, expectedVersion)
+    if (!deleted) {
+      return json(409, { error: 'Cloud condition changed on another device. Review it again before deleting.' })
+    }
+    return json(204, undefined)
+  } catch {
+    return storageUnavailable()
   }
-  return json(204, undefined)
 }
