@@ -163,7 +163,9 @@ The `/companions` archive reads the trusted account product snapshot when a
 user is signed in and one exists. It shows that account-scoped XP and
 progression separately from the local garden archive. A signed-in user with no
 product row or an unavailable row sees an explicit not-synced/unavailable state;
-the legacy `github-cache.json` aggregate is not presented as account XP.
+the legacy `github-cache.json` aggregate is not presented as account XP. A
+storage outage is an explicit retryable `storage_unavailable` condition, never
+an empty account that may overwrite the browser copy.
 
 ### 4.4 GitHub
 
@@ -392,6 +394,12 @@ When a guest signs in:
   collection; keep detailed local-note history on the device.
 - If a server profile exists, merge GitHub event IDs and reconcile local-note
   condition snapshots through sync checkpoints instead of uploading note events.
+- The browser account namespace is keyed by immutable GitHub ID. The older
+  unnamespaced GitHub archive remains as a recoverable backup; only stable
+  receipt-backed events whose companion ownership is already demonstrated by a
+  collection reference are staged into the account namespace. Unsupported or
+  ownerless records remain archived, and generic keys are removed only after a
+  validated server response contains the staged events.
 - Union collections and preserve each companion’s XP independently.
 - Keep the selected active companion when it still exists; otherwise ask the
   user to choose one.

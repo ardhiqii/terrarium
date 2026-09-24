@@ -202,11 +202,14 @@ permissions for metadata, contents, pull requests, issues, checks/actions, and
 the required organization approval. It deliberately does not request the
 classic `repo` scope, which grants broader write-capable access. Before
 production, keep `SUPABASE_URL` and the server-only `SUPABASE_SECRET_KEY` in the
-deployment secret store and apply all three
+deployment secret store and apply and verify the baseline migrations
 `supabase/migrations/20260914000000_initial_sync.sql`,
 `supabase/migrations/20260914000001_harden_product_identity.sql`, and
 `supabase/migrations/20260918000000_github_accounts_disconnect.sql`. The
-migrations enable RLS and grant access only to the server role.
+forward repair migration `supabase/migrations/20260919000000_repair_product_snapshots_schema.sql`
+is also required when a live `product_snapshots` table predates `row_version`;
+its current main-aufa recovery status is recorded in Phase 5.1. The migrations
+enable RLS and grant access only to the server role.
 
 The Supabase adapter covers the public sync snapshot, GitHub account/settings,
 and product snapshot stores. The browser restores a blank account namespace
@@ -275,14 +278,16 @@ earning local XP.
 
 ## Phase 5.1. GitHub receipt recovery and checkpoint repair
 
-**Status: implementation complete; hosted replay verification remains deployment work.**
+**Status: recovery iteration in progress; live schema repair and GET availability
+are verified, but client deployment, browser replay, and account verification
+remain open.**
 
 This is a recovery plan for the long-running case where GitHub activity appears
 in the browser but account XP and the last checkpoint do not move. It must be
 completed without clearing browser storage, disconnecting GitHub, deleting the
 cloud snapshot, or silently downgrading verified GitHub events to local events.
 
-### Confirmed incident evidence
+### Confirmed incident evidence (before the schema repair)
 
 Observed on the signed-in `ardhiqii` browser session at
 `terrarium-aufa.vercel.app`:
@@ -291,14 +296,15 @@ Observed on the signed-in `ardhiqii` browser session at
 - The browser ledger contains **38 verified GitHub events**, including events
   from 23/09/2026, and 38 stored receipts.
 - The account API still reports `lastSyncedAt` on **18/09/2026**.
-- `GET /api/sync/product` returns a cloud snapshot with **0 events and 0 XP**.
+- Before the schema repair, `GET /api/sync/product` returned a cloud snapshot with
+  **0 events and 0 XP**.
 - The browser's retained diagnostic response records HTTP 400 with **four
   `receipt-mismatch` events**.
 
 The checkpoint is the last successful server-side commit, not the number of
 sync button presses. The product route rejects the whole snapshot when one
 verified event has an invalid receipt; the signed GitHub checkpoint is advanced
-only after that product write succeeds. Therefore the current flow is:
+only after that product write succeeds. Therefore the pre-repair flow was:
 
 ```text
 GitHub scan succeeds
@@ -314,6 +320,51 @@ keys could be hashed twice and receipt-bound metadata hashes could be dropped.
 The stable round-trip fix prevents new mismatches, but it does not repair the
 already-stored browser events whose old receipts are now incompatible.
 
+### Main-aufa recovery iteration status
+
+This iteration is limited to the `main-aufa` Vercel recovery target. It is not a
+claim that the client fix has shipped or that Phase 5.1 is complete.
+
+- Live Supabase `product_snapshots` was missing `row_version`.
+- The forward-only `supabase/migrations/20260919000000_repair_product_snapshots_schema.sql`
+  was applied manually.
+- Schema verification now shows `row_version` is `NOT NULL`, there are zero null
+  or duplicate `row_version` values, and existing snapshot rows were preserved.
+- The deployed `GET /api/sync/product` now returns HTTP 200.
+- This endpoint result proves the repaired server/schema path is reachable; it
+  does not prove that the un-deployed client fix has been merged, that preserved
+  browser data has been replayed/repaired, or that account XP/checkpoint
+  recovery succeeded.
+- `main` and the GHCR-backed custom-domain production runtime are explicitly out
+  of scope for this iteration.
+
+Remaining gates, in order:
+
+1. Merge/deploy the fix to the `main-aufa` Vercel deployment.
+2. Replay/repair the preserved browser data without clearing browser storage.
+3. Verify account XP and checkpoint persistence after sync, browser reload, and
+   a second session/device.
+4. Only after those checks pass, update the Phase 5.1 status to complete.
+
+### XP calculation used during replay
+
+Do not patch XP by hand or equate event count with XP. The server recomputes XP
+from preserved normalized events, stable event IDs, and cap metadata; the active
+companion receives the accepted total. The current GitHub rules used as the
+replay oracle are:
+
+- a qualifying active day is **10 XP**, once per connected GitHub account per
+  activity day;
+- a work session is **10 XP**, with at most two sessions per connected GitHub
+  account per activity day (the current implementation buckets sessions in
+  UTC);
+- a merged pull request is **25 XP**, a published release **40 XP**, a closed
+  linked issue **10 XP**, and one successful CI result on a merged pull request
+  **10 XP**;
+- empty, generated-only, unchanged, repeated, or duplicate deliveries award no
+  additional XP; stable event IDs and the account-wide GitHub cap buckets apply
+  across selected repositories.
+
 ### Recovery design
 
 1. **Capture the failure without mutating state.**
@@ -321,8 +372,9 @@ already-stored browser events whose old receipts are now incompatible.
      upload status, bounded receipt-failure IDs, and payload digests.
    - Never clear `terrarium:guest-event-ledger:*`, proof storage, encounters,
      or the account snapshot as a diagnostic shortcut.
-   - Confirm whether the user is on the Vercel deployment or the GHCR-backed
-     custom domain; deploy and verify the same host the user actually opens.
+   - Keep this recovery trace tied to the `main-aufa` Vercel target; do not use
+     `main` or the GHCR-backed custom domain as a verification target in this
+     iteration.
 
 2. **Add a server-authoritative receipt repair path.**
    - `POST /api/github/repair` accepts only a bounded list of failed stable
@@ -359,15 +411,17 @@ already-stored browser events whose old receipts are now incompatible.
      committed successfully.”
    - Show the last successful checkpoint separately from the last attempted sync.
 
-5. **Deploy and verify the correct runtime.**
-   - Deploy the repaired client and server routes to the host used by the user.
-   - Apply and verify all three Supabase migrations before authenticated replay:
-     `20260914000000_initial_sync.sql`,
-     `20260914000001_harden_product_identity.sql`, and
-     `20260918000000_github_accounts_disconnect.sql`.
-   - Verify the GHCR-backed production image and the Vercel deployment are not
-     being confused; the previous GHCR workflow does not by itself update the
-     Vercel project.
+5. **Merge and verify the main-aufa runtime.**
+   - Treat the manually applied `20260919000000_repair_product_snapshots_schema.sql`
+     and the resulting schema checks as a prerequisite, not as evidence that the
+     client fix is deployed.
+   - Merge/deploy the fix to `main-aufa` Vercel before authenticated replay; do
+     not mark the client fix deployed until this gate passes.
+   - Replay/repair the preserved browser data, then verify the account XP and
+     checkpoint after sync, browser reload, and a second session/device.
+   - Update the Phase 5.1 status only after those replay checks pass.
+   - This iteration does not deploy or validate `main` or the GHCR-backed
+     custom-domain production runtime; both are explicitly out of scope.
 
 ### Required regression coverage
 
@@ -386,7 +440,9 @@ already-stored browser events whose old receipts are now incompatible.
 
 ### Acceptance criteria
 
-This incident is resolved only when all of the following are true:
+The current iteration has cleared only the live schema repair and `GET`
+availability prerequisite. The incident is not resolved until all of the
+following are true:
 
 1. Existing browser storage remains intact; no GitHub disconnect or cloud reset
    is required.
@@ -401,9 +457,9 @@ This incident is resolved only when all of the following are true:
 6. Repeating Sync does not duplicate events or XP, and a forged receipt remains
    rejected.
 7. `npm run typecheck`, `npm test`, `npm run build`, `npx vitest run apps/web/src/app/api/github/repair/route.test.ts apps/web/src/app/api/sync/product/github-sync-roundtrip.test.ts`,
-   the scoped repair tests,
-   production deployment checks, and the Supabase migration verification all
-   pass.
+   the scoped repair tests, the `main-aufa` Vercel deployment checks, and the
+   Supabase migration verification all pass. Automated tests continue to use
+   mocks or local SQLite, never live Supabase.
 
 ## Phase 6. Surfaces and distribution
 
