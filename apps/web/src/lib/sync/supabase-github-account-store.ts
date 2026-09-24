@@ -94,6 +94,7 @@ function rowToAccount(row: AccountRow): GithubAccountRecord {
     handle: row.handle,
     scopes: uniqueStrings(jsonArray(row.scopes_json)),
     settings: rowSettings(row),
+    disconnectedAt: row.disconnected_at ?? null,
   }
 }
 
@@ -151,6 +152,7 @@ const ACCOUNT_COLUMNS = [
   'auto_include_organizations_json',
   'baseline_by_repository_id_json',
   'last_synced_at',
+  'disconnected_at',
 ].join(', ')
 
 export class SupabaseGithubAccountStore implements GithubAccountStore {
@@ -252,6 +254,7 @@ export class SupabaseGithubAccountStore implements GithubAccountStore {
   ): Promise<boolean> {
     const current = await this.get(githubId)
     if (!current) throw new Error('GitHub account credential not found')
+    if (current.disconnectedAt) return false
     const sameNextBaseline = sameBaselineMap(current.settings.baselineByRepositoryId, nextBaselineByRepositoryId)
     if (!sameNextBaseline && !sameBaselineMap(current.settings.baselineByRepositoryId, expectedBaselineByRepositoryId)) return false
 

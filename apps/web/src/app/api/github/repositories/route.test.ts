@@ -63,16 +63,16 @@ const repository = {
   canRead: true,
 }
 
-function request(body: unknown): NextRequest {
+function request(body: unknown, extraHeaders: HeadersInit = {}): NextRequest {
   return new NextRequest('http://localhost/api/github/repositories', {
     method: 'PUT',
     body: JSON.stringify(body),
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...extraHeaders },
   })
 }
 
-function getRequest(query = ''): NextRequest {
-  return new NextRequest(`http://localhost/api/github/repositories${query}`)
+function getRequest(query = '', extraHeaders: HeadersInit = {}): NextRequest {
+  return new NextRequest(`http://localhost/api/github/repositories${query}`, { headers: extraHeaders })
 }
 
 describe('PUT /api/github/repositories', () => {
@@ -97,6 +97,33 @@ describe('PUT /api/github/repositories', () => {
     mocks.productStoreRemove.mockReset().mockResolvedValue(undefined)
   })
 
+  it('rejects a malformed or mismatched account header before loading repository state', async () => {
+    const malformed = await GET(getRequest('', { 'x-terrarium-github-id': '9001x' }))
+    expect(malformed.status).toBe(409)
+    expect(await malformed.json()).toEqual({ error: 'account_changed' })
+
+    const mismatched = await PUT(request({
+      trackedRepositoryIds: ['101'],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+    }, { 'x-terrarium-github-id': '9002' }))
+    expect(mismatched.status).toBe(409)
+    expect(await mismatched.json()).toEqual({ error: 'account_changed' })
+
+    const deletion = await DELETE(new NextRequest('http://localhost/api/github/repositories', {
+      method: 'DELETE',
+      headers: { 'x-terrarium-github-id': '9002' },
+    }))
+    expect(deletion.status).toBe(409)
+    expect(await deletion.json()).toEqual({ error: 'account_changed' })
+
+    expect(mocks.getToken).not.toHaveBeenCalled()
+    expect(mocks.fetchRepositories).not.toHaveBeenCalled()
+    expect(mocks.saveSettings).not.toHaveBeenCalled()
+    expect(mocks.clearCredential).not.toHaveBeenCalled()
+  })
+
   it('reports effective tracking, including automatic personal repositories', async () => {
     mocks.settings.autoIncludePersonal = true
     mocks.settings.trackedRepositoryIds = []
@@ -112,6 +139,20 @@ describe('PUT /api/github/repositories', () => {
 
     expect(response.status).toBe(200)
     expect((await response.json()).trackedRepositoryCount).toBe(1)
+  })
+
+  it('accepts a matching account header and a missing header for settings writes', async () => {
+    const payload = {
+      trackedRepositoryIds: [],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+    }
+    const matching = await PUT(request(payload, { 'x-terrarium-github-id': '9001' }))
+    expect(matching.status).toBe(200)
+
+    const missing = await PUT(request(payload))
+    expect(missing.status).toBe(200)
   })
 
   it('drops revoked tracked IDs without blocking an existing exclusion update', async () => {
@@ -316,6 +357,12 @@ describe('GET /api/github/repositories', () => {
     mocks.fetchRepositories.mockReset().mockResolvedValue({ status: 'ok', truncated: false, repositories: [repository] })
   })
 
+  it('accepts a matching account header on repository reads', async () => {
+    const response = await GET(getRequest('', { 'x-terrarium-github-id': '9001' }))
+
+    expect(response.status).toBe(200)
+  })
+
   it('serves a repeated GET from the server cache without calling GitHub again', async () => {
     const first = await GET(getRequest())
     const second = await GET(getRequest())
@@ -469,6 +516,15 @@ describe('DELETE /api/github/repositories', () => {
     expect(response.status).toBe(401)
     expect(mocks.clearCredential).not.toHaveBeenCalled()
     expect(mocks.productStoreRemove).not.toHaveBeenCalled()
+  })
+
+  it('accepts a matching account header on disconnect', async () => {
+    const response = await DELETE(new NextRequest('http://localhost/api/github/repositories', {
+      method: 'DELETE',
+      headers: { 'x-terrarium-github-id': '9001' },
+    }))
+
+    expect(response.status).toBe(204)
   })
 
   it('clears only the credential, purges the listing cache, and keeps selections', async () => {

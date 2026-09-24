@@ -4,6 +4,14 @@ Everything below you can run yourself. Start with the automated layer, since it 
 
 ---
 
+## Recovery test boundary
+
+Automated tests never call live Supabase. Vitest uses mocked Supabase clients,
+mocked providers, or local SQLite; SQL-editor/schema checks are manual
+operational verification only. A successful deployed endpoint response is not a
+substitute for replaying the preserved browser state and verifying account
+progress.
+
 ## 1. Automated (30 seconds)
 
 ```bash
@@ -75,15 +83,46 @@ rehydration helper with **61.08% overall mutation score, 67.26% of covered
 mutants, 0 timeouts, and 0 errors**. Survivors are reported so they remain
 visible; this score is not a claim that the hosted path is fully hardened.
 
-The real Supabase project was checked manually in the SQL editor on 2026-09-14:
-all three tables (`synced_users`, `github_accounts`, `product_snapshots`) exist,
-and all three report `rls_enabled = true`. Tests must continue using mocks or
-local SQLite; do not put live Supabase calls in the Vitest suite.
-`apps/web/src/lib/sync/supabase-schema.test.ts` is the guard against a schema
+The real Supabase project is checked manually in the SQL editor, never from
+Vitest. The earlier check found all three tables (`synced_users`,
+`github_accounts`, `product_snapshots`) and `rls_enabled = true`. During this
+recovery iteration, live `product_snapshots` was found to be missing
+`row_version`; the operator manually applied the forward migration
+`supabase/migrations/20260919000000_repair_product_snapshots_schema.sql`.
+Verification now shows `row_version` is `NOT NULL`, there are zero null or
+duplicate versions, and existing snapshot rows were preserved. The deployed
+`GET /api/sync/product` now returns HTTP 200. This verifies the live
+schema/endpoint prerequisite only; it does not show that the client fix is
+deployed or that preserved browser data has been replayed.
+
+`apps/web/src/lib/sync/supabase-schema.test.ts` is the guard against schema
 drift the mocked-client suite cannot see: it records every column the Supabase
 adapter selects, filters on, or writes and asserts each one is declared by a
-file under `supabase/migrations/`. Apply all migrations, including
-`20260918000000_github_accounts_disconnect.sql` (`github_accounts.disconnected_at`).
+file under `supabase/migrations/`. Apply and verify all migrations, including
+`20260918000000_github_accounts_disconnect.sql`
+(`github_accounts.disconnected_at`) and
+`20260919000000_repair_product_snapshots_schema.sql` (`product_snapshots.row_version`).
+Tests must continue using mocks or local SQLite; do not put live Supabase calls
+in the Vitest suite.
+
+### XP oracle for recovery replay
+
+The replay must let the server recompute XP from normalized verified events; do
+not patch a client total or equate event count with XP. The active companion
+receives accepted XP. Current GitHub rates and caps are:
+
+| Event | XP | Current cap/guard |
+|---|---:|---|
+| Qualifying active day | 10 | Once per connected GitHub account per activity day. |
+| Work session | 10 | At most two per connected GitHub account per activity day; sessions are UTC-bucketed today. |
+| Merged pull request | 25 | One stable event per merged PR. |
+| Published release | 40 | One stable event per release. |
+| Closed linked issue | 10 | Only a linked, qualifying stable event. |
+| Successful CI on merged PR | 10 | One qualifying success per merged PR. |
+
+Meaningful commits create activity evidence; empty, generated-only, unchanged,
+repeated, and duplicate deliveries add no additional XP. Stable event IDs and
+account-wide GitHub cap buckets apply across selected repositories.
 
 ---
 
@@ -169,9 +208,27 @@ handle, 400 for a missing handle, and 404 for an unknown handle. The hosted
 `/github` page also rendered the authenticated repository picker and account
 settings.
 
-Cloud restore still needs to be exercised after this branch is deployed with
-the Vercel Supabase variables; the current browser deployment predates the
-uncommitted adapter changes.
+Cloud restore and preserved-data replay still need to be exercised after the
+fix is merged/deployed to `main-aufa` Vercel with the Vercel Supabase variables.
+The current deployed `GET /api/sync/product` returning 200 is not evidence that
+the client fix or browser replay is deployed.
+
+### Main-aufa recovery smoke (not yet passed)
+
+Run this against the `main-aufa` Vercel target only; do not use `main` or the
+GHCR-backed custom-domain production runtime for this iteration:
+
+1. Merge/deploy the fix to `main-aufa` Vercel.
+2. Open the preserved signed-in browser profile and do not clear browser storage,
+   disconnect GitHub, or delete the cloud snapshot.
+3. Replay/repair the preserved browser data and retry the signed checkpoint.
+4. Confirm the product write succeeds, the checkpoint advances, and
+   `GET /api/sync/product` contains the preserved verified events with a
+   server-recomputed non-zero XP total.
+5. Reload the browser and open a second session/device; account XP and the
+   checkpoint must remain consistent.
+6. Repeat Sync and confirm no event or XP is duplicated.
+7. Only after these checks pass, update the Phase 5.1 completion status.
 
 Repository-cache and Disconnect smoke checks (manual, on the local Next server):
 
@@ -247,7 +304,14 @@ Almost always the API base. Open the popup, check the API base URL setting, and 
 
 Not bugs, deliberate calls:
 
-- **This branch is not deployed.** The Vercel Supabase variables and schema are ready, but the adapter and cloud-restore changes remain uncommitted on `main-aufa`. A deployment verification is still required.
+- **The client recovery fix is not deployed and the incident is not resolved.**
+  The manual Supabase schema repair and deployed `GET /api/sync/product` 200
+  clear only the schema/endpoint prerequisite. The fix still must be
+  merged/deployed to `main-aufa` Vercel, preserved browser data must be
+  replayed/repaired, and account XP/checkpoint/reload/second-session checks
+  must pass before Phase 5.1 is complete. `main` and the GHCR-backed
+  custom-domain production runtime are explicitly out of scope for this
+  iteration.
 - **Hosted sync still has follow-up work.** Public-profile visibility enforcement, SQLite-to-Supabase data migration, and a real restart/redeploy end-to-end check remain open.
 - **Not on the Chrome Web Store.** Publishing distributes Pokemon sprites under your developer identity, which is a different posture from a personal project. The `SpriteSource` abstraction exists so swapping to original art is one file.
 - **Variant traits** (DESIGN.md 3.5) were dropped on purpose rather than half-built.

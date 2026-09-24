@@ -432,8 +432,13 @@ backup to move derived note history deliberately. GitHub remains the durable
 cross-device source for verified development activity.
 
 When a guest signs in, the server merges GitHub events by stable event IDs and
-imports the current companion condition and collection. Local-note history is
-not uploaded as a detailed event ledger. If local-note sync is enabled, the
+imports the current companion condition and collection. The browser namespace is
+keyed by immutable GitHub ID; the older unnamespaced GitHub archive is kept as a
+recoverable backup. Only receipt-backed generic events with demonstrated
+collection ownership are staged, while unsupported or ownerless records remain
+archived. Generic keys are removed only after a validated server response
+contains the staged events. Local-note history is not uploaded as a detailed
+event ledger. If local-note sync is enabled, the
 server receives only a private condition snapshot and sync checkpoint, so the
 same local progress is not counted twice without exposing note activity details.
 Users can keep sync off, run it manually, or enable a schedule while the
@@ -470,16 +475,20 @@ submitted snapshot, and the stored baseline must still match the checkpoint, so
 moving the transport does not weaken the tamper-proof property. The old request
 header is still accepted for compatibility. A checkpoint event ID is also
 required to be a verified GitHub event with its receipt; a local event cannot
-be substituted to advance a source baseline. When a legacy receipt fails, the
-browser stores the exact cumulative snapshot and token in the account namespace
-and may call `POST /api/github/repair` with the bounded failed IDs plus the
-short-lived signed checkpoint that named them, or with a preserved old server
-receipt for a legacy event. The server re-fetches only its own approved
-repository window and reissues a receipt
-for activity it independently confirms. It does not write a snapshot or advance
-the baseline; the existing product upload remains the commit point. A blocked
-repair can upload a valid projection without a checkpoint while retaining the
-full local ledger and encounter state for a later retry.
+be substituted to advance a source baseline. Receipt repair additionally refuses
+an ownerless checkpoint event when neither a preserved receipt nor a trusted
+cloud owner binds its companion; old activity must not attach to whichever
+companion is active today. When a legacy receipt fails, the browser stores the
+exact cumulative snapshot and token in the account namespace and may call
+`POST /api/github/repair` with the bounded failed IDs plus the short-lived signed
+checkpoint that named them, or with a preserved old server receipt for a legacy
+event. The server re-fetches only its own approved repository window and
+reissues a receipt for activity it independently confirms. It does not write a
+snapshot or advance the baseline; the existing product upload remains the commit
+point. A blocked repair can upload a valid projection without a checkpoint while
+retaining the full local ledger and encounter state for a later retry. If hosted
+storage is unavailable, the API returns an explicit retryable condition rather
+than presenting an empty account or overwriting local recovery data.
 
 ## Hosted sync storage
 

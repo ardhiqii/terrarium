@@ -6,7 +6,7 @@ This is the execution status for the product described in
 remain useful as historical implementation notes, but they are not the current
 product contract.
 
-Last reviewed: **2026-09-16**
+Last reviewed: **2026-09-19**
 
 ## Product direction
 
@@ -135,6 +135,39 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
   product state with the cloud snapshot and adopt its identity). The guard
   itself is unchanged, and each action reports its outcome in the sync summary.
 
+### Main-aufa recovery iteration (in progress)
+
+This recovery is scoped to the `main-aufa` Vercel target only. It does not
+certify `main` or the GHCR-backed custom-domain production runtime.
+
+- Live Supabase `product_snapshots` was missing `row_version`.
+- The forward migration `20260919000000_repair_product_snapshots_schema.sql`
+  was applied manually.
+- Schema verification now shows `row_version` is `NOT NULL`, there are zero null
+  or duplicate `row_version` values, and existing snapshot rows were preserved.
+- The deployed `GET /api/sync/product` now returns HTTP 200.
+- This clears a schema/endpoint prerequisite only. The client fix is not yet
+  merged/deployed to `main-aufa` Vercel, preserved browser data has not yet been
+  replayed/repaired, and account XP, checkpoint, reload, and second-session
+  verification remain open. Phase 5.1 must not be marked complete yet.
+
+Remaining gates, in order:
+
+1. Merge/deploy the fix to `main-aufa` Vercel.
+2. Replay/repair the preserved browser data without clearing browser storage.
+3. Verify account XP and checkpoint persistence after sync, reload, and a second
+   session/device.
+4. After those checks pass, update the Phase 5.1 completion status.
+
+For replay assertions, XP is server-recomputed from normalized verified events;
+it is not a client-supplied total or a direct event count. The active companion
+receives accepted XP. Current GitHub rates are 10 XP for one qualifying active
+day per connected account/day, 10 XP per work session with at most two sessions
+per account/day (UTC buckets today), 25 XP per merged pull request, 40 XP per
+published release, 10 XP per closed linked issue, and 10 XP for one successful
+CI result per merged pull request. Stable IDs deduplicate deliveries, and empty,
+generated-only, unchanged, repeated, or duplicate activity adds no XP.
+
 ### Known gaps after the repository cache
 
 - The `If-None-Match` / `304` revalidation fast path is not implemented. The
@@ -168,7 +201,7 @@ collection is considered final.
 | 2 | Event ledger and basic XP | **partial, Markdown and GitHub wired; broader surfaces pending** |
 | 3 | Companion catalog, forms, and encounters | **partial, engine and PokeAPI bridge shipped** |
 | 4 | Recursive Markdown and Obsidian mounting | partial, needs upgrade |
-| 5 | GitHub verification and guest sync merge | **partial, Feature A, repository browser, and hosted hardening shipped; Vercel/Supabase deploy verification and profile migration pending** |
+| 5 | GitHub verification and guest sync merge | **partial, main-aufa recovery in progress; live schema/GET prerequisite verified; client deployment, replay, account verification, and profile migration pending** |
 | 6 | Collection UI, profiles, extension integration | **partial, extension adapter shipped; surfaces pending** |
 | 7 | Licensed marketplace providers and original art | future |
 
@@ -182,23 +215,27 @@ Persist compact per-file scan summaries so changes made while the website is
 closed can be detected without storing a second copy of a large vault in
 ordinary localStorage. Keep the raw note boundary local.
 
-### 2. Verify hosted GitHub persistence and ledger checkpoints
+### 2. Complete the main-aufa recovery replay
 
-The GitHub source now has repository selection, encrypted server credentials,
-stable-ID baselines, attributed commit evidence, a `/github` sync surface, and
-server-issued verified event receipts. Supabase storage, immutable account
-keys, optimistic writes, and replay-safe product IDs are now implemented.
-Deploy and exercise OAuth, repository selection, baselines, XP, cloud restore,
-a second device, account rename, revoked access, and a redeploy before calling
-the hosted path production-ready.
+The live Supabase prerequisite for this iteration is verified: the forward
+`product_snapshots` repair migration was applied manually, `row_version` is
+`NOT NULL` with zero null or duplicate versions, existing snapshot rows were
+preserved, and deployed `GET /api/sync/product` returns 200. This is not evidence
+that the client fix is deployed or that the incident is resolved.
+
+The remaining gates are to merge/deploy the fix to `main-aufa` Vercel, replay or
+repair the preserved browser data, and verify account XP and checkpoint
+persistence after sync, reload, and a second session/device. Only then should
+Phase 5.1 be marked complete. `main` and the GHCR-backed custom-domain
+production runtime are explicitly out of scope for this recovery iteration.
 
 The progress timezone described in [`PRODUCT.md`](PRODUCT.md) section 5 is **not
 implemented**: days and sessions are currently bucketed in UTC, so a commit made
 late in the local evening can land on the previous day for a user east of UTC.
 The sync window is also bounded by page ceilings, so only the newest page of each
 activity list is read; the sync reports this as truncation rather than claiming a
-complete catch-up. Repository pagination beyond the collection cap, and a first
-real Vercel plus Supabase deployment verification, remain open.
+complete catch-up. Repository pagination beyond the collection cap, and broader
+hosted-path/profile migration work, remain open.
 
 ### 3. Complete public profile privacy and account lifecycle
 

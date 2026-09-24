@@ -63,11 +63,11 @@ const repository = {
   canRead: true,
 }
 
-function request(body: unknown): NextRequest {
+function request(body: unknown, extraHeaders: HeadersInit = {}): NextRequest {
   return new NextRequest('http://localhost/api/github/repair', {
     method: 'POST',
     body: JSON.stringify(body),
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...extraHeaders },
   })
 }
 
@@ -145,15 +145,61 @@ describe('POST /api/github/repair', () => {
     })
   })
 
+  it('rejects a malformed or mismatched account header before repair work', async () => {
+    const malformed = await POST(request(repairBody(['event-12345678-abcdef12']), {
+      'x-terrarium-github-id': '9001x',
+    }))
+    expect(malformed.status).toBe(409)
+    expect(await malformed.json()).toEqual({ error: 'account_changed' })
+
+    const mismatched = await POST(request(repairBody(['event-12345678-abcdef12']), {
+      'x-terrarium-github-id': '9002',
+    }))
+    expect(mismatched.status).toBe(409)
+    expect(await mismatched.json()).toEqual({ error: 'account_changed' })
+    expect(mocks.getToken).not.toHaveBeenCalled()
+    expect(mocks.getSettings).not.toHaveBeenCalled()
+    expect(mocks.fetchRepositories).not.toHaveBeenCalled()
+    expect(mocks.fetchEvents).not.toHaveBeenCalled()
+  })
+
+  it('accepts a matching account header and older requests without one', async () => {
+    const event = candidateEvent()
+    const body = {
+      ...repairBody([event.eventId]),
+      proofs: { [event.eventId]: issueVerifiedEventProof(event, 9001) },
+    }
+    const response = await POST(request(body, {
+      'x-terrarium-github-id': '9001',
+    }))
+    expect(response.status).toBe(200)
+    expect((await response.json()).repaired).toHaveLength(1)
+
+    const legacy = await POST(request(body))
+    expect(legacy.status).toBe(200)
+  })
+
+  it('does not bind an ownerless checkpoint event to the active companion', async () => {
+    const response = await POST(request(repairBody([candidateEventId()])))
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body.repaired).toEqual([])
+    expect(body.blocked[0]).toMatchObject({ reason: 'event-owner-unavailable' })
+  })
+
   it('re-reads server-approved activity and issues a fresh receipt without mutating the checkpoint', async () => {
-    const eventId = candidateEventId()
-    const response = await POST(request(repairBody([eventId])))
+    const event = candidateEvent()
+    const response = await POST(request({
+      ...repairBody([event.eventId]),
+      proofs: { [event.eventId]: issueVerifiedEventProof(event, 9001) },
+    }))
     const body = await response.json()
 
     expect(response.status).toBe(200)
     expect(body.repaired).toHaveLength(1)
     expect(body.blocked).toEqual([])
-    expect(body.repaired[0]).toMatchObject({ eventId, proof: expect.any(String) })
+    expect(body.repaired[0]).toMatchObject({ eventId: event.eventId, proof: expect.any(String) })
     expect(verifyVerifiedEventProof(body.repaired[0].event, 9001, body.repaired[0].proof)).toBe(true)
     expect(mocks.fetchEvents).toHaveBeenCalledWith(expect.objectContaining({
       token: 'server-token',

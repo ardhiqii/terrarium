@@ -51,6 +51,12 @@ const SYNC_USAGE_KEY = 'terrarium:github-sync-usage'
 const SYNC_RECOVERY_KEY = 'terrarium:github-sync-recovery'
 const PRODUCT_EVENT_ID = PRODUCT_EVENT_ID_PATTERN
 
+// A browser can expose localStorage but refuse reads/writes (privacy mode,
+// blocked third-party storage, quota, or a disabled origin). Keep the local-first
+// runtime alive in that case; the in-memory copy is intentionally a best-effort
+// session fallback, never a reason to clear or overwrite the durable archive.
+const memoryFallback = new Map<string, string>()
+
 export interface BrowserProductStorage extends GuestProfileStorage {}
 
 /**
@@ -96,9 +102,32 @@ function namespacedKey(key: string, namespace?: string): string {
 
 export function browserProductStorage(): BrowserProductStorage {
   return {
-    getItem: (key) => window.localStorage.getItem(key),
-    setItem: (key, value) => window.localStorage.setItem(key, value),
-    removeItem: (key) => window.localStorage.removeItem(key),
+    getItem: (key) => {
+      if (memoryFallback.has(key)) return memoryFallback.get(key) ?? null
+      try {
+        return typeof window === 'undefined' ? null : window.localStorage.getItem(key)
+      } catch {
+        return null
+      }
+    },
+    setItem: (key, value) => {
+      try {
+        if (typeof window === 'undefined') throw new Error('localStorage is unavailable')
+        window.localStorage.setItem(key, value)
+        memoryFallback.delete(key)
+      } catch {
+        memoryFallback.set(key, value)
+      }
+    },
+    removeItem: (key) => {
+      memoryFallback.delete(key)
+      try {
+        if (typeof window !== 'undefined') window.localStorage.removeItem(key)
+      } catch {
+        // The in-memory copy was already removed; a blocked durable store is
+        // not a reason to make the current page crash.
+      }
+    },
   }
 }
 
