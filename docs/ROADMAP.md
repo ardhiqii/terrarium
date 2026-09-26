@@ -203,8 +203,16 @@ real Vercel plus Supabase deployment verification, remain open.
 ### 3. Complete public profile privacy and account lifecycle
 
 Gate `/u/[handle]`, leaderboard rows, and extension payloads behind the existing
-opt-in visibility policy. Add explicit disconnect, cloud-delete, guest export,
-and account-switch flows before exposing public companion state widely.
+opt-in visibility policy.
+
+**Partially shipped:** `/u/[handle]` and the leaderboard rows are now gated by a
+persisted per-account visibility choice (`profile-visibility-store.ts`, keyed by
+immutable GitHub id, default PRIVATE). The owner can toggle it via
+`GET`/`PUT /api/profile/visibility`, and a hidden profile reveals nothing — not
+the creature, not the counts. Still to do: gate the extension payload, add a
+visibility control to the account surface, and add explicit disconnect,
+cloud-delete, guest export, and account-switch flows before exposing public
+companion state widely.
 
 ### 4. Replace legacy collection surfaces
 
