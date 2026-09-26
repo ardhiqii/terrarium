@@ -28,8 +28,12 @@ COPY --from=build /app/apps/web/.next/standalone/ ./
 COPY --from=build /app/apps/web/.next/static ./apps/web/.next/static
 COPY --from=build /app/apps/web/public ./apps/web/public
 
-# Non-root user
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# Non-root user, plus a writable data dir for the SQLite fallback store.
+# Ownership matters: when a *fresh* named volume is mounted at /data, Docker
+# copies this directory's ownership into it, so the store can create its file
+# on first run instead of failing with "unable to open database file".
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup \
+    && mkdir -p /data && chown -R appuser:appgroup /data
 USER appuser
 
 EXPOSE 3101
