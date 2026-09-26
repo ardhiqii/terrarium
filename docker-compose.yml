@@ -16,10 +16,12 @@ services:
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
       - SESSION_SECRET=${SESSION_SECRET:-}
       - AUTH_BASE_URL=${AUTH_BASE_URL:-}
-      - SYNC_STORE=${SYNC_STORE:-supabase}
+      - SYNC_STORE=${SYNC_STORE:-sqlite}
       - SUPABASE_URL=${SUPABASE_URL:-}
       - SUPABASE_SECRET_KEY=${SUPABASE_SECRET_KEY:-}
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
+      # SQLite fallback lives on a mounted volume, never inside the image.
+      - SYNC_DB_PATH=/data/sync.db
     ports:
       # localhost-only: Cloudflare tunnel reaches it, internet never hits it raw.
       - "127.0.0.1:3101:3101"
@@ -28,5 +30,10 @@ services:
         limits:
           memory: 512M
           cpus: "1.0"
+    volumes:
+      - terrarium-data:/data
     cap_drop:
       - ALL
+
+volumes:
+  terrarium-data:
