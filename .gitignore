@@ -59,3 +59,6 @@ reports/
 # host-side deploy artifacts (home server)
 deploy.log
 deploy-terrarium.sh
+
+# Local-only agent working agreement (per-machine; see LOCAL.md)
+/LOCAL.md

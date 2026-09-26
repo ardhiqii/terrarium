@@ -10,12 +10,14 @@
  * navigation changed width depending on who you were.
  *
  * So signed-in-only destinations live in here instead. The nav row is now the
- * same eight links for everyone, and everything account-shaped is one compact
+ * same source and content links for everyone, and everything account-shaped is one compact
  * control behind a divider. Nothing reflows at sign in.
  */
 
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { loginHrefFor } from '@/lib/sync/oauth-return-path'
 
 export interface AccountMenuProps {
   signedIn: boolean
@@ -38,6 +40,7 @@ export default function AccountMenu({
   onSignOut,
   variant = 'menu',
 }: AccountMenuProps) {
+  const pathname = usePathname()
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
@@ -76,8 +79,9 @@ export default function AccountMenu({
     return (
       // A plain anchor, not next/link: this leaves the app for github.com via
       // a server redirect, so client-side navigation would break the flow.
+      // The current path rides along so authorizing returns here, not home.
       <a
-        href="/api/auth/login"
+        href={loginHrefFor(pathname)}
         className="font-ui px-3 py-1.5 text-sm whitespace-nowrap transition-colors hover:opacity-70"
         style={{ color: 'var(--ink-muted)' }}
       >

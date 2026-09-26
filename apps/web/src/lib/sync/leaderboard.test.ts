@@ -62,4 +62,34 @@ describe('buildLeaderboardEntries', () => {
   it('returns [] for an empty input', () => {
     expect(buildLeaderboardEntries([], 'alice')).toEqual([])
   })
+
+  it('excludes accounts that have not opted in to a public profile', () => {
+    const users = [
+      makeUser('public-alice', 100, { githubId: 1 }),
+      makeUser('private-bob', 900, { githubId: 2 }),
+    ]
+    const entries = buildLeaderboardEntries(users, null, { publicGithubIds: new Set([1]) })
+    expect(entries.map((e) => e.handle)).toEqual(['public-alice'])
+  })
+
+  it('always keeps the viewer row even when they have not opted in', () => {
+    const users = [
+      makeUser('me', 100, { githubId: 1 }),
+      makeUser('other', 900, { githubId: 2 }),
+    ]
+    // Nobody has opted in; the viewer still sees their own row.
+    const entries = buildLeaderboardEntries(users, 'me', { publicGithubIds: new Set() })
+    expect(entries.map((e) => e.handle)).toEqual(['me'])
+    expect(entries[0].isViewer).toBe(true)
+  })
+
+  it('filters by immutable github id, not by handle', () => {
+    // Two accounts, same visible handle shape; only id 42 opted in.
+    const users = [
+      makeUser('ghost', 500, { githubId: 42 }),
+      makeUser('ghost2', 600, { githubId: 43 }),
+    ]
+    const entries = buildLeaderboardEntries(users, null, { publicGithubIds: new Set([42]) })
+    expect(entries.map((e) => e.handle)).toEqual(['ghost'])
+  })
 })

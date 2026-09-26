@@ -20,6 +20,7 @@ import {
 } from './encounters'
 import { resolveCompanionProgression, type CompanionCatalog } from './companion-catalog'
 import type { GuestCollectionReference, GuestProfile } from './guest-profile'
+import { canonicalizeProductEvent } from '../sync/product-event-id'
 
 export interface ProductCompanionState {
   companionId: string
@@ -51,6 +52,64 @@ export interface ApplyProductEventsOptions {
 
 function sortedIds(events: readonly NormalizedEvent[]): string {
   return events.map((event) => event.eventId).sort().join('|')
+}
+
+interface MergedProductEvents {
+  ledger: EventLedger
+  newEvents: readonly NormalizedEvent[]
+}
+
+/**
+ * Merge source deliveries by stable ID while allowing verified evidence to
+ * replace an older record. A replacement is ledger-only: it is not a new
+ * activity event and must not drive XP or encounter progression a second time.
+ */
+function mergeProductEvents(
+  ledger: EventLedger,
+  incoming: readonly NormalizedEvent[],
+): MergedProductEvents {
+  const eventsById = new Map<string, NormalizedEvent>()
+  for (const event of ledger.events) {
+    // Canonicalize restored/legacy records too. Otherwise a raw provider cap
+    // key can coexist with its opaque snapshot form and bypass one shared cap
+    // bucket after a browser reload.
+    const canonical = canonicalizeProductEvent(event)
+    // Keep the ledger's existing first-write rule even if a caller supplies a
+    // hand-built ledger instead of one produced by addEvents.
+    if (!eventsById.has(canonical.eventId)) eventsById.set(canonical.eventId, canonical)
+  }
+  const newEvents: NormalizedEvent[] = []
+  const newEventIndexes = new Map<string, number>()
+
+  for (const event of incoming) {
+    const existing = eventsById.get(event.eventId)
+    if (!existing) {
+      newEventIndexes.set(event.eventId, newEvents.length)
+      newEvents.push(event)
+      eventsById.set(event.eventId, event)
+      continue
+    }
+
+    // Verified evidence is authoritative for an existing stable ID. A local
+    // replay can never replace a verified record, while a later verified
+    // delivery refreshes the newest metadata/cap/provenance in the ledger.
+    // Keep the original companion owner when a provider scan arrives after the
+    // user switched active companions: the receipt route preserves that owner
+    // too, and accepting a differently-bound receipt here would move old XP.
+    if (event.provenance === 'verified' && (
+      existing.provenance !== 'verified' || event.companionId === existing.companionId
+    )) {
+      eventsById.set(event.eventId, event)
+      const newEventIndex = newEventIndexes.get(event.eventId)
+      if (newEventIndex !== undefined) newEvents[newEventIndex] = event
+    }
+  }
+
+  return {
+    // Re-run the normal ledger validation/deduplication on the merged records.
+    ledger: addEvents({ events: [] }, [...eventsById.values()]),
+    newEvents,
+  }
 }
 
 function referencesByCompanion(
@@ -114,9 +173,8 @@ export function applyProductEvents(
   catalog: CompanionCatalog,
   options: ApplyProductEventsOptions = {},
 ): ProductState {
-  const known = new Set(state.ledger.events.map((event) => event.eventId))
-  const newEvents = incoming.filter((event) => !known.has(event.eventId))
-  const ledger = addEvents(state.ledger, newEvents)
+  const canonicalIncoming = incoming.map(canonicalizeProductEvent)
+  const { ledger, newEvents } = mergeProductEvents(state.ledger, canonicalIncoming)
   if (newEvents.length === 0) return createProductState(state.profile, ledger, state.encounters, catalog)
 
   const token = sortedIds(newEvents)

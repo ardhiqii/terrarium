@@ -27,13 +27,17 @@ import {
   getOAuthConfig,
   resolveRedirectUri,
 } from '@/lib/sync/github-oauth'
+import { safeReturnPath } from '@/lib/sync/oauth-return-path'
 import {
+  OAUTH_RETURN_COOKIE,
   OAUTH_STATE_COOKIE,
   SESSION_COOKIE_NAME,
   encodeSessionCookie,
   getSessionSecret,
   sessionCookieOptions,
 } from '@/lib/sync/session-cookie'
+import { getGithubAccountStore } from '@/lib/sync/github-account-store'
+import { purgeGithubRepositoryCache } from '@/lib/sync/github-repository-cache'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -52,13 +56,27 @@ function statesMatch(a: string, b: string): boolean {
 }
 
 /**
- * Send the user home, signed out, and always clear the one-shot state cookie
- * so a failed attempt cannot be replayed.
+ * Send the browser back where it came from and clear both one-shot cookies, so
+ * a failed attempt cannot be replayed. The return path is re-validated here:
+ * it has been through a cookie, and a cookie is not a trusted channel.
  */
-function failed(request: NextRequest): NextResponse {
-  const response = NextResponse.redirect(new URL('/?signin=failed', request.nextUrl.origin))
+function backToOrigin(request: NextRequest, params?: Record<string, string>): NextResponse {
+  const url = new URL(
+    safeReturnPath(request.cookies.get(OAUTH_RETURN_COOKIE)?.value),
+    request.nextUrl.origin,
+  )
+  if (params) {
+    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value)
+  }
+  const response = NextResponse.redirect(url)
   response.cookies.delete(OAUTH_STATE_COOKIE)
+  response.cookies.delete(OAUTH_RETURN_COOKIE)
   return response
+}
+
+/** Send the user back, signed out, with an honest flag the UI can render. */
+function failed(request: NextRequest): NextResponse {
+  return backToOrigin(request, { signin: 'failed' })
 }
 
 export async function GET(request: NextRequest): Promise<Response> {
@@ -71,9 +89,7 @@ export async function GET(request: NextRequest): Promise<Response> {
   // The user pressed "Cancel" on GitHub's authorize screen. Not an error
   // worth surfacing as one; just put them back where they started.
   if (params.get('error')) {
-    const response = NextResponse.redirect(new URL('/', request.nextUrl.origin))
-    response.cookies.delete(OAUTH_STATE_COOKIE)
-    return response
+    return backToOrigin(request)
   }
 
   const code = params.get('code')
@@ -90,14 +106,23 @@ export async function GET(request: NextRequest): Promise<Response> {
   const identity = await fetchGithubIdentity(token)
   if (!identity) return failed(request)
 
-  // The token has now done its entire job. It is not stored anywhere, which
-  // is why the app does not care whether GitHub expires it.
-  const response = NextResponse.redirect(new URL('/', request.nextUrl.origin))
+  // Keep the token server-side for repository reads. It never enters the
+  // signed identity cookie or a response body.
+  try {
+    await getGithubAccountStore().putCredential(identity, token, [])
+  } catch {
+    return failed(request)
+  }
+  // A re-auth can grant a different scope or land on a different account, so
+  // the previous repository listing must not be inherited from the cache.
+  purgeGithubRepositoryCache(identity.githubId)
+
+  // Return the user to the page they started from rather than the home page.
+  const response = backToOrigin(request)
   response.cookies.set(
     SESSION_COOKIE_NAME,
     encodeSessionCookie(identity, secret),
     sessionCookieOptions()
   )
-  response.cookies.delete(OAUTH_STATE_COOKIE)
   return response
 }

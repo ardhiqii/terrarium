@@ -24,7 +24,66 @@ This runs Stryker, which deliberately introduces bugs into the XP engine and che
 
 Report opens at `reports/mutation/mutation.html`.
 
-Current: **70.69%** across 7 modules. Do not chase 100%. A large share of survivors are provably equivalent mutants, meaning no input can distinguish them, and a good chunk of the rest are blanked display strings the suite intentionally does not assert. `reports/mutation/mutation.html` shows exactly which.
+Current: **69.00% overall / 71.01% of covered mutants** across 7 legacy game modules. The latest full run had 559 killed, 229 survived, 23 with no coverage, 2 timeouts, and 0 errors. Do not chase 100%. A large share of survivors are provably equivalent mutants, meaning no input can distinguish them, and a good chunk of the rest are blanked display strings the suite intentionally does not assert. `reports/mutation/mutation.html` shows exactly which.
+
+### Hosted sync validation
+
+The Supabase adapter has a separate focused mutation run because the default
+configuration still targets the legacy game modules:
+
+```powershell
+npx vitest run apps/web/src/lib/sync/supabase-client.test.ts apps/web/src/lib/sync/supabase-store.test.ts apps/web/src/lib/sync/supabase-product-store.test.ts apps/web/src/lib/sync/supabase-github-account-store.test.ts apps/web/src/app/api/sync/product/route.test.ts
+```
+
+The focused integration contracts cover adapter serialization, normalization,
+errors, product POST/GET/DELETE, optimistic writes, server-issued GitHub
+receipts, deferred checkpoint recovery, replay-safe merging, guest conflicts,
+payload validation, repository selection, browser receipt persistence, and size
+limits. Keep the focused command above scoped to the changed files when adding
+new sync hardening tests.
+
+Receipt recovery has a focused route contract with no live GitHub calls:
+`npx vitest run apps/web/src/app/api/github/repair/route.test.ts apps/web/src/lib/sync/github-receipt-repair.test.ts apps/web/src/lib/sync/github-source-policy.test.ts apps/web/src/lib/game/product-browser-storage.test.ts`.
+It covers server-owned re-reads, signed-checkpoint or preserved-receipt
+authorization, invented/untracked activity, partial reads, the 16-repository window, bounded
+diagnostics, namespace recovery persistence, and proof replacement without
+erasing unrelated receipts. The real-route
+round-trip in `apps/web/src/app/api/sync/product/github-sync-roundtrip.test.ts`
+also covers a legacy cap/metadata receipt mismatch, preserved encounters,
+checkpoint commit, and replay-safe XP. The product route rejects local-event
+substitution in a signed checkpoint, and both account-store adapters keep the
+successful checkpoint timestamp monotonic.
+
+The large-account baseline path has its own end-to-end contract:
+`apps/web/src/app/api/sync/product/github-sync-roundtrip.test.ts` drives both
+real routes and both SQLite stores with only the GitHub providers mocked. It
+pins the failures that made a 44-repository account unable to bank XP: the
+whole tracked set is baselined window by window with no repository stranded, a
+checkpoint over more than 500 event IDs is issued and committed, and the
+checkpoint reaches `/api/sync/product` in the request body rather than a request
+header. `apps/web/src/lib/sync/sync-schedule.test.ts` pins the automatic-sync
+cadence and its GitHub request budget (a window's worth of repositories, not the
+whole tracked set, so the documented choices stay affordable) and the derived
+window invariant (`MAX_SYNC_REPOSITORIES` x `MAX_EVENTS_PER_REPOSITORY` must fit
+inside `MAX_CHECKPOINT_EVENT_IDS`);
+`apps/web/src/app/api/github/sync/route.test.ts` proves a heavy full window is
+never rejected by the checkpoint validator. `apps/web/src/lib/sync/github-sync-checkpoint.test.ts`
+proves a full window of worst-case events plus 500-entry baseline maps still fits
+the signed-token bound.
+The latest focused mutation run covered the Supabase adapters and cloud
+rehydration helper with **61.08% overall mutation score, 67.26% of covered
+mutants, 0 timeouts, and 0 errors**. Survivors are reported so they remain
+visible; this score is not a claim that the hosted path is fully hardened.
+
+The real Supabase project was checked manually in the SQL editor on 2026-09-14:
+all three tables (`synced_users`, `github_accounts`, `product_snapshots`) exist,
+and all three report `rls_enabled = true`. Tests must continue using mocks or
+local SQLite; do not put live Supabase calls in the Vitest suite.
+`apps/web/src/lib/sync/supabase-schema.test.ts` is the guard against a schema
+drift the mocked-client suite cannot see: it records every column the Supabase
+adapter selects, filters on, or writes and asserts each one is declared by a
+file under `supabase/migrations/`. Apply all migrations, including
+`20260918000000_github_accounts_disconnect.sql` (`github_accounts.disconnected_at`).
 
 ---
 
@@ -100,7 +159,67 @@ To use it once deployed:
 
 ---
 
-## 5. The extension
+## 5. Browser smoke / E2E
+
+There is no Playwright/Cypress runner in this repository yet, so this is a
+real-browser smoke check rather than a committed automated E2E suite. On the
+local Next server, the home, companions, notes, projects, graph, and preview
+pages loaded without runtime errors. The creature API returned 200 for a valid
+handle, 400 for a missing handle, and 404 for an unknown handle. The hosted
+`/github` page also rendered the authenticated repository picker and account
+settings.
+
+Cloud restore still needs to be exercised after this branch is deployed with
+the Vercel Supabase variables; the current browser deployment predates the
+uncommitted adapter changes.
+
+Repository-cache and Disconnect smoke checks (manual, on the local Next server):
+
+1. Open `/github`. The picker paints the last known list and labels it with how
+   old it is; the count and freshness label appear above the repository browser.
+2. Reload `/github`. The list must be on screen in the first frame — no
+   “Checking GitHub access…” flash — and the network tab must still show one
+   `GET /api/github/repositories` (the paint is a cache, not the source).
+3. Click **Refresh list**. The label updates and the request carries
+   `?refresh=1`.
+4. Go offline (devtools or network), reload. The list stays visible and the
+   label reads `cached · unavailable · updated …`.
+5. Open `/github` in a browser profile that has previously used a different
+   GitHub account. The second account must never see the first account's
+   repository names, not even for a frame after a failed refresh.
+6. Click **Disconnect GitHub**, then **Confirm disconnect**. The status turns to
+   “Not connected”, the message says earned XP was kept, and the companion and
+   activity panels stay visible. `DELETE /api/github/repositories` answers 204
+   and `DELETE /api/sync/product` is not called.
+7. Sign in again. The token is stored afresh, the repository choices are still
+   selected, and the first sync re-baselines instead of backfilling XP.
+
+Automated guards for the same paths (offline, no live calls):
+
+- `apps/web/src/lib/sync/github-repositories.test.ts` — a short page with
+  `Link: rel="next"` keeps walking instead of ending the listing early; a walk
+  that reaches the page ceiling with a successor is `truncated`; a mid-walk
+  failure discards the pages already read instead of caching a partial list.
+- `apps/web/src/lib/sync/github-repository-cache.test.ts` — concurrent reads
+  for one account share a single provider call; a purge (disconnect, re-auth)
+  is never undone by an in-flight read; a backwards clock revalidates instead
+  of serving the entry as fresh; a concurrent read for a different account is
+  independent.
+- `apps/web/src/lib/game/github-repository-browser-cache.test.ts` — a degraded
+  response cannot replace a newer stored listing; the failed-refresh decision
+  keeps the visible list only for the account the server answered for and
+  drops it for a different account.
+- `apps/web/src/app/api/github/repositories/route.test.ts` — an oversized
+  chunked body answers 413 even without a `content-length` header; refresh
+  values that are not `1`/`true` keep the cache entry; malformed settings,
+  prototype keys, tracked+excluded conflicts, and unknown IDs still answer 400;
+  automatic failed reads never clear the credential; a stale listing reports
+  its original read time.
+- `apps/web/src/lib/sync/github-account-store.test.ts` — opening the store on a
+  legacy development database adds the disconnect column without losing rows,
+  and disconnect leaves another account's choices untouched.
+
+## 6. The extension
 
 **This is the only part no test covers.** Its logic is unit tested, but nothing verifies it renders on a real GitHub page. That check needs you.
 
@@ -124,11 +243,12 @@ Almost always the API base. Open the popup, check the API base URL setting, and 
 
 ---
 
-## 6. What is not done
+## 7. What is not done
 
 Not bugs, deliberate calls:
 
-- **Not deployed.** Everything runs locally. Until it is on Vercel and the extension points at a public origin, none of it works for anyone but you.
+- **This branch is not deployed.** The Vercel Supabase variables and schema are ready, but the adapter and cloud-restore changes remain uncommitted on `main-aufa`. A deployment verification is still required.
+- **Hosted sync still has follow-up work.** Public-profile visibility enforcement, SQLite-to-Supabase data migration, and a real restart/redeploy end-to-end check remain open.
 - **Not on the Chrome Web Store.** Publishing distributes Pokemon sprites under your developer identity, which is a different posture from a personal project. The `SpriteSource` abstraction exists so swapping to original art is one file.
 - **Variant traits** (DESIGN.md 3.5) were dropped on purpose rather than half-built.
 - **`/graph` node labels overlap** on first render. Pre-existing, from the force-layout library settling.

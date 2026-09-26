@@ -14,7 +14,9 @@
 import { randomBytes } from 'node:crypto'
 import { NextRequest, NextResponse } from 'next/server'
 import { buildAuthorizeUrl, getOAuthConfig, resolveRedirectUri } from '@/lib/sync/github-oauth'
+import { safeReturnPath } from '@/lib/sync/oauth-return-path'
 import {
+  OAUTH_RETURN_COOKIE,
   OAUTH_STATE_COOKIE,
   getSessionSecret,
   sessionCookieOptions,
@@ -45,11 +47,14 @@ export async function GET(request: NextRequest): Promise<Response> {
   }
 
   const state = randomBytes(32).toString('base64url')
+  // Remember where the user was, so authorization returns them there instead of
+  // dropping them on the home page. Validated here and again in the callback,
+  // because a cookie is not a trusted channel.
+  const returnPath = safeReturnPath(request.nextUrl.searchParams.get('next'))
   const redirectUri = resolveRedirectUri(request.nextUrl.origin)
 
-  const response = NextResponse.redirect(
-    buildAuthorizeUrl({ clientId: config.clientId, state, redirectUri })
-  )
+  const response = NextResponse.redirect(buildAuthorizeUrl({ clientId: config.clientId, state, redirectUri }))
   response.cookies.set(OAUTH_STATE_COOKIE, state, sessionCookieOptions(STATE_MAX_AGE_SECONDS))
+  response.cookies.set(OAUTH_RETURN_COOKIE, returnPath, sessionCookieOptions(STATE_MAX_AGE_SECONDS))
   return response
 }

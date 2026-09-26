@@ -13,6 +13,7 @@
     "test:mutation": "stryker run"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.116.0",
     "@tailwindcss/typography": "^0.5.19",
     "@tiptap/react": "^3.29.2",
     "@tiptap/starter-kit": "^3.29.2",

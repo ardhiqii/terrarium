@@ -19,6 +19,8 @@ import {
   type Provenance,
   type SourceKind,
 } from '../game/events'
+import { createProductState, type ProductState } from '../game/product-state'
+import type { CompanionCatalog } from '../game/companion-catalog'
 import type {
   EncounterState,
   PersistedEncounterDraw,
@@ -28,7 +30,8 @@ import type {
   GuestProfile,
   LocalSourceBaseline,
 } from '../game/guest-profile'
-import type { ProductCompanionState, ProductState } from '../game/product-state'
+import type { ProductCompanionState } from '../game/product-state'
+import { productEventId } from './product-event-id'
 
 export const PRODUCT_SNAPSHOT_SCHEMA_VERSION = 1
 /** Descriptive alias for callers that distinguish this from the legacy snapshot. */
@@ -53,6 +56,8 @@ export interface ProductSnapshotEvent {
   readonly provenance: Provenance
   readonly category: EventCategory
   readonly occurredAt: string
+  /** Server-issued HMAC receipt for verified GitHub events. */
+  readonly verifiedProof?: string
   readonly cap?: { readonly key: string; readonly limit: number }
   readonly metadata?: ProductEventMetadata
 }
@@ -214,8 +219,19 @@ function assertEnum<T extends string>(value: unknown, values: readonly T[], fiel
   }
 }
 
-/** A deterministic opaque ID suitable for sync while remaining stable across devices. */
+const OPAQUE_ID_SUFFIX = /^[0-9a-f]{8}-[0-9a-f]{8}$/u
+
+/**
+ * A deterministic opaque ID suitable for sync while remaining stable across devices.
+ *
+ * Idempotent by design, like `productEventId`: a restored snapshot only carries
+ * the opaque value, so re-snapshotting it must reproduce the exact same string
+ * (the server receipt signs the cap key, and a second hash would break it).
+ */
 function opaqueId(value: string, prefix: string): string {
+  if (prefix === 'event') return productEventId(value)
+  const marker = `${prefix}-`
+  if (value.startsWith(marker) && OPAQUE_ID_SUFFIX.test(value.slice(marker.length))) return value
   let first = 2166136261
   let second = 2246822519
   for (let index = 0; index < value.length; index += 1) {
@@ -232,11 +248,19 @@ function safeMetadata(metadata: Readonly<Record<string, EventMetadataValue>> | u
   if (typeof metadata.activityCount === 'number') result.activityCount = metadata.activityCount
   if (typeof metadata.bucket === 'number') result.bucket = metadata.bucket
   if (typeof metadata.number === 'number') result.number = metadata.number
-  if (typeof metadata.repositoryId === 'string') result.repositoryIdHash = opaqueId(metadata.repositoryId, 'repo')
-  if (typeof metadata.linkedPullRequestId === 'string') {
+  if (typeof metadata.repositoryIdHash === 'string') {
+    result.repositoryIdHash = metadata.repositoryIdHash
+  } else if (typeof metadata.repositoryId === 'string') {
+    result.repositoryIdHash = opaqueId(metadata.repositoryId, 'repo')
+  }
+  if (typeof metadata.linkedPullRequestIdHash === 'string') {
+    result.linkedPullRequestIdHash = metadata.linkedPullRequestIdHash
+  } else if (typeof metadata.linkedPullRequestId === 'string') {
     result.linkedPullRequestIdHash = opaqueId(metadata.linkedPullRequestId, 'pr')
   }
-  if (typeof metadata.pullRequestId === 'string') {
+  if (typeof metadata.pullRequestIdHash === 'string') {
+    result.pullRequestIdHash = metadata.pullRequestIdHash
+  } else if (typeof metadata.pullRequestId === 'string') {
     result.pullRequestIdHash = opaqueId(metadata.pullRequestId, 'pr')
   }
   if (typeof metadata.sessionBucket === 'string' && /^\d{4}-\d{2}-\d{2}-\d+$/u.test(metadata.sessionBucket)) {
@@ -245,14 +269,21 @@ function safeMetadata(metadata: Readonly<Record<string, EventMetadataValue>> | u
   return Object.keys(result).length > 0 ? result : undefined
 }
 
-function snapshotEvent(event: NormalizedEvent): ProductSnapshotEvent {
+export function productSnapshotEvent(
+  event: NormalizedEvent,
+  verifiedProof?: string,
+  downgradeUnprovenVerified = false,
+): ProductSnapshotEvent {
+  const eventId = opaqueId(event.eventId, 'event')
+  const trustedVerified = event.provenance !== 'verified' || Boolean(verifiedProof)
   return {
-    eventId: opaqueId(event.eventId, 'event'),
+    eventId,
     companionId: event.companionId,
     source: event.source,
-    provenance: event.provenance,
+    provenance: downgradeUnprovenVerified && !trustedVerified ? 'local' : event.provenance,
     category: event.category,
     occurredAt: event.occurredAt,
+    ...(trustedVerified && verifiedProof ? { verifiedProof } : {}),
     ...(event.cap
       ? { cap: { key: opaqueId(event.cap.key, 'cap'), limit: event.cap.limit } }
       : {}),
@@ -343,6 +374,7 @@ function snapshotEncounters(encounters: EncounterState): ProductSnapshotEncounte
 export function buildProductSnapshot(
   state: ProductState,
   generatedAt = new Date().toISOString(),
+  verifiedProofs: Readonly<Record<string, string>> = {},
 ): ProductSnapshot {
   const profile = state.profile
   const snapshot: ProductSnapshot = {
@@ -356,7 +388,10 @@ export function buildProductSnapshot(
     collection: profile.collection.map(snapshotCollectionReference),
     sourceBaselines: profile.sourceBaselines.map(snapshotBaseline),
     recoverabilityWarning: { ...profile.recoverabilityWarning },
-    events: state.ledger.events.map(snapshotEvent),
+    events: state.ledger.events.map((event) => {
+      const eventId = opaqueId(event.eventId, 'event')
+      return productSnapshotEvent(event, verifiedProofs[eventId], true)
+    }),
     encounters: snapshotEncounters(state.encounters),
   }
   validateProductSnapshot(snapshot)
@@ -395,13 +430,17 @@ function validateMetadata(value: unknown, field: string): asserts value is Produ
 function validateEvent(value: unknown, index: number): asserts value is ProductSnapshotEvent {
   const field = `events[${index}]`
   if (!isRecord(value)) throw new TypeError(`${field} must be an object`)
-  assertExactKeys(value, ['eventId', 'companionId', 'source', 'provenance', 'category', 'occurredAt'], ['cap', 'metadata'], field)
+  assertExactKeys(value, ['eventId', 'companionId', 'source', 'provenance', 'category', 'occurredAt'], ['verifiedProof', 'cap', 'metadata'], field)
   assertNonEmptyString(value.eventId, `${field}.eventId`)
   assertNonEmptyString(value.companionId, `${field}.companionId`)
   assertEnum(value.source, SOURCE_KINDS, `${field}.source`)
   assertEnum(value.provenance, PROVENANCES, `${field}.provenance`)
   assertEnum(value.category, EVENT_CATEGORIES, `${field}.category`)
   assertTimestamp(value.occurredAt, `${field}.occurredAt`)
+  if ('verifiedProof' in value) {
+    assertNonEmptyString(value.verifiedProof, `${field}.verifiedProof`)
+    if (value.verifiedProof.length > 128) throw new TypeError(`${field}.verifiedProof is too long`)
+  }
   if ('cap' in value) {
     if (!isRecord(value.cap)) throw new TypeError(`${field}.cap must be an object`)
     assertExactKeys(value.cap, ['key', 'limit'], [], `${field}.cap`)
@@ -592,12 +631,54 @@ function unionById<T>(left: readonly T[], right: readonly T[], id: (value: T) =>
   return [...result.values()]
 }
 
+function hasHigherGithubActivityCount(
+  event: ProductSnapshotEvent,
+  existing: ProductSnapshotEvent,
+): boolean {
+  if (event.source !== 'github' || existing.source !== 'github') return false
+  // The receipt binds the companion ID. Never let a replay delivered after a
+  // companion switch move ownership of an already-awarded stable event.
+  if (event.companionId !== existing.companionId) return false
+  const activityCount = event.metadata?.activityCount
+  const existingActivityCount = existing.metadata?.activityCount
+  return typeof activityCount === 'number' &&
+    typeof existingActivityCount === 'number' &&
+    activityCount > existingActivityCount
+}
+
+function unionEvents(guest: readonly ProductSnapshotEvent[], server: readonly ProductSnapshotEvent[]): ProductSnapshotEvent[] {
+  const result = new Map<string, ProductSnapshotEvent>()
+  // The stored server event wins by default. A freshly receipt-backed event
+  // may replace an older local copy with the same stable ID so a first
+  // post-sync upload can upgrade an event without duplicating its XP. A later
+  // receipt-backed GitHub aggregate may also refresh an older receipt-backed
+  // server copy, but only when its activity count is higher.
+  for (const event of [...server, ...guest]) {
+    const existing = result.get(event.eventId)
+    const receiptBacked = event.provenance === 'verified' && Boolean(event.verifiedProof)
+    const existingReceiptBacked = existing?.provenance === 'verified' && Boolean(existing.verifiedProof)
+    const refreshesGithubAggregate = existing !== undefined &&
+      receiptBacked &&
+      existingReceiptBacked &&
+      hasHigherGithubActivityCount(event, existing)
+    if (!existing || (receiptBacked && !existingReceiptBacked) || refreshesGithubAggregate) {
+      result.set(event.eventId, event)
+    }
+  }
+  return [...result.values()]
+}
+
 function toNormalizedEvent(event: ProductSnapshotEvent): NormalizedEvent {
   const metadata: Record<string, EventMetadataValue> = {}
   if (event.metadata?.activityCount !== undefined) metadata.activityCount = event.metadata.activityCount
   if (event.metadata?.bucket !== undefined) metadata.bucket = event.metadata.bucket
   if (event.metadata?.number !== undefined) metadata.number = event.metadata.number
   if (event.metadata?.sessionBucket !== undefined) metadata.sessionBucket = event.metadata.sessionBucket
+  if (event.metadata?.repositoryIdHash !== undefined) metadata.repositoryIdHash = event.metadata.repositoryIdHash
+  if (event.metadata?.linkedPullRequestIdHash !== undefined) {
+    metadata.linkedPullRequestIdHash = event.metadata.linkedPullRequestIdHash
+  }
+  if (event.metadata?.pullRequestIdHash !== undefined) metadata.pullRequestIdHash = event.metadata.pullRequestIdHash
   return {
     eventId: asEventId(event.eventId),
     companionId: asCompanionId(event.companionId),
@@ -609,6 +690,54 @@ function toNormalizedEvent(event: ProductSnapshotEvent): NormalizedEvent {
     ...(event.cap ? { cap: event.cap } : {}),
     ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
   }
+}
+
+/**
+ * Rehydrate a browser runtime from a server snapshot.
+ *
+ * Snapshot fields intentionally contain hashes instead of local source IDs,
+ * so restored baselines are not copied into the local source observer. The
+ * event ledger and encounter history are still sufficient to rebuild XP,
+ * collection, and progression without transferring note or repository text.
+ */
+export function restoreProductStateFromSnapshot(
+  snapshot: ProductSnapshot,
+  fallbackProfile: GuestProfile,
+  catalog: CompanionCatalog,
+): ProductState {
+  validateProductSnapshot(snapshot)
+  const profile: GuestProfile = {
+    ...fallbackProfile,
+    schemaVersion: 1,
+    guestId: snapshot.guestId,
+    createdAt: snapshot.createdAt,
+    updatedAt: snapshot.updatedAt,
+    activeCompanionId: snapshot.activeCompanionId,
+    collection: snapshot.collection.map((reference) => ({ ...reference })),
+    recoverabilityWarning: { ...snapshot.recoverabilityWarning },
+  }
+  const encounters: EncounterState = {
+    meter: snapshot.encounters.meter,
+    totalProgress: snapshot.encounters.totalProgress,
+    nextSequence: snapshot.encounters.nextSequence,
+    draws: snapshot.encounters.draws.map((draw): PersistedEncounterDraw => ({
+      ...draw,
+      weights: draw.weights.map((weight) => ({
+        ...weight,
+        matchedTags: [],
+        matchedLanguages: [],
+        matchedFileTypes: [],
+      })),
+    })),
+    processedTriggerIds: [...snapshot.encounters.processedTriggerIds],
+    essenceByFamily: { ...snapshot.encounters.essenceByFamily },
+  }
+  return createProductState(
+    profile,
+    { events: snapshot.events.map(toNormalizedEvent) },
+    encounters,
+    catalog,
+  )
 }
 
 function mergeCompanions(
@@ -662,7 +791,7 @@ export function mergeGuestWithServer(guest: ProductSnapshot, server: ProductSnap
   validateProductSnapshot(server)
   if (guest.guestId !== server.guestId) throw new TypeError('Cannot merge snapshots for different guests')
 
-  const events = unionById(guest.events, server.events, (event) => event.eventId).sort(
+  const events = unionEvents(guest.events, server.events).sort(
     (left, right) => left.occurredAt.localeCompare(right.occurredAt) || left.eventId.localeCompare(right.eventId),
   )
   const collection = unionById(guest.collection, server.collection, (reference) => reference.referenceId).sort(

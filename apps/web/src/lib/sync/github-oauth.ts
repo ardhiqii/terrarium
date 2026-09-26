@@ -8,17 +8,14 @@
  * here is that a GitHub App accepts several callback URLs, so localhost and
  * the deployed origin can coexist without re-registering.
  *
- * NO SCOPES ARE REQUESTED. Identity (`login`, `id`, `avatar_url`) comes back
- * from `GET /user` on a bare user token, the friends list is public data read
- * with the server's own token in `github-following.ts`, and commit activity
- * is public too. The app therefore asks for no repository, organization, or
- * account permissions at all. If a future feature seems to need a scope, that
- * is a decision worth making loudly rather than by quietly widening this.
+ * The app is intended to be registered as a GitHub App with fine-grained
+ * read permissions. The web authorization URL stays scope-free; a classic
+ * OAuth `repo` scope would grant broader write-capable access than Terrarium
+ * needs.
  *
- * THE ACCESS TOKEN IS NEVER STORED. It is exchanged, used once to read the
- * user's identity, and dropped. What persists is our own signed session
- * cookie (`session-cookie.ts`). This is why token expiry does not matter and
- * why there is no refresh path to maintain.
+ * Access tokens are never sent to the browser. The callback stores the token
+ * through the server-only GitHub account store when repository activity is
+ * enabled; the signed session cookie still contains identity only.
  *
  * Standing rule, same as everywhere else that touches the network: every
  * failure path returns null rather than throwing.
@@ -60,11 +57,13 @@ export function buildAuthorizeUrl(params: {
   clientId: string
   state: string
   redirectUri: string
+  scope?: string
 }): string {
   const url = new URL(AUTHORIZE_URL)
   url.searchParams.set('client_id', params.clientId)
   url.searchParams.set('state', params.state)
   url.searchParams.set('redirect_uri', params.redirectUri)
+  if (params.scope?.trim()) url.searchParams.set('scope', params.scope.trim())
   return url.toString()
 }
 

@@ -70,6 +70,8 @@ Implement:
 - GitHub commit, PR, release, issue, and CI event normalization;
 - stable event IDs and deduplication;
 - per-source daily caps;
+- one account-level progress timezone with future-effective changes and no
+  retroactive event reassignment;
 - cross-source diminishing returns or a global soft XP limit;
 - active-companion XP attribution;
 - an explainable XP ledger with local or verified provenance.
@@ -157,13 +159,65 @@ progressive enhancement; one-time directory selection or drag-and-drop scanning
 must remain available where that API is unsupported. Monitoring a closed
 browser is out of scope for this phase.
 
-**Status: partial — verified event normalization and derived-only merge contracts are shipped; product sync API wiring and OAuth integration remain.**
+**Status: partial — verified event normalization, GitHub OAuth credential storage, repository selection, the first activity-sync slice, the Supabase durable-store adapter, and cloud product hydration are implemented; production deployment verification and broader account/profile migration remain.**
 
 ## Phase 5. GitHub identity and sync
 
 **Depends on:** Phases 1 and 2.
 
 Add optional GitHub sign-in and derived-state sync:
+
+### Feature A slice currently implemented
+
+- GitHub OAuth is scope-free: `/api/auth/login` sends only `client_id`,
+  `state`, and `redirect_uri`, and identity comes back from `GET /user`.
+  Repository discovery is bounded by the GitHub App's fine-grained read
+  permissions and by where the app is installed rather than by an OAuth scope,
+  and the classic `repo` scope is deliberately never requested. The explicit
+  install/permission-request flow remains open work;
+- the OAuth token is encrypted in the server-side account store and never
+  placed in the browser session cookie or API response;
+- `/github` lists the repositories GitHub makes available in a searchable
+  browser with all/individual/organization filters and per-owner grouping,
+  keeps approved and tracked state distinct, and supports explicit selection
+  plus automatic inclusion for future personal repositories or selected
+  organizations. Re-enabling a repository that was untracked or excluded
+  clears its baseline, so activity from the paused window is never awarded
+  retroactively;
+- `/api/github/sync` reads only tracked, non-archived repositories, records a
+  first-use baseline per stable repository ID, filters old activity, and
+  returns verified provider-neutral events for the active companion; manual
+  exclusions override automatic personal/organization inclusion;
+- commit evidence, merged pull requests, releases, and successful CI are
+  connected to the event normalizer; attribution is filtered at the GitHub
+  boundary and the existing account-wide caps/deduplication remain in force;
+- sync fan-out is bounded per request, partial reads do not create a new
+  baseline, and a signed deferred checkpoint advances the GitHub baseline only
+  after the derived product condition is stored; failed receipt, checkpoint,
+  or product writes leave the prior checkpoint intact. Linked-issue timeline
+  extraction remains a follow-up.
+
+The current prototype expects a GitHub App registration with fine-grained read
+permissions for metadata, contents, pull requests, issues, checks/actions, and
+the required organization approval. It deliberately does not request the
+classic `repo` scope, which grants broader write-capable access. Before
+production, keep `SUPABASE_URL` and the server-only `SUPABASE_SECRET_KEY` in the
+deployment secret store and apply all three
+`supabase/migrations/20260914000000_initial_sync.sql`,
+`supabase/migrations/20260914000001_harden_product_identity.sql`, and
+`supabase/migrations/20260918000000_github_accounts_disconnect.sql`. The
+migrations enable RLS and grant access only to the server role.
+
+The Supabase adapter covers the public sync snapshot, GitHub account/settings,
+and product snapshot stores. The browser restores a blank account namespace
+from the cloud snapshot and merges same-guest local/cloud history while keeping
+source identities local. Product snapshots use immutable GitHub IDs, optimistic
+write checkpoints, server-issued GitHub event receipts, and replay-safe event
+IDs. The local SQLite adapter remains suitable for the persistent home-server
+path and local development, but not for a multi-instance/serverless
+deployment. Remaining hosted work includes public-profile visibility
+enforcement, SQLite-to-Supabase migration for existing users, and a
+restart/redeploy end-to-end test.
 
 - GitHub OAuth identifies the user and protects recovery;
 - selected public and private GitHub events are server-verified;
@@ -177,6 +231,13 @@ Add optional GitHub sign-in and derived-state sync:
   source settings;
 - use quiet, state-change-only reminders for untracked new repositories and
   revoked permissions, with dismissal persistence;
+- support one active GitHub account per Terrarium profile, archiving previous
+  accounts with preserved owner history and fresh baselines on switch;
+- preserve repository continuity by stable GitHub repository ID across renames,
+  pause after lost access or transfer, and preserve XP after archive/deletion;
+- support bounded GitHub catch-up from the approval/baseline checkpoint, apply
+  caps by activity date, summarize return updates, and never guess unavailable
+  history;
 - newly discovered repositories begin at a fresh baseline and never award
   retroactive XP;
 - local note events remain labelled local/unverified;
@@ -185,8 +246,11 @@ Add optional GitHub sign-in and derived-state sync:
 - local-note sync is opt-in and uploads only a private condition snapshot and
   sync checkpoint;
 - support manual sync or scheduled scan-then-sync while the website is open,
-  with a 15-minute default interval and 5-minute/30-minute alternatives;
-- skip scheduled cloud writes when a scan produces no relevant derived changes;
+  with a 15-minute default interval and 5-minute/30-minute alternatives; the
+  GitHub source implements this schedule today (browser-local cadence, timer
+  only while the page is open, paused by a rolling hourly request budget);
+- skip scheduled cloud writes when a scan produces no relevant derived changes
+  (local-note cloud sync only; GitHub cycles are a full activity read);
 - make clear that a closed browser cannot scan or sync a mounted folder;
 - first sign-in imports the current companion condition when no server state
   exists;
@@ -208,6 +272,138 @@ Do not make sign-in a prerequisite for using the editor, mounting notes, or
 earning local XP.
 
 **Status: partial — `/write` onboarding/activity and extension payload compatibility are shipped; public collection/profile migration remains.**
+
+## Phase 5.1. GitHub receipt recovery and checkpoint repair
+
+**Status: implementation complete; hosted replay verification remains deployment work.**
+
+This is a recovery plan for the long-running case where GitHub activity appears
+in the browser but account XP and the last checkpoint do not move. It must be
+completed without clearing browser storage, disconnecting GitHub, deleting the
+cloud snapshot, or silently downgrading verified GitHub events to local events.
+
+### Confirmed incident evidence
+
+Observed on the signed-in `ardhiqii` browser session at
+`terrarium-aufa.vercel.app`:
+
+- GitHub access is healthy: **45 of 48 repositories** are tracked.
+- The browser ledger contains **38 verified GitHub events**, including events
+  from 23/09/2026, and 38 stored receipts.
+- The account API still reports `lastSyncedAt` on **18/09/2026**.
+- `GET /api/sync/product` returns a cloud snapshot with **0 events and 0 XP**.
+- The browser's retained diagnostic response records HTTP 400 with **four
+  `receipt-mismatch` events**.
+
+The checkpoint is the last successful server-side commit, not the number of
+sync button presses. The product route rejects the whole snapshot when one
+verified event has an invalid receipt; the signed GitHub checkpoint is advanced
+only after that product write succeeds. Therefore the current flow is:
+
+```text
+GitHub scan succeeds
+  -> events and receipts are kept locally
+  -> one legacy receipt fails product validation
+  -> whole product upload is rejected
+  -> checkpoint stays at 18/09
+  -> cloud snapshot stays at 0 XP
+```
+
+The original mismatch came from the old product-snapshot round trip: opaque cap
+keys could be hashed twice and receipt-bound metadata hashes could be dropped.
+The stable round-trip fix prevents new mismatches, but it does not repair the
+already-stored browser events whose old receipts are now incompatible.
+
+### Recovery design
+
+1. **Capture the failure without mutating state.**
+   - Record the `/api/github/sync` response, checkpoint token metadata, product
+     upload status, bounded receipt-failure IDs, and payload digests.
+   - Never clear `terrarium:guest-event-ledger:*`, proof storage, encounters,
+     or the account snapshot as a diagnostic shortcut.
+   - Confirm whether the user is on the Vercel deployment or the GHCR-backed
+     custom domain; deploy and verify the same host the user actually opens.
+
+2. **Add a server-authoritative receipt repair path.**
+   - `POST /api/github/repair` accepts only a bounded list of failed stable
+     event IDs, the active companion, and either the short-lived signed checkpoint
+     that originally named those IDs or a preserved old server receipt; it never
+     accepts client-supplied event facts or XP totals.
+   - Re-read and re-normalize the matching activity from GitHub using the
+     account's token, attribution rules, repository ownership, and current
+     canonical snapshot payload.
+   - Mint fresh server receipts for events that GitHub independently confirms.
+   - Preserve the original event ID, activity timestamp, cap, active-companion
+     ownership, and deduplication identity.
+   - Refuse events that cannot be recovered; never convert a failed GitHub event
+     into `local` provenance merely to make the upload pass. The repair scan uses
+     the same server-approved, 16-repository window as normal sync and reports
+     events outside that window as blocked.
+
+3. **Replay the preserved local condition and checkpoint.**
+   - Persist the exact product snapshot, signed checkpoint, bounded failure IDs,
+     and payload digests in the account namespace before upload.
+   - Replace only repaired receipt values in the browser ledger; retain every
+     other local event and encounter.
+   - Rebuild the product snapshot and retry the existing signed checkpoint.
+   - Commit the checkpoint only after the repaired product snapshot is stored.
+   - Keep optimistic row-version and baseline guards active so a stale repair
+     cannot overwrite newer account progress. A blocked projection may upload
+     unrelated valid events without a checkpoint, but the full browser ledger
+     remains local and retryable.
+
+4. **Make the failure visible and recoverable.**
+   - Show the number of blocked receipts and a repair/retry action instead of a
+     generic “cloud condition was not saved” message.
+   - Distinguish “new GitHub activity found locally” from “account backup
+     committed successfully.”
+   - Show the last successful checkpoint separately from the last attempted sync.
+
+5. **Deploy and verify the correct runtime.**
+   - Deploy the repaired client and server routes to the host used by the user.
+   - Apply and verify all three Supabase migrations before authenticated replay:
+     `20260914000000_initial_sync.sql`,
+     `20260914000001_harden_product_identity.sql`, and
+     `20260918000000_github_accounts_disconnect.sql`.
+   - Verify the GHCR-backed production image and the Vercel deployment are not
+     being confused; the previous GHCR workflow does not by itself update the
+     Vercel project.
+
+### Required regression coverage
+
+- Repair succeeds for an old cap/metadata receipt mismatch without losing the
+  local ledger or encounter state.
+- A repair cannot mint a receipt for invented activity, an unowned repository,
+  another GitHub account, or a client-modified XP value.
+- A mixed batch of repaired and new events stores once, advances the checkpoint
+  once, and does not double-award XP on replay.
+- An unrecoverable event remains visible as blocked and cannot poison unrelated
+  valid progress forever.
+- Stale checkpoint, guest identity, row-version, concurrent-device, empty
+  ledger, zero-event, and 16-repository scan cases remain safe.
+- Client-bundle safety continues to exclude receipt secrets and Node-only trust
+  code from client components.
+
+### Acceptance criteria
+
+This incident is resolved only when all of the following are true:
+
+1. Existing browser storage remains intact; no GitHub disconnect or cloud reset
+   is required.
+2. The preserved local events can be repaired or are explicitly reported as
+   unrecoverable with no silent deletion.
+3. `POST /api/sync/product` returns success for the repaired snapshot and the
+   signed checkpoint advances beyond 18/09/2026.
+4. `GET /api/sync/product` contains the preserved verified events and a
+   server-recomputed non-zero XP total.
+5. `/companions` shows the same persisted progression after reload and on a
+   second device/session.
+6. Repeating Sync does not duplicate events or XP, and a forged receipt remains
+   rejected.
+7. `npm run typecheck`, `npm test`, `npm run build`, `npx vitest run apps/web/src/app/api/github/repair/route.test.ts apps/web/src/app/api/sync/product/github-sync-roundtrip.test.ts`,
+   the scoped repair tests,
+   production deployment checks, and the Supabase migration verification all
+   pass.
 
 ## Phase 6. Surfaces and distribution
 

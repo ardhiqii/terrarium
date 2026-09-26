@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { getSessionProvider } from '@/lib/sync/session'
 import { getSyncStore } from '@/lib/sync/store'
+import { getProfileVisibilityStore } from '@/lib/sync/profile-visibility-store'
 import { getFollowing } from '@/lib/sync/github-following'
 import { buildLeaderboardEntries } from '@/lib/sync/leaderboard'
 import { LeaderboardList } from '@/components/profile/LeaderboardList'
@@ -72,7 +73,13 @@ export default async function LeaderboardPage() {
   const following = await getFollowing(session.handle, { token: process.env.GITHUB_TOKEN })
   const handles = Array.from(new Set([...following, session.handle.toLowerCase()]))
   const users = await getSyncStore().getMany(handles)
-  const entries = buildLeaderboardEntries(users, session.handle)
+
+  // PRIVACY GATE: only accounts that opted in to a public profile appear,
+  // except the viewer's own row. Visibility is keyed by immutable GitHub id.
+  const publicGithubIds = await getProfileVisibilityStore().getPublicIds(
+    users.map((user) => user.githubId),
+  )
+  const entries = buildLeaderboardEntries(users, session.handle, { publicGithubIds })
 
   if (entries.length === 0) {
     return (

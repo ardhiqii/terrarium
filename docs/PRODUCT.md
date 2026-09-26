@@ -89,9 +89,26 @@ does not make local note activity independently verified.
 Cloud sync for local notes is condition-only and opt-in. The user chooses
 whether to keep cloud sync off, sync manually with **Sync now**, or sync on a
 schedule while the website is open. The default interval for scheduled sync is
-15 minutes, with manual, 5-minute, and 30-minute options. A scheduled cycle
-first scans the local folder, then syncs only if cloud sync is enabled and the
-scan produced relevant derived changes.
+15 minutes, with manual, 5-minute, and 30-minute options.
+
+**The schedule that exists today runs the GitHub source.** The `/github` screen
+offers the same four choices, and the cadence is stored per browser profile
+(with the account namespace), because the timer only exists while the page is
+open. A scheduled cycle runs the same read a manual **Sync GitHub now** runs:
+GitHub activity, verified receipts, and the deferred baseline commit. A cadence
+that has never run waits one full interval after the page opens rather than
+syncing on load; **Sync GitHub now** is always available. Each sync reads a
+window of repositories derived from GitHub's hourly request budget *and* from
+the deferred checkpoint's event capacity (16 repositories at the current
+bounds), so a cycle costs only a few hundred requests, and repositories that
+still need a baseline are read first so a larger tracked set is covered window
+by window. A cycle that would overdraw the account's hourly GitHub request
+budget is skipped and *says so*, then resumes automatically when the rolling
+hour window clears. Terrarium budgets the requests it actually spent, and folds
+in what another open tab recorded rather than overwriting it.
+The local-note cloud-write schedule (scan first, write only when the scan found
+relevant derived changes) remains tied to folder mounting and is not part of
+this schedule.
 
 When syncing, Terrarium may upload a private companion condition snapshot and
 sync checkpoint, such as XP, evolution, collection, and encounter state. It
@@ -101,7 +118,54 @@ condition, then mount the folder and establish a fresh local note baseline.
 The website cannot scan or sync a mounted folder while it is completely closed;
 reliable background syncing is reserved for a future desktop app.
 
-### 4.3 GitHub
+### 4.3 Hosted sync storage
+
+The server-side sync boundary is durable Postgres storage for deployments that
+may handle requests on more than one short-lived instance. The current hosted
+provider is Supabase. It stores the encrypted GitHub credential, repository
+tracking settings and baselines, derived product snapshots, and opt-in public
+derived profiles. The existing GitHub OAuth/session flow remains owned by
+Terrarium; Supabase is a persistence layer, not a second login requirement.
+
+The local SQLite adapter remains the development and persistent single-server
+fallback. Vercel must use the Supabase adapter. Supabase tables have row-level
+security enabled and are accessed by a server-only key; no database key or
+GitHub token is sent to the browser. Applying the checked-in migration is part
+of deployment. Note contents and detailed note history remain on the user's
+device under the existing condition-only sync contract.
+
+Product snapshots are keyed by immutable GitHub account ID rather than the
+mutable login handle. Writes use an optimistic checkpoint so two devices do
+not silently replace one another's latest condition. GitHub activity receipts
+are issued by the server-side GitHub sync route and verified before a product
+upload can preserve `verified` provenance. A cloud restore keeps event IDs
+stable so the next provider delivery remains idempotent. Replayed aggregate
+signals refresh their evidence without awarding the stable event twice, and
+ownership stays with the companion that first accepted the event. Account-row
+deletes require the current server version and are conditional at the store,
+so an open identity chooser cannot erase a newer device's progress. Legacy
+rows that have no immutable GitHub ID are not adopted by mutable handle.
+
+If one legacy GitHub receipt no longer matches the canonical product payload,
+`/github` keeps the browser ledger, proofs, encounters, and signed checkpoint
+in the account-local recovery record instead of clearing them. **Repair receipts
+and retry** sends the bounded opaque event IDs together with the short-lived
+signed checkpoint that originally named them, or preserves the old server
+receipt for a legacy event, to `POST /api/github/repair`; the server re-reads
+the approved 16-repository window, checks GitHub attribution
+and ownership, and mints receipts only for independently confirmed activity.
+Unrecoverable events remain visible as blocked and are never downgraded to local
+provenance. Valid events may be backed up without advancing the checkpoint; the
+last successful checkpoint advances only after a repaired snapshot is stored.
+Repeated repair or sync is idempotent, and XP/caps are recomputed server-side.
+
+The `/companions` archive reads the trusted account product snapshot when a
+user is signed in and one exists. It shows that account-scoped XP and
+progression separately from the local garden archive. A signed-in user with no
+product row or an unavailable row sees an explicit not-synced/unavailable state;
+the legacy `github-cache.json` aggregate is not presented as account XP.
+
+### 4.4 GitHub
 
 GitHub is the primary remote source for developer activity. A connected GitHub
 account may include public repositories, private personal repositories, and
@@ -110,9 +174,33 @@ selects or approves them. Terrarium must not automatically scan every
 repository the account can access.
 
 Repository access is chosen from GitHub's repository list rather than by typing
-repository names. The picker groups personal and organization repositories and
-shows visibility and permission state. Selecting all means all repositories
-currently shown; newly created repositories are not selected by default.
+repository names. The picker is a searchable browser with all, individual, and
+organization filters plus per-owner grouping, and it shows visibility and
+permission state alongside the approved and tracked counts. Selecting all means
+all repositories currently shown; newly created repositories are not selected
+by default.
+
+Opening the picker must not spend the account's GitHub request budget. The last
+successful listing is cached in two places: the browser keeps one copy per
+profile (one active GitHub account at a time) and the server keeps one per
+account. The server copy answers a request without contacting GitHub for five
+minutes and is revalidated on demand with the **Refresh list** button; it is
+replaced only by a complete successful listing, never by a partial page or an
+error, and an empty listing is cached too so a legitimately empty account does
+not hammer GitHub. When GitHub cannot be read, the server serves the last known
+listing instead of failing while it is less than an hour old, and the picker
+labels what the user is looking at — `List updated 3 min ago`, or
+`cached · unavailable · updated …` when the visible list is not fresh. The
+browser copy paints instantly on return visits while the server request still
+runs, so saved settings stay server-authoritative. A failed read is never
+treated as an empty account: nothing is pruned or unselected from it, and a
+sync never drops a repository baseline from a listing it could not refresh.
+A listing that fills GitHub's last permitted page (500 repositories) is stored
+with a `truncated` flag: it is usable, but it is never treated as complete, so
+nothing is pruned or silently unselected from it either. The browser copy is
+keyed to the active GitHub account; a copy stored for another account is
+discarded instead of painted, and a failed read only keeps showing a list the
+server confirmed belongs to this account.
 
 Users may opt in to automatic inclusion separately for future personal
 repositories and each approved organization. Automatic inclusion respects
@@ -128,6 +216,13 @@ companion's progress. After returning from GitHub, show a setup prompt if no
 repositories are tracked and show the counts of approved versus tracked
 repositories in the source settings.
 
+The current prototype expects a GitHub App configured with fine-grained read
+permissions for repository metadata, contents, pull requests, issues, checks,
+and required organization approval. It deliberately does not request the
+classic `repo` scope, which is broader and includes write-capable access. The
+token is stored only in encrypted server-side account state and is never sent
+to the browser or included in a sync payload.
+
 Reminders are action-based and quiet. Show a one-time permission explanation
 before authorization, a persistent status with **Manage repositories**, and a
 single notification when new eligible repositories appear. A dismissed
@@ -136,10 +231,62 @@ If permission is revoked, tracking pauses and the owner sees **Reconnect or
 review access**. Private repository names and reminder details remain visible
 only to the owner.
 
+One Terrarium profile has one active GitHub account at a time. Switching is an
+explicit action: the previous account becomes archived and stops future
+tracking, while its earned XP and owner-only history remain. The new account
+requires fresh repository selection and a fresh baseline; it receives no
+retroactive XP. Reconnecting an archived account later is another explicit
+switch and never resumes it in the background. Public activity defaults to the
+current account; archived account details remain private unless the owner
+explicitly enables them.
+
 The same activity rules apply to public and approved private repositories. The
 connected GitHub account is one source for daily XP caps, so selecting more
 repositories cannot multiply rewards. Removing a repository stops future
 tracking but does not erase XP already earned from it.
+
+Repository identity follows GitHub's stable repository ID. A rename preserves
+the repository's tracking history and baseline. An ownership transfer keeps
+history only while the user still has permission; otherwise tracking pauses.
+Archiving or deleting a repository stops future tracking but preserves earned
+XP and owner history. Visibility changes follow GitHub's current visibility:
+private details remain owner-only, and public display is re-evaluated before
+the next profile update.
+
+Delayed GitHub sync uses bounded catch-up. Activity becomes eligible only after
+the repository is approved and its initial baseline is recorded. Later syncs
+may count eligible activity that happened since the last checkpoint, using the
+activity date for daily and session caps rather than the sync date. A catch-up
+is summarized as one returning update instead of replaying every reaction.
+Activity from before approval or the initial baseline never awards retroactive
+XP. A sync returns a short-lived signed checkpoint, and the GitHub baseline is
+committed only after the derived product condition upload succeeds. The
+checkpoint travels with that upload inside the request body, not in a request
+header: it carries every event ID the sync issued and both baseline maps, which
+for a 44-repository account is tens of kilobytes -- beyond what a request-header
+budget accepts. This keeps an interrupted cloud write retryable; receipt or
+checkpoint validation failure does not consume eligible activity. A repository
+that disappears, is archived, or is paused is cleared back to a fresh baseline
+before it can resume. If
+GitHub no longer exposes enough history to verify an event, Terrarium does not
+guess.
+
+A bounded sync reads only the newest page of each activity list, and it reads a
+derived window of repositories. There is no arbitrary repository count: the
+window comes from GitHub's hourly request budget on one side and the deferred
+checkpoint's event capacity on the other, so a sync can never build a
+checkpoint its own validator rejects. A forty-four repository account covers all
+forty-four across a few syncs, and repositories that still need a baseline are
+always read first, so a repository can never be stranded without one. When a scan
+reaches the end of that window with the final page still full, the read is
+reported as **truncated** rather than failed: the baseline is still recorded and
+the sync reports that the scan window ended. Because every list is read
+newest-first, the unread material is older than the recorded baseline and can
+never be awarded anyway. A genuinely failed request is treated differently and
+still withholds the baseline, so activity that could be newer than the
+checkpoint is retried rather than skipped. The sync route streams newline-
+delimited progress, so a long read reports the repository it is currently
+reading out of the known total instead of appearing frozen.
 
 Commits are evidence of activity rather than unlimited direct XP. Empty and
 generated-only commits award no XP. Active days and work sessions are capped;
@@ -147,6 +294,12 @@ merged pull requests, releases, linked issues, and successful CI produce stable
 one-time events. Repeated scans, webhook deliveries, CI reruns, repository
 renames, and other duplicate deliveries must be deduplicated by stable event
 IDs.
+
+The GitHub source screen makes this ledger legible: it explains the reward map,
+shows recent verified receipts with their category and XP value, and reports the
+number of newly applied events after each sync. A repeated sync may receive an
+already-known event from the provider, but it must report zero new events and
+leave the companion XP unchanged.
 
 The owner may see private activity details after authenticating with GitHub.
 Public profiles follow repository visibility: public activity may show its
@@ -170,9 +323,18 @@ user's normal caps and deduplication rules and does not create a second XP
 source.
 
 Users can disconnect GitHub, remove selected repositories, revoke organization
-access, and delete synced derived data. GitHub may refresh server-side while the
-website is closed, but the server stores derived activity and progression only,
-never repository contents or code.
+access, and delete synced derived data, and these are deliberately different
+controls. **Disconnect GitHub** (`DELETE /api/github/repositories`) removes the
+stored OAuth token and every sync checkpoint so no future activity can be
+tracked; it keeps earned XP, the companion, and the repository selections, so
+reconnecting resumes the same sources with a fresh baseline. **Delete synced
+data** (`DELETE /api/sync/product`) is the separate destructive control that
+removes the synced progression snapshot. Signing out is neither: it only clears
+the browser session cookie and leaves the account, token, and XP untouched. A
+revoked token, a GitHub outage, a closed tab, or an expired session never
+disconnects or deletes anything — it pauses tracking and asks for a reconnect.
+GitHub may refresh server-side while the website is closed, but the server
+stores derived activity and progression only, never repository contents or code.
 
 The public profile shows an evidence-based activity history, never a hidden
 “quality score.”
@@ -242,9 +404,32 @@ the active companion, nickname, dialogue frequency, or public-profile settings�
 the user may choose the local or cloud version. A failed sync preserves local
 state and can be retried; it never silently discards progression.
 
-Destructive controls are separate and explicit. Disconnecting GitHub stops
-future tracking but keeps earned XP. Removing a mounted folder stops future
-scans but keeps earned XP. Resetting local state clears browser-held progress
+A signed-in account can hold two different guest identities: the one in this
+browser and the one inside the account's cloud snapshot. The product route
+refuses such an upload with `409` rather than letting one browser silently
+overwrite an account's snapshot. That refusal is surfaced as an explicit
+choice on the GitHub panel, with both copies shown (events, companions, XP,
+and created date) before anything changes:
+
+- **Keep both** (recommended) adopts the account's guest identity locally,
+  keeps the browser's ledger, XP, and collection, and uploads the combined
+  copy; the server merges the two event sets without double-counting.
+- **Use this browser** deletes the account's cloud snapshot and replaces it
+  with the browser's copy. This is destructive and requires a two-step
+  confirmation naming what is deleted.
+- **Use the account** replaces the browser's product state for that account
+  with the cloud snapshot, adopts its guest identity, and uploads the result.
+
+Every action reports its outcome in the sync summary, and the choice closes
+once an upload succeeds so normal syncing resumes. If the two sides already
+share one identity, or one side holds no progression, the same chooser is
+shown with copy for that case instead of assuming a conflict.
+
+Destructive controls are separate and explicit. Disconnecting GitHub removes
+the stored token and sync checkpoints, stops future tracking, and keeps earned
+XP and the repository selections; deleting synced data is a different control
+that removes the cloud progression snapshot. Removing a mounted folder stops
+future scans but keeps earned XP. Resetting local state clears browser-held progress
 only after confirmation. Deleting cloud state removes synced companion data but
 never deletes local note files. Deleting a Terrarium account immediately hides
 the public profile and stops integrations, offers an export backup, and starts
@@ -274,6 +459,19 @@ history.
 
 XP belongs to the active companion. The system may show a small account-level
 encounter meter internally, but it must not become a second prominent level bar.
+
+**Not yet implemented — see [`ROADMAP.md`](ROADMAP.md).** The paragraphs below
+describe the intended contract; the shipped code currently buckets days and
+sessions in UTC, so a commit made late in the local evening can land on the
+previous day for a user east of UTC. This is a known gap, not a shipped
+behaviour.
+
+Daily and session caps use one account-level **progress timezone**. It defaults
+to the browser timezone when the user starts, does not change automatically
+when the user travels, and can be changed explicitly for a future progress day.
+Past events are never reclassified after a timezone change. GitHub caps use the
+verified activity timestamp, not the user's computer clock; local note events
+use the time Terrarium observes the meaningful change and remain unverified.
 
 ### 5.1 Prototype rates
 
