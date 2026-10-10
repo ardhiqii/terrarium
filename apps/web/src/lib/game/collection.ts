@@ -42,6 +42,16 @@ export interface CollectionEntry {
   /** Only meaningful for `kind: 'cluster'`. See `clusters.ts` for how "new"
    * is derived without any persistence layer. */
   isNew?: boolean
+  /**
+   * Only meaningful for `kind: 'cluster'`: how many notes carry this tag, i.e. the
+   * count that crossed `CLUSTER_THRESHOLD` and made the cluster exist at all.
+   *
+   * WHY IT IS CARRIED: the tile said "Cluster · Grass line" with no number, so a card
+   * rendered in a list under a message about REPOSITORIES gave the reader no way to tell
+   * why it was there or that it had earned its place. The count is the reason, so the
+   * card states it.
+   */
+  memberCount?: number
 }
 
 export interface CollectionOptions {
@@ -114,6 +124,9 @@ function clusterToEntry(cluster: Cluster): CollectionEntry {
     state: cluster.state,
     kind: 'cluster',
     isNew: cluster.isNew,
+    // Carried, not dropped: this count is what earned the cluster its place, and the tile
+    // states it so a cluster card does not look arbitrary beside a repository list.
+    memberCount: cluster.members.length,
   }
 }
 

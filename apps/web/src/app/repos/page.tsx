@@ -31,7 +31,6 @@ export default async function ReposPage() {
     ? await getOwnerCollection({ login: OWNER_LOGIN, token: process.env.GITHUB_TOKEN })
     : []
   const clusterCollection = getClusterCollection()
-  const entries = [...clusterCollection, ...repoCollection]
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-16">
@@ -79,7 +78,53 @@ export default async function ReposPage() {
         <CompanionPicker />
       </section>
 
-      <CollectionGrid entries={entries} />
+      {/*
+        TWO SECTIONS, DELIBERATELY NOT ONE GRID.
+
+        This page used to render both collections as a single grid, clusters first, so a
+        tag-cluster card appeared directly under the dress section's "No tracked
+        repositories yet" message: two statements that are each true but read as a
+        contradiction, because nothing said the card was a cluster rather than a
+        repository, and the card did not state the count that earned it. The owner looked at
+        the page and asked "why is this here". Splitting the lists means the repository
+        message stands beside repositories only.
+      */}
+
+      <section className="mb-16">
+        <h2 className="font-ui text-xl font-semibold tracking-tighter mb-2">
+          Repositories
+        </h2>
+        <p
+          className="font-prose text-sm leading-relaxed mb-5 max-w-2xl"
+          style={{ color: 'var(--ink-muted)' }}
+        >
+          One creature per repository, species-assigned by its primary language.
+          These come from GitHub activity rather than from the companions you own,
+          and you dress a companion onto one in the section above.
+        </p>
+        <CollectionGrid
+          entries={repoCollection}
+          emptyMessage="No repository creatures yet."
+        />
+      </section>
+
+      <section className="mb-16">
+        <h2 className="font-ui text-xl font-semibold tracking-tighter mb-2">
+          Tag clusters
+        </h2>
+        <p
+          className="font-prose text-sm leading-relaxed mb-5 max-w-2xl"
+          style={{ color: 'var(--ink-muted)' }}
+        >
+          One creature for every tag that reaches five notes, assigned by theme. A
+          cluster is something to open and read, not something to dress onto a
+          repository, which is why it is listed apart from the repositories above.
+        </p>
+        <CollectionGrid
+          entries={clusterCollection}
+          emptyMessage="No tag has reached five notes yet."
+        />
+      </section>
     </div>
   )
 }
