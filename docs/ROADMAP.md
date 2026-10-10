@@ -301,6 +301,16 @@ than one generated creature per repository, and `/repos` carries the generated
 repository and cluster archive under its own name. The active companion is settable
 from `/companions`.
 
+`/repos` also lists those two generated kinds as **two labelled sections** rather than
+one grid. It previously rendered both collections merged, clusters first, so a
+tag-cluster card appeared directly beneath the dress control's "No tracked
+repositories yet" message. Both statements were true -- no repository was tracked, and
+the tag did reach the cluster threshold -- but nothing on the page said the card was a
+cluster rather than a repository, and the tile's own line omitted the member count, so
+it gave no reason for existing. Each section now carries its own heading, blurb and
+empty state, and a cluster tile states `Cluster of <n> notes`: the number that earned
+it, and the same threshold the page copy describes.
+
 **Open, and deliberately deferred by the owner:** a repository's assigned companion
 is **stored but not yet rendered**. `/api/creature` and `/api/creature.svg` still
 select a species line automatically from the repository's language and ignore the

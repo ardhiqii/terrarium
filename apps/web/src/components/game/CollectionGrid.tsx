@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import type { CollectionEntry } from '@/lib/game/collection'
 import { resolveVariant } from '@/lib/game/variants'
 import { CreatureSprite } from './CreatureSprite'
@@ -28,15 +29,28 @@ import Link from 'next/link'
  */
 export interface CollectionGridProps {
   entries: CollectionEntry[]
+  /**
+   * Shown INSTEAD of the built-in empty state when there are no entries.
+   *
+   * WHY THIS IS A PROP: this grid renders both repository creatures and tag clusters, and
+   * its default message describes BOTH kinds at once. Once `/repos` split them into two
+   * labelled sections, that combined sentence was wrong in either one -- each section has
+   * its own reason for being empty, and only the caller knows which kind it is rendering.
+   */
+  emptyMessage?: ReactNode
 }
 
-export async function CollectionGrid({ entries }: CollectionGridProps) {
+export async function CollectionGrid({ entries, emptyMessage }: CollectionGridProps) {
   if (entries.length === 0) {
     return (
       <p className="font-prose text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-        No companions yet. Repo creatures appear once GitHub repo data is
-        reachable at build time; cluster companions appear once a tag
-        reaches five notes.
+        {emptyMessage ?? (
+          <>
+            No companions yet. Repo creatures appear once GitHub repo data is
+            reachable at build time; cluster companions appear once a tag
+            reaches five notes.
+          </>
+        )}
       </p>
     )
   }
@@ -61,6 +75,13 @@ export async function CollectionGrid({ entries }: CollectionGridProps) {
       {entries.map((entry, i) => {
         const label = entry.kind === 'cluster' ? `#${entry.repo}` : entry.repo
         const previewHref = `/preview?line=${entry.speciesLine.id}&stage=${entry.state.stage.id}&from=${encodeURIComponent(label)}`
+        // A cluster states the count that earned it. Before this the tile said only
+        // "Cluster · Grass line", so beside a list of repositories a reader had no way to
+        // tell why the card existed or that it had met the threshold at all.
+        const provenance =
+          entry.kind === 'cluster'
+            ? `Cluster${entry.memberCount === undefined ? '' : ` of ${entry.memberCount} notes`} · ${entry.speciesLine.name}`
+            : `${entry.language ?? 'unlabeled'} · ${entry.speciesLine.name}`
         return (
           <Link
             key={`${entry.kind ?? 'repo'}-${entry.repo}`}
@@ -92,9 +113,7 @@ export async function CollectionGrid({ entries }: CollectionGridProps) {
               )}
             </p>
             <p className="font-data text-[10px]" style={{ color: 'var(--ink-muted)' }}>
-              {entry.kind === 'cluster'
-                ? `Cluster · ${entry.speciesLine.name}`
-                : `${entry.language ?? 'unlabeled'} · ${entry.speciesLine.name}`}
+              {provenance}
             </p>
           </Link>
         )
