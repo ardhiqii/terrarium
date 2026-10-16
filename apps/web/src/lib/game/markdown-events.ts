@@ -10,11 +10,21 @@ export interface MarkdownFileSnapshot {
   modifiedAt: string
 }
 
+/** Editor-proven rename proof; note content remains local to the scan. */
+export interface MarkdownRenameHint {
+  from: string
+  to: string
+}
+
 export interface MarkdownEventInput {
   sourceId: string
   companionId: CompanionId | string
   previous: readonly MarkdownFileSnapshot[]
   current: readonly MarkdownFileSnapshot[]
+  /** Paths seen in an earlier local scan, including deleted tombstones. */
+  knownPaths?: readonly string[]
+  /** A successful local rename, including a title/frontmatter rewrite. */
+  renameHints?: readonly MarkdownRenameHint[]
 }
 
 function normalizePath(value: string): string {
@@ -91,15 +101,59 @@ export function normalizeMarkdownEvents(input: MarkdownEventInput): readonly Nor
   const after = new Map(
     input.current.map((file) => [normalizePath(file.path), { ...file, modifiedAt: iso(file.modifiedAt) }]),
   )
+  const knownPaths = new Set((input.knownPaths ?? []).map(normalizePath))
+  const renameFromByTo = new Map(
+    (input.renameHints ?? []).map((hint) => [normalizePath(hint.to), normalizePath(hint.from)] as const),
+  )
   const events: NormalizedEvent[] = []
   const activity: Array<{ id: string; occurredAt: string }> = []
+  const matchedPreviousPaths = new Set<string>()
+  const currentPaths = new Set(after.keys())
+  const previousByContent = new Map<string, string[]>()
+  for (const [path, file] of before) {
+    const paths = previousByContent.get(file.content) ?? []
+    paths.push(path)
+    previousByContent.set(file.content, paths)
+  }
 
   for (const [path, file] of after) {
-    const previous = before.get(path)
+    let previous = before.get(path)
+    let renamed = false
+    if (previous) {
+      matchedPreviousPaths.add(path)
+    } else {
+      const hintedFrom = renameFromByTo.get(path)
+      const hintedPrevious = hintedFrom ? before.get(hintedFrom) : undefined
+      if (hintedFrom && hintedPrevious) {
+        previous = hintedPrevious
+        matchedPreviousPaths.add(hintedFrom)
+        renamed = true
+      } else {
+        // A byte-for-byte match is the only safe inferred rename proof. Do not
+        // guess from titles, timestamps, or word counts: an uncertain move must
+        // not mint a second new-note reward.
+        const candidates = (previousByContent.get(file.content) ?? [])
+          .filter((candidate) => !matchedPreviousPaths.has(candidate) && !currentPaths.has(candidate))
+        if (candidates.length === 1) {
+          const candidate = candidates[0]
+          previous = before.get(candidate)
+          matchedPreviousPaths.add(candidate)
+          renamed = previous !== undefined
+        }
+      }
+    }
+    const wasKnown = knownPaths.has(path)
     const changed = !previous || previous.content !== file.content
     if (!changed) continue
+    // A reload cannot prove whether a path that appeared while the app was
+    // closed is a genuinely new note or an external rename of a known note.
+    // Once this source has a path manifest, only an in-session previous
+    // snapshot (or an explicit editor rename hint) is strong enough to award
+    // a new-note, word, or link reward. The first scan of a new source still
+    // awards its files normally because the manifest is empty.
+    if (!previous && (wasKnown || knownPaths.size > 0)) continue
 
-    if (!previous) {
+    if (!previous && !renamed) {
       events.push(event(normalizedInput, `new-note:${path}`, 'new-note', file.modifiedAt, { path }))
     }
 

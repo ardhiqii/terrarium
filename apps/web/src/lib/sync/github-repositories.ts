@@ -52,6 +52,11 @@ export interface FetchGithubRepositoriesOptions {
   fetch?: typeof fetch
 }
 
+export interface FetchGithubRepositoriesByIdResult {
+  readonly status: GithubRepositoryFetchStatus
+  readonly repositories: readonly GithubRepository[]
+}
+
 function withTimeout(client: typeof fetch, url: string, token: string): Promise<Response> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
@@ -109,6 +114,37 @@ function parseRepository(value: unknown): GithubRepository | null {
     archived: booleanField(item!, 'archived', false),
     canRead,
   }
+}
+
+/**
+ * Hydrate explicit tracked IDs that fell outside a bounded `/user/repos` page
+ * window. Numeric repository IDs are stable across renames, and this narrow
+ * endpoint avoids silently starving a repository the user already selected.
+ * Automatic inclusion still remains bounded by the normal listing.
+ */
+export async function fetchGithubRepositoriesById(
+  options: FetchGithubRepositoriesOptions & { repositoryIds: readonly string[] },
+): Promise<FetchGithubRepositoriesByIdResult> {
+  const token = options.token.trim()
+  if (!token) return { status: 'unauthorized', repositories: [] }
+  const client = options.fetch ?? globalThis.fetch
+  if (typeof client !== 'function') return { status: 'unavailable', repositories: [] }
+  const apiBase = (options.apiBase ?? DEFAULT_API_BASE).replace(/\/+$/u, '')
+  const repositories: GithubRepository[] = []
+  try {
+    for (const repositoryId of [...new Set(options.repositoryIds.map((value) => value.trim()).filter((value) => /^\d{1,20}$/u.test(value)))]) {
+      const response = await withTimeout(client, `${apiBase}/repositories/${encodeURIComponent(repositoryId)}`, token)
+      if (response.status === 401) return { status: 'unauthorized', repositories: [] }
+      if (response.status === 403) return { status: 'rate-limited', repositories: [] }
+      if (response.status === 404) continue
+      if (!response.ok) return { status: 'unavailable', repositories: [] }
+      const repository = parseRepository(await response.json())
+      if (repository) repositories.push(repository)
+    }
+  } catch {
+    return { status: 'unavailable', repositories: [] }
+  }
+  return { status: 'ok', repositories }
 }
 
 /** Never throws: a revoked token or a temporary GitHub failure becomes a UI status. */

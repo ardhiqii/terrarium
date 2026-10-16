@@ -9,7 +9,10 @@
 
 import { NextRequest } from 'next/server'
 import { getGithubAccountStore, type GithubAccountSettings } from '@/lib/sync/github-account-store'
-import type { GithubRepository } from '@/lib/sync/github-repositories'
+import {
+  fetchGithubRepositoriesById,
+  type GithubRepository,
+} from '@/lib/sync/github-repositories'
 import {
   getGithubRepositoriesCached,
   purgeGithubRepositoryCache,
@@ -25,7 +28,10 @@ const SETTINGS_PAYLOAD_LIMIT_BYTES = 64 * 1024
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store, private',
+    },
   })
 }
 
@@ -90,6 +96,7 @@ async function availableRepositories(
   githubId: number,
   token: string,
   force = false,
+  explicitRepositoryIds: readonly string[] = [],
 ): Promise<AvailableRepositories | Response> {
   const cached = await getGithubRepositoriesCached({ githubId, token, force })
   const result = cached.result
@@ -106,8 +113,28 @@ async function availableRepositories(
   if (result.status !== 'ok') {
     return json(502, { githubId, error: 'GitHub could not be reached. Try again shortly.' })
   }
+  let repositories = [...result.repositories]
+  if (result.truncated === true && explicitRepositoryIds.length > 0) {
+    const knownIds = new Set(repositories.map((repository) => repository.id))
+    const missingIds = explicitRepositoryIds.filter((id) => !knownIds.has(id))
+    if (missingIds.length > 0) {
+      const hydrated = await fetchGithubRepositoriesById({ token, repositoryIds: missingIds })
+      if (hydrated.status === 'unauthorized') {
+        return json(401, { error: 'GitHub access was revoked or expired. Reconnect GitHub.' })
+      }
+      if (hydrated.status === 'rate-limited') {
+        return json(429, { githubId, error: 'GitHub rate limit reached. Try again once the limit resets.' })
+      }
+      if (hydrated.status === 'unavailable') {
+        // Keep the bounded listing visible, but never claim that a missing
+        // explicit ID was deleted while its one-by-ID verification failed.
+        return json(502, { githubId, error: 'GitHub could not verify all tracked repositories. Try again shortly.' })
+      }
+      repositories = [...repositories, ...hydrated.repositories]
+    }
+  }
   return {
-    repositories: result.repositories,
+    repositories,
     fetchedAt: cached.fetchedAt,
     stale: cached.stale,
     truncated: result.truncated === true,
@@ -128,6 +155,7 @@ export async function GET(request: NextRequest): Promise<Response> {
       value.session.githubId,
       value.token,
       refreshRequested(request),
+      value.settings.trackedRepositoryIds,
     )
     if (available instanceof Response) return available
     return json(200, {
@@ -138,6 +166,7 @@ export async function GET(request: NextRequest): Promise<Response> {
       trackedRepositoryCount: available.repositories.filter((repo) => repositoryIsTracked(repo, value.settings)).length,
       fetchedAt: available.fetchedAt,
       stale: available.stale,
+      truncated: available.truncated,
     })
   } catch {
     return json(500, { error: 'Repository settings could not be loaded.' })
@@ -202,7 +231,12 @@ export async function PUT(request: NextRequest): Promise<Response> {
       return json(400, { error: 'Repository settings are malformed.' })
     }
 
-    const available = await availableRepositories(value.session.githubId, value.token)
+    const available = await availableRepositories(
+      value.session.githubId,
+      value.token,
+      false,
+      [...new Set([...value.settings.trackedRepositoryIds, ...settingsPayload.trackedRepositoryIds])],
+    )
     if (available instanceof Response) return available
     const repositories = available.repositories
     const byId = new Map(repositories.map((repo) => [repo.id, repo]))
@@ -262,7 +296,17 @@ export async function PUT(request: NextRequest): Promise<Response> {
       }
     }
     const savedSettings: GithubAccountSettings = { ...nextSettings, baselineByRepositoryId }
-    await getGithubAccountStore().saveSettings(value.session.githubId, savedSettings)
+    const saved = await getGithubAccountStore().saveSettings(
+      value.session.githubId,
+      savedSettings,
+      value.settings,
+    )
+    // GitHub reads can take long enough for another tab to change the source
+    // baseline or for the user to disconnect. Never let this delayed picker
+    // write replace that newer state or resurrect a disconnected account.
+    if (saved === false) {
+      return json(409, { error: 'Repository settings changed or GitHub was disconnected. Refresh and try again.' })
+    }
     return json(200, {
       githubId: value.session.githubId,
       repositories,

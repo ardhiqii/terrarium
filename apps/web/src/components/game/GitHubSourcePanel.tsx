@@ -8,19 +8,24 @@ import {
   type EventMetadataValue,
   type NormalizedEvent,
 } from '@/lib/game/events'
+import { mergeEncounterStates } from '@/lib/game/encounters'
 import {
   applyProductEvents,
   createProductState,
   switchActiveCompanion,
   type ProductState,
 } from '@/lib/game/product-state'
-import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
+import {
+  PROTOTYPE_COMPANION_CATALOG,
+  selectStarterCompanionId,
+} from '@/lib/game/companion-catalog'
 import {
   browserProductStorage,
   DEFAULT_STORED_SYNC_SCHEDULE,
   ensureBrowserGuestProfile,
   loadBrowserEncounters,
   loadBrowserLedger,
+  loadDurableEventIds,
   loadGithubSyncRecovery,
   loadRevealedDraws,
   loadSyncRequestUsage,
@@ -29,6 +34,7 @@ import {
   saveBrowserEncounters,
   saveBrowserLedger,
   saveGithubSyncRecovery,
+  mergeDurableEventIds,
   mergeVerifiedEventProofs,
   saveRevealedDraws,
   saveSyncRequestUsage,
@@ -92,6 +98,7 @@ import {
   buildProductSnapshot,
   deserializeProductSnapshot,
   mergeProductSnapshots,
+  normalizeEncounterStateForSync,
   productSnapshotEvent,
   restoreProductStateFromSnapshot,
   type ProductSnapshot,
@@ -123,6 +130,7 @@ import { SyncProgress } from './SyncProgress'
 import { EncounterReveal } from './EncounterReveal'
 import { ProductActivityPanel } from './ProductActivityPanel'
 import { GitHubRewardGuide } from './GitHubRewardGuide'
+import { COMPANION_STATE_EVENT } from './CompanionRuntimeProvider'
 
 interface GithubSettings {
   trackedRepositoryIds: readonly string[]
@@ -142,6 +150,8 @@ interface RepositoryResponse {
   fetchedAt: number
   /** True when the server fell back to its own cached listing. */
   stale: boolean
+  /** True when automatic discovery did not reach the end of GitHub pages. */
+  truncated?: boolean
 }
 
 const EVENT_CATEGORIES: readonly EventCategory[] = [
@@ -260,6 +270,16 @@ async function responseBody(response: Response): Promise<Record<string, unknown>
   return isRecord(body) ? body : {}
 }
 
+/** Pure continuation guard for account-scoped activation responses. */
+export function isCurrentAccountActivation(
+  gate: AccountNamespaceGate,
+  scope: HydratedAccountNamespace,
+  actionToken: number,
+  currentActionToken: number,
+): boolean {
+  return actionToken === currentActionToken && isCurrentAccountNamespace(gate, scope)
+}
+
 /**
  * Writes a fresh listing into browser storage and returns the time it was read
  * from GitHub. `savedAt` tracks the read time, not the write time, so the
@@ -320,7 +340,7 @@ const SCHEDULE_TICK_MS = 30 * 1000
 /**
  * Reads a streamed sync response.
  *
- * A sync reads up to 25 repositories back to back, so the route answers with
+ * A sync reads a bounded repository window back to back, so the route answers with
  * newline-delimited JSON and reports each repository as it starts. Pre-flight
  * failures and the no-repositories path still answer with ordinary JSON, and
  * that is handled here so callers see one shape either way.
@@ -443,7 +463,7 @@ function createUnsavedBrowserGuestProfile(starterCompanionId: string): GuestProf
 
 function browserState(namespace?: string, persistProfile = true): ProductState {
   const storage = browserProductStorage()
-  const starterCompanionId = PROTOTYPE_COMPANION_CATALOG.list()[0].id
+  const starterCompanionId = selectStarterCompanionId(PROTOTYPE_COMPANION_CATALOG)
   const profile = namespace
     ? loadGuestProfile(storage, `${GUEST_PROFILE_STORAGE_KEY}:${namespace}`) ??
       createUnsavedBrowserGuestProfile(starterCompanionId)
@@ -459,11 +479,19 @@ function browserState(namespace?: string, persistProfile = true): ProductState {
   )
 }
 
+function announceAccountState(namespace: string): void {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent(COMPANION_STATE_EVENT, {
+    detail: { namespace },
+  }))
+}
+
 function saveBrowserProductState(state: ProductState, namespace: string): void {
   const storage = browserProductStorage()
   saveGuestProfile(storage, state.profile, `terrarium:guest-profile:${namespace}`)
   saveBrowserLedger(storage, state.ledger, namespace)
   saveBrowserEncounters(storage, state.encounters, namespace)
+  announceAccountState(namespace)
 }
 
 function isBlankAccountState(state: ProductState): boolean {
@@ -578,11 +606,12 @@ async function restoreCloudProductState(
       return { state: local, proofs: localProofs, message: 'Cloud condition was invalid; local progress is safe.' }
     }
 
+    mergeDurableEventIds(storage, cloud.events.map((event) => event.eventId), namespace)
     let restored: ProductState
     let restoredProofs: Record<string, string>
     let message: string
     if (cloud.guestId === local.profile.guestId) {
-      const merged = mergeProductSnapshots(buildProductSnapshot(local, undefined, localProofs), cloud)
+      const merged = mergeProductSnapshots(buildProductSnapshot(local, undefined, localProofs, new Set(loadDurableEventIds(storage, namespace))), cloud)
       restored = restoreProductStateFromSnapshot(merged, local.profile, PROTOTYPE_COMPANION_CATALOG)
       restoredProofs = proofsFromSnapshotEvents(merged.events)
       // A failed identity-resolution upload can leave this browser on the
@@ -707,17 +736,68 @@ async function readAccountSnapshot(githubId: number): Promise<AccountSnapshotRea
  * Persist and display the merged snapshot a successful upload returned, so the
  * browser copy is the same union the server now holds.
  */
-function adoptUploadedSnapshot(
+export function adoptUploadedSnapshot(
   body: Record<string, unknown>,
   fallbackProfile: GuestProfile,
   namespace: string,
+  localState?: ProductState,
 ): ProductState | null {
   const snapshot = deserializeProductSnapshot(JSON.stringify(body))
   if (!snapshot) return null
-  const state = restoreProductStateFromSnapshot(snapshot, fallbackProfile, PROTOTYPE_COMPANION_CATALOG)
+  const serverState = restoreProductStateFromSnapshot(snapshot, fallbackProfile, PROTOTYPE_COMPANION_CATALOG)
+  // The server intentionally rejects unverified encounter rewards. Keep those
+  // rewards in this browser's account namespace after a successful upload so a
+  // cloud response cannot erase a local draw; they remain outside the next
+  // trusted account snapshot and therefore cannot become server ownership.
+  const localEncounterReferences = localState?.profile.collection.filter((reference) => (
+    reference.acquisition === 'encounter' &&
+    !serverState.profile.collection.some((trusted) => trusted.referenceId === reference.referenceId)
+  )) ?? []
+  const collection = [...serverState.profile.collection, ...localEncounterReferences]
+  // The cloud response intentionally omits untrusted/local-only records. Keep
+  // the device ledger in this account namespace after adoption instead of
+  // replacing it with the server ledger; the next upload may still carry
+  // privacy-safe local source facts, while trust boundaries decide what the
+  // account accepts. Collection ownership remains server-authoritative except
+  // for the explicit local encounter overlay above.
+  let mergedSnapshot = snapshot
+  if (localState) {
+    try {
+      mergedSnapshot = mergeProductSnapshots(buildProductSnapshot(localState), snapshot)
+    } catch {
+      // A guest-identity conflict is handled by the caller. Do not let a
+      // defensive local merge failure erase the trusted server response.
+      mergedSnapshot = snapshot
+    }
+  }
+  const adoptedSnapshot: ProductSnapshot = {
+    ...mergedSnapshot,
+    activeCompanionId: serverState.profile.activeCompanionId,
+    activeSelection: { ...serverState.profile.activeSelection! },
+    collection,
+  }
+  let state: ProductState
+  if (!localState) {
+    state = serverState
+  } else {
+    try {
+      state = restoreProductStateFromSnapshot(adoptedSnapshot, fallbackProfile, PROTOTYPE_COMPANION_CATALOG)
+    } catch {
+      // Older browser snapshots may contain incomplete local draw evidence (for
+      // example an empty weight list). Keep the trusted cloud ledger and use the
+      // defensive encounter merge path rather than failing adoption entirely.
+      state = createProductState(
+        { ...serverState.profile, collection },
+        serverState.ledger,
+        mergeEncounterStates(normalizeEncounterStateForSync(localState.encounters), serverState.encounters),
+        PROTOTYPE_COMPANION_CATALOG,
+      )
+    }
+  }
   try {
     const storage = browserProductStorage()
     saveBrowserProductState(state, namespace)
+    mergeDurableEventIds(storage, snapshot.events.map((event) => event.eventId), namespace)
     saveVerifiedEventProofs(
       storage,
       proofsFromSnapshotEvents(snapshot.events),
@@ -875,6 +955,7 @@ export function GitHubSourcePanel() {
   // picker never implies the list is fresher than it is.
   const [listFetchedAt, setListFetchedAt] = useState<number | null>(null)
   const [listStale, setListStale] = useState(false)
+  const [listTruncated, setListTruncated] = useState(false)
   const [refreshingList, setRefreshingList] = useState(false)
   const [disconnectStage, setDisconnectStage] = useState<'idle' | 'confirm'>('idle')
   const [disconnecting, setDisconnecting] = useState(false)
@@ -973,6 +1054,7 @@ export function GitHubSourcePanel() {
     setDraftOrganizations([])
     setListFetchedAt(null)
     setListStale(false)
+    setListTruncated(false)
     setRefreshingList(false)
     setBusy(false)
     setSavingSettings(false)
@@ -1023,6 +1105,7 @@ export function GitHubSourcePanel() {
     setSchedule(stored.interval)
     lastAttemptAtRef.current = stored.lastAttemptAt
     syncUsageRef.current = loadSyncRequestUsage(browserProductStorage())
+    lastObservedRequestsRef.current = syncUsageRef.current.at(-1)?.requests ?? null
     return state
   }, [setRecoveryState])
 
@@ -1086,6 +1169,7 @@ export function GitHubSourcePanel() {
       applyServerSettings(cached.settings)
       setListFetchedAt(cached.savedAt)
       setListStale(false)
+      setListTruncated(false)
       if (accountScopeRef.current) setStatus('ready')
       else setStatus('loading')
     } else {
@@ -1169,6 +1253,7 @@ export function GitHubSourcePanel() {
       }
       setListFetchedAt(persistRepositoryCache(data))
       setListStale(data.stale === true)
+      setListTruncated(data.truncated === true)
       confirmedGithubIdRef.current = nextAccountId
 
       const existingScope = accountScopeRef.current
@@ -1296,6 +1381,7 @@ export function GitHubSourcePanel() {
       setSchedule(storedSchedule.interval)
       lastAttemptAtRef.current = storedSchedule.lastAttemptAt
       syncUsageRef.current = loadSyncRequestUsage(storage, namespace)
+      lastObservedRequestsRef.current = syncUsageRef.current.at(-1)?.requests ?? null
       setRevealedDraws(loadRevealedDraws(storage, namespace))
       // Only generic-only events that actually entered the staged account
       // ledger are candidates for later generic-key cleanup. Overlaps already
@@ -1327,6 +1413,9 @@ export function GitHubSourcePanel() {
   // A layout effect runs before the browser paints, so a remount paints the
   // cached listing in the first frame instead of flashing the loading state.
   useLayoutEffect(() => {
+    // Intentional pre-paint hydration: the cached account listing and local
+    // product state must not flash a loading shell on a remount.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     hydrateState()
     void loadRepositories()
   }, [hydrateState, loadRepositories])
@@ -1448,6 +1537,7 @@ export function GitHubSourcePanel() {
       // browser copy must not keep an older selection.
       setListFetchedAt(persistRepositoryCache(data))
       setListStale(data.stale === true)
+      setListTruncated(data.truncated === true)
       confirmedGithubIdRef.current = responseAccountId
       return true
     } catch {
@@ -1480,10 +1570,14 @@ export function GitHubSourcePanel() {
     try {
       if (settingsChanged && !(await saveSettings(scope))) return
       if (!isCurrentRun()) return
+      const pendingContinuation = recoveryRef.current?.continuation ?? null
       const response = await fetch('/api/github/sync', {
         method: 'POST',
         headers: githubAccountHeaders(scope.githubId, { 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ activeCompanionId: state.profile.activeCompanionId }),
+        body: JSON.stringify({
+          activeCompanionId: state.profile.activeCompanionId,
+          ...(pendingContinuation ? { continuation: pendingContinuation } : {}),
+        }),
         signal: controller.signal,
       })
       let body: Record<string, unknown> = {}
@@ -1506,6 +1600,18 @@ export function GitHubSourcePanel() {
           handleAccountChanged()
           return
         }
+        if (recoveryRef.current?.continuation &&
+          error instanceof Error &&
+          /continuation is invalid or expired|activity changed while the bounded read was being continued/iu.test(error.message)) {
+          // The server rejected a cursor bound to an older baseline/account.
+          // Keeping it would make every scheduled/manual retry resend the same
+          // bad token forever. The baseline is still authoritative, so a fresh
+          // page-1 sync is safe and will re-read stable event IDs idempotently.
+          clearGithubSyncRecovery(browserProductStorage(), namespace)
+          setRecoveryState(null)
+          setMessage('The GitHub catch-up cursor expired or the account changed. Start a fresh sync.')
+          return
+        }
         throw error
       } finally {
         if (isCurrentRun()) setReadingPhase(false)
@@ -1519,7 +1625,15 @@ export function GitHubSourcePanel() {
         return
       }
       if (!response.ok) {
-        setMessage(errorMessage(body, 'GitHub activity could not be synced.'))
+        const failure = errorMessage(body, 'GitHub activity could not be synced.')
+        if (recoveryRef.current?.continuation &&
+          /continuation is invalid or expired|activity changed while the bounded read was being continued/iu.test(failure)) {
+          clearGithubSyncRecovery(browserProductStorage(), namespace)
+          setRecoveryState(null)
+          setMessage('The GitHub catch-up cursor expired or the account changed. Start a fresh sync.')
+        } else {
+          setMessage(failure)
+        }
         return
       }
       const verifiedEventProofs = parseVerifiedEventProofs(body.verifiedEventProofs)
@@ -1536,19 +1650,17 @@ export function GitHubSourcePanel() {
         { triggerId: `github-sync:${body.lastSyncedAt ?? 'unknown'}` },
       )
       if (!isCurrentRun()) return
-      const storage = browserProductStorage()
       // Every write below uses the namespace captured before the network read.
       // It can never fall back to the generic key if React state is still null.
-      saveGuestProfile(storage, next.profile, `terrarium:guest-profile:${namespace}`)
-      saveBrowserLedger(storage, next.ledger, namespace)
-      saveBrowserEncounters(storage, next.encounters, namespace)
+      const storage = browserProductStorage()
+      saveBrowserProductState(next, namespace)
       setProductState(next)
 
       const persistedProofs = {
         ...loadVerifiedEventProofs(storage, namespace),
         ...proofsForAppliedEvents(incoming, next, verifiedEventProofs),
       }
-      const uploadSnapshot = buildProductSnapshot(next, undefined, persistedProofs)
+      const uploadSnapshot = buildProductSnapshot(next, undefined, persistedProofs, new Set(loadDurableEventIds(storage, namespace)))
       // Save receipts before the cloud upload. The signed checkpoint sent with
       // the snapshot is committed server-side only after this upload succeeds,
       // so a failed condition upload remains retryable.
@@ -1558,20 +1670,46 @@ export function GitHubSourcePanel() {
         uploadSnapshot.events.map((event) => event.eventId),
         namespace,
       )
-      const checkpoint = typeof body.checkpoint === 'string' ? body.checkpoint : null
-      // Persist the exact product payload and signed checkpoint before the
-      // network write. A receipt failure must survive a reload; the next retry
-      // repairs this preserved window instead of rescanning and losing the
-      // only token that can advance its baseline.
+      const partialSync = body.syncStatus === 'partial' && typeof body.continuation === 'string'
+      const checkpoint = partialSync ? null : typeof body.checkpoint === 'string' ? body.checkpoint : null
+      // Persist the exact product payload and signed checkpoint/cursor before
+      // the network write. A receipt failure or an incomplete bounded read must
+      // survive a reload; the next retry resumes this window instead of
+      // rescanning and losing the only token that can advance its baseline.
       const pendingRecovery: StoredGithubSyncRecovery = {
         snapshot: uploadSnapshot,
         checkpoint,
+        continuation: partialSync ? body.continuation as string : null,
         failures: [],
         blockedEventIds: [],
         attemptedAt: new Date().toISOString(),
       }
       saveGithubSyncRecovery(storage, pendingRecovery, namespace)
       setRecoveryState(pendingRecovery)
+      if (partialSync) {
+        // Back up verified events without a checkpoint while the bounded read
+        // continues. This makes prior chunks durable and lets later snapshots
+        // compact only IDs the server has actually accepted; the baseline still
+        // cannot advance until a final signed checkpoint is uploaded.
+        const partialUpload = await uploadProductSnapshot(uploadSnapshot, null, scope.githubId)
+        if (partialUpload.accountChanged) {
+          handleAccountChanged()
+          return
+        }
+        if (!partialUpload.ok) {
+          const partialFailures = parseReceiptFailures(partialUpload.body)
+          setMessage(partialFailures.length > 0
+            ? `${partialFailures.length} verified receipt${partialFailures.length === 1 ? '' : 's'} blocked the partial backup. Repair and retry below.`
+            : `Activity was read, but the continuation backup was not committed: ${errorMessage(partialUpload.body, 'try again later')}`)
+          return
+        }
+        const adoptedPartial = adoptUploadedSnapshot(partialUpload.body, next.profile, namespace, next)
+        if (adoptedPartial && isCurrentRun()) setProductState(adoptedPartial)
+        if (isCurrentRun()) {
+          setLastSyncSummary('GitHub activity window continued. Verified activity is backed up; the baseline remains unchanged until the catch-up finishes.')
+        }
+        return
+      }
       // The checkpoint travels in the BODY. A real account's signed checkpoint
       // is tens of kilobytes (measured ~21 KB at 500 events), far beyond the
       // request-header budget of the platform in front of the function, where
@@ -1625,7 +1763,7 @@ export function GitHubSourcePanel() {
         // The server may have merged a second device's events or refreshed a
         // receipt-backed aggregate. Keep this browser on the exact response,
         // not merely on the pre-upload local state.
-        const uploadedState = adoptUploadedSnapshot(snapshotBody, next.profile, namespace)
+        const uploadedState = adoptUploadedSnapshot(snapshotBody, next.profile, namespace, next)
         if (uploadedState && isCurrentRun()) setProductState(uploadedState)
       }
       const count = typeof body.repositoryCount === 'number' ? body.repositoryCount : 0
@@ -1635,10 +1773,10 @@ export function GitHubSourcePanel() {
       const limitNote = skippedCount > 0
         ? ` ${skippedCount} more will be read by the next sync; repositories without a baseline go first.`
         : ''
-      // Truncation is not a failure: the scan window ended before the oldest
-      // activity, and everything newer than the checkpoint was still awarded.
+      // The adapter exposes bounded-window detail, while the sync route fails
+      // closed before issuing a checkpoint when the window is incomplete.
       const truncatedNote = body.truncated === true
-        ? ' The scan window ended before the oldest activity; earlier history is not awarded.'
+        ? ' The scan window was incomplete; no baseline or checkpoint advances until the next retry finishes it.'
         : ''
       const receiptFailures = upload.ok ? [] : parseReceiptFailures(snapshotBody)
       let cloudNote = upload.ok
@@ -1764,6 +1902,10 @@ export function GitHubSourcePanel() {
           reason: 'receipt-repair-pending',
           payloadDigest: null,
         }))
+    if (pending.continuation && targets.length === 0) {
+      setLastSyncSummary('This condition has no receipt failures to repair. Run Sync to continue the GitHub activity window.')
+      return
+    }
     const pendingEvents = new Map(pending.snapshot.events.map((event) => [event.eventId, event]))
     const legacyProofs = Object.fromEntries(
       targets.flatMap((target) => {
@@ -1880,6 +2022,7 @@ export function GitHubSourcePanel() {
           // uploaded without it. It is needed when the remaining blocked
           // events are repaired later.
           checkpoint: pending.checkpoint,
+          continuation: pending.continuation ?? null,
           failures: remainingFailures,
           blockedEventIds: [...blocked],
           attemptedAt: new Date().toISOString(),
@@ -1911,6 +2054,7 @@ export function GitHubSourcePanel() {
         const failedRecovery: StoredGithubSyncRecovery = {
           snapshot: repairedSnapshot,
           checkpoint: pending.checkpoint,
+          continuation: pending.continuation ?? null,
           failures: failures.length > 0 ? failures : [...unresolved.values()],
           blockedEventIds: [...uploadBlocked],
           attemptedAt: new Date().toISOString(),
@@ -1931,6 +2075,26 @@ export function GitHubSourcePanel() {
       }
 
       if (!isCurrentRepair()) return
+      if (pending.continuation) {
+        // Receipt repair can make a partial chunk durable, but it cannot commit
+        // the baseline: only the final continuation response carries a signed
+        // checkpoint. Keep the cursor and ask the normal Sync action to resume.
+        const continuedRecovery: StoredGithubSyncRecovery = {
+          ...pending,
+          snapshot: repairedSnapshot,
+          checkpoint: null,
+          continuation: pending.continuation,
+          failures: [],
+          blockedEventIds: [],
+          attemptedAt: new Date().toISOString(),
+        }
+        saveGithubSyncRecovery(storage, continuedRecovery, namespace)
+        setRecoveryState(continuedRecovery)
+        const uploadedPartial = adoptUploadedSnapshot(upload.body, state.profile, namespace, state)
+        if (uploadedPartial && isCurrentRepair()) setProductState(uploadedPartial)
+        setLastSyncSummary('Verified receipts repaired. Activity backup is durable; run Sync to continue the GitHub catch-up.')
+        return
+      }
       clearGithubSyncRecovery(storage, namespace)
       setRecoveryState(null)
       const migration = legacyMigrationRef.current
@@ -1941,7 +2105,7 @@ export function GitHubSourcePanel() {
           deserializeProductSnapshot(JSON.stringify(upload.body)),
         )
       }
-      const uploaded = adoptUploadedSnapshot(upload.body, state.profile, namespace)
+      const uploaded = adoptUploadedSnapshot(upload.body, state.profile, namespace, state)
       if (uploaded && isCurrentRepair()) setProductState(uploaded)
       setLastSyncSummary('Verified receipts repaired. Account backup committed successfully; the last successful checkpoint advanced.')
     } catch (error) {
@@ -2031,6 +2195,7 @@ export function GitHubSourcePanel() {
               state,
               undefined,
               loadVerifiedEventProofs(storage, namespace),
+              new Set(loadDurableEventIds(storage, namespace)),
             )
             const localSummary = summarizeGuestSnapshot(localSnapshot)
             if (localSummary) {
@@ -2075,7 +2240,7 @@ export function GitHubSourcePanel() {
         // chooser closes even if the upload itself fails, because an ordinary
         // sync can retry that upload.
         showGuestConflict(null)
-        const replacementSnapshot = buildProductSnapshot(state, undefined, loadVerifiedEventProofs(storage, namespace))
+        const replacementSnapshot = buildProductSnapshot(state, undefined, loadVerifiedEventProofs(storage, namespace), new Set(loadDurableEventIds(storage, namespace)))
         const upload = await uploadProductSnapshot(
           replacementSnapshot,
           pending.checkpoint,
@@ -2097,7 +2262,7 @@ export function GitHubSourcePanel() {
               deserializeProductSnapshot(JSON.stringify(upload.body)),
             )
           }
-          const uploaded = adoptUploadedSnapshot(upload.body, state.profile, namespace)
+          const uploaded = adoptUploadedSnapshot(upload.body, state.profile, namespace, state)
           if (uploaded) setProductState(uploaded)
         }
         setLastSyncSummary(guestIdentityActionSummary(action, upload.ok
@@ -2149,7 +2314,7 @@ export function GitHubSourcePanel() {
           return
         }
         setProductState(adopted)
-        const combinedSnapshot = buildProductSnapshot(adopted, undefined, loadVerifiedEventProofs(storage, namespace))
+        const combinedSnapshot = buildProductSnapshot(adopted, undefined, loadVerifiedEventProofs(storage, namespace), new Set(loadDurableEventIds(storage, namespace)))
         const upload = await uploadProductSnapshot(
           combinedSnapshot,
           pending.checkpoint,
@@ -2178,7 +2343,7 @@ export function GitHubSourcePanel() {
             deserializeProductSnapshot(JSON.stringify(upload.body)),
           )
         }
-        const merged = adoptUploadedSnapshot(upload.body, adopted.profile, namespace)
+        const merged = adoptUploadedSnapshot(upload.body, adopted.profile, namespace, adopted)
         if (merged) setProductState(merged)
         showGuestConflict(null)
         setLastSyncSummary(guestIdentityActionSummary(action, { result: 'succeeded' }))
@@ -2229,7 +2394,7 @@ export function GitHubSourcePanel() {
       // ledger just gave up, so it is dropped: the next sync re-reads that
       // window and awards it against the account's copy.
       const upload = await uploadProductSnapshot(
-        buildProductSnapshot(restored, undefined, loadVerifiedEventProofs(storage, namespace)),
+        buildProductSnapshot(restored, undefined, loadVerifiedEventProofs(storage, namespace), new Set(loadDurableEventIds(storage, namespace))),
         null,
         scope.githubId,
       )
@@ -2251,7 +2416,7 @@ export function GitHubSourcePanel() {
       // This action deliberately replaced the staged local events with the
       // account copy, so the generic archive remains available for a later,
       // explicit migration rather than being cleared here.
-      const uploaded = adoptUploadedSnapshot(upload.body, restored.profile, namespace)
+      const uploaded = adoptUploadedSnapshot(upload.body, restored.profile, namespace, restored)
       if (uploaded) setProductState(uploaded)
       showGuestConflict(null)
       setLastSyncSummary(guestIdentityActionSummary(action, { result: 'succeeded' }))
@@ -2391,6 +2556,7 @@ export function GitHubSourcePanel() {
           syncUsageRef.current,
           loadSyncRequestUsage(browserProductStorage(), scope.namespace, now),
         )
+        lastObservedRequestsRef.current = syncUsageRef.current.at(-1)?.requests ?? null
       } catch {
         // Storage unavailable: decide from the in-memory record.
       }
@@ -2455,14 +2621,44 @@ export function GitHubSourcePanel() {
     })
   }
 
-  const makeActive = (companionId: string) => {
+  const makeActive = async (companionId: string) => {
     const scope = accountScopeRef.current
     if (!productState || !scope || !isCurrentAccountNamespace(accountGateRef.current, scope)) return
     const next = switchActiveCompanion(productState, companionId, PROTOTYPE_COMPANION_CATALOG)
     if (next === productState) return
-    const storage = browserProductStorage()
-    saveGuestProfile(storage, next.profile, `terrarium:guest-profile:${scope.namespace}`)
-    setProductState(next)
+    const actionToken = ++accountActionRef.current
+    const isCurrentActivation = (): boolean => isCurrentAccountActivation(
+      accountGateRef.current,
+      scope,
+      actionToken,
+      accountActionRef.current,
+    )
+    try {
+      const response = await fetch('/api/sync/product/activate', {
+        method: 'POST',
+        headers: githubAccountHeaders(scope.githubId, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ companionId }),
+      })
+      // Account switching or a newer activation can happen while the server
+      // is answering. Never let that stale continuation paint or persist the
+      // old account's selection.
+      if (!isCurrentActivation()) return
+      if (!response.ok) {
+        const body = await response.json().catch(() => null) as { error?: string } | null
+        if (!isCurrentActivation()) return
+        throw new Error(body?.error ?? 'Activation could not be saved.')
+      }
+      if (!isCurrentActivation()) return
+      const storage = browserProductStorage()
+      saveGuestProfile(storage, next.profile, `terrarium:guest-profile:${scope.namespace}`)
+      announceAccountState(scope.namespace)
+      setProductState(next)
+      setMessage('Active companion updated.')
+    } catch (error) {
+      if (isCurrentActivation()) {
+        setMessage(error instanceof Error ? error.message : 'Activation could not be saved.')
+      }
+    }
   }
 
   return (
@@ -2655,7 +2851,7 @@ export function GitHubSourcePanel() {
               <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--accent)' }}>Cloud backup blocked</p>
               <h2 className="font-ui mt-2 text-2xl font-semibold tracking-tight">{guestConflict.view.headline}</h2>
               <p className="font-prose mt-2 max-w-2xl text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-                This browser's progress is safe. The account guard stopped the upload because the two copies use different Terrarium identities; nothing is overwritten until you choose.
+                This browser&apos;s progress is safe. The account guard stopped the upload because the two copies use different Terrarium identities; nothing is overwritten until you choose.
               </p>
 
               <div className="mt-5 grid gap-px border sm:grid-cols-2" style={{ borderColor: 'var(--rule)', background: 'var(--rule)' }}>
@@ -2666,7 +2862,7 @@ export function GitHubSourcePanel() {
                   <div className="bg-[color:var(--paper)] px-5 py-4">
                     <p className="font-data text-[10px] uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Account cloud copy</p>
                     <p className="font-ui mt-1 text-sm font-medium">Not readable right now</p>
-                    <p className="font-prose mt-1 text-xs" style={{ color: 'var(--ink-muted)' }}>Sync GitHub now again so the account's copy can be read.</p>
+                    <p className="font-prose mt-1 text-xs" style={{ color: 'var(--ink-muted)' }}>Sync GitHub now again so the account&apos;s copy can be read.</p>
                   </div>
                 )}
               </div>
@@ -2691,8 +2887,8 @@ export function GitHubSourcePanel() {
                       <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
                         <p role="alert" className="font-prose max-w-sm text-xs leading-relaxed sm:text-right" style={{ color: 'var(--ink-muted)' }}>
                           {plan.discardsCloudSnapshot
-                            ? "The account's cloud copy is deleted before the new upload. This cannot be undone."
-                            : "This browser's progress for this account is replaced by the account's cloud copy."}
+                            ? "The account\u2019s cloud copy is deleted before the new upload. This cannot be undone."
+                            : "This browser\u2019s progress for this account is replaced by the account\u2019s cloud copy."}
                         </p>
                         <div className="flex flex-wrap gap-2">
                           <button
@@ -2871,6 +3067,11 @@ export function GitHubSourcePanel() {
                     style={{ color: listStale ? 'var(--accent)' : 'var(--ink-muted)' }}
                   >
                     {listFreshnessLabel}
+                  </p>
+                )}
+                {listTruncated && (
+                  <p role="status" className="font-data text-xs" style={{ color: 'var(--accent)' }}>
+                    Partial list · explicitly tracked IDs are verified separately
                   </p>
                 )}
                 <button

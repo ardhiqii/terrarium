@@ -39,6 +39,8 @@ import {
   PRODUCT_SNAPSHOT_SCHEMA_VERSION,
   restoreProductStateFromSnapshot,
   validateProductSnapshot,
+  validateProductSnapshotForCatalog,
+  toOpaqueProductId,
   type ProductSnapshot,
   type ProductSnapshotEvent,
 } from '@/lib/sync/product-snapshot'
@@ -83,8 +85,12 @@ function json(status: number, body: unknown, extraHeaders: HeadersInit = {}): Re
   return new Response(body === undefined ? null : JSON.stringify(body), {
     status,
     headers: body === undefined
-      ? extraHeaders
-      : { 'Content-Type': 'application/json; charset=utf-8', ...extraHeaders },
+      ? { 'Cache-Control': 'no-store, private', ...extraHeaders }
+      : {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store, private',
+          ...extraHeaders,
+        },
   })
 }
 
@@ -170,8 +176,10 @@ function sameTimestampMap(
 function unknownCompanionIds(snapshot: ProductSnapshot): string[] {
   const ids = new Set<string>([
     snapshot.activeCompanionId,
+    snapshot.activeSelection.companionId,
     ...snapshot.companions.map((companion) => companion.companionId),
     ...snapshot.collection.map((reference) => reference.companionId),
+    ...snapshot.legacyCredits.map((credit) => credit.companionId),
     ...snapshot.events.map((event) => event.companionId),
     ...snapshot.encounters.draws.flatMap((draw) => [
       draw.selectedCompanionId,
@@ -185,14 +193,169 @@ function unownedCompanionIds(snapshot: ProductSnapshot): string[] {
   const owned = new Set(snapshot.collection.map((reference) => reference.companionId))
   const referenced = new Set([
     snapshot.activeCompanionId,
+    snapshot.activeSelection.companionId,
     ...snapshot.companions.map((companion) => companion.companionId),
+    ...snapshot.legacyCredits.map((credit) => credit.companionId),
     ...snapshot.events.map((event) => event.companionId),
-    ...snapshot.encounters.draws.flatMap((draw) => [
-      draw.selectedCompanionId,
-      ...draw.weights.map((weight) => weight.companionId),
-    ]),
+    ...snapshot.encounters.draws.map((draw) => draw.selectedCompanionId),
   ])
   return [...referenced].filter((id) => !owned.has(id)).sort()
+}
+
+function hasIncompleteEncounterWeights(snapshot: ProductSnapshot): boolean {
+  const catalogIds = new Set(PROTOTYPE_COMPANION_CATALOG.list().map((definition) => definition.id))
+  return snapshot.encounters.draws.some((draw) => {
+    const weightIds = new Set(draw.weights.map((weight) => weight.companionId))
+    return weightIds.size !== draw.weights.length || weightIds.size !== catalogIds.size || [...catalogIds].some((id) => !weightIds.has(id))
+  })
+}
+
+function canonicalLegacyFingerprint(value: string): string {
+  // Migration credits already carry a bounded, non-reversible fingerprint.
+  // Rehashing it changes the trust-boundary format and makes a legitimate
+  // server-issued migration disappear on the next product upload.
+  return /^legacy:[0-9a-f]{8}-[0-9a-f]{8}$/u.test(value)
+    ? value
+    : toOpaqueProductId(value, 'fingerprint')
+}
+
+function normalizeOpaqueSnapshotFields(snapshot: ProductSnapshot): ProductSnapshot {
+  return {
+    ...snapshot,
+    legacyCredits: snapshot.legacyCredits.map((credit) => ({
+      ...credit,
+      sourceFingerprint: canonicalLegacyFingerprint(credit.sourceFingerprint),
+    })),
+    sourceBaselines: snapshot.sourceBaselines.map((baseline) => ({
+      ...baseline,
+      sourceIdHash: toOpaqueProductId(baseline.sourceIdHash, 'source'),
+      fingerprintHash: toOpaqueProductId(baseline.fingerprintHash, 'fingerprint'),
+    })),
+    events: snapshot.events.map((event) => ({
+      ...event,
+      eventId: toOpaqueProductId(event.eventId, 'event'),
+      ...(event.cap ? { cap: { ...event.cap, key: toOpaqueProductId(event.cap.key, 'cap') } } : {}),
+      ...(event.metadata
+        ? {
+            metadata: {
+              ...event.metadata,
+              ...(event.metadata.repositoryIdHash
+                ? { repositoryIdHash: toOpaqueProductId(event.metadata.repositoryIdHash, 'repo') }
+                : {}),
+              ...(event.metadata.linkedPullRequestIdHash
+                ? { linkedPullRequestIdHash: toOpaqueProductId(event.metadata.linkedPullRequestIdHash, 'pr') }
+                : {}),
+              ...(event.metadata.pullRequestIdHash
+                ? { pullRequestIdHash: toOpaqueProductId(event.metadata.pullRequestIdHash, 'pr') }
+                : {}),
+            },
+          }
+        : {}),
+    })),
+    encounters: {
+      ...snapshot.encounters,
+      processedTriggerIds: snapshot.encounters.processedTriggerIds.map((id) => toOpaqueProductId(id, 'trigger')),
+      progressByTriggerId: Object.fromEntries(
+        Object.entries(snapshot.encounters.progressByTriggerId ?? {})
+          .map(([id, progress]) => [toOpaqueProductId(id, 'trigger'), progress]),
+      ),
+      draws: snapshot.encounters.draws.map((draw) => ({
+        ...draw,
+        id: toOpaqueProductId(draw.id, 'draw'),
+        triggerId: toOpaqueProductId(draw.triggerId, 'trigger'),
+        seed: toOpaqueProductId(draw.seed, 'seed'),
+      })),
+    },
+  }
+}
+
+/**
+ * Client snapshots are derived state, but migration credits and history
+ * references are server-owned. A browser may replay a credit already present
+ * in the account row; it may not mint a new aggregate grant or history-owned
+ * companion by posting a catalog-valid payload.
+ */
+function sanitizeIncomingSnapshot(
+  snapshot: ProductSnapshot,
+  server: ProductSnapshot | null,
+): ProductSnapshot {
+  // Migration credits and collection references are server-owned. Matching an
+  // opaque reference ID is not enough: a client can replay that ID with a
+  // different companion, acquisition, or timestamp. Copy the complete trusted
+  // server reference and ignore every conflicting client version. Keeping the
+  // full server collection also prevents omission from deleting ownership.
+  const collection = server
+    ? server.collection.map((reference) => ({ ...reference }))
+    : [
+        snapshot.collection.find((reference) => reference.acquisition === 'starter') ?? {
+          referenceId: `${snapshot.guestId}:starter`,
+          companionId: 'pikachu-family',
+          acquiredAt: snapshot.createdAt,
+          acquisition: 'starter' as const,
+        },
+      ]
+  const owned = new Set(collection.map((reference) => reference.companionId))
+  const legacyCredits = server
+    ? server.legacyCredits.map((credit) => ({ ...credit }))
+    : []
+  const companions = server
+    ? [
+        ...server.companions.map((companion) => ({ ...companion })),
+        ...snapshot.companions
+          .filter((companion) => owned.has(companion.companionId))
+          .filter((companion) => !server.companions.some((trusted) => trusted.companionId === companion.companionId)),
+      ]
+    : snapshot.companions.filter((companion) => owned.has(companion.companionId))
+  const activeCompanionId = server && owned.has(server.activeCompanionId)
+    ? server.activeCompanionId
+    : owned.has(snapshot.activeCompanionId)
+      ? snapshot.activeCompanionId
+      : collection[0].companionId
+  const activeSelection = server && server.activeSelection.companionId === activeCompanionId
+    ? { ...server.activeSelection }
+    : activeCompanionId === snapshot.activeCompanionId && owned.has(snapshot.activeSelection.companionId)
+      ? { ...snapshot.activeSelection }
+      : {
+          companionId: activeCompanionId,
+          provenance: collection.find((reference) => reference.companionId === activeCompanionId && reference.acquisition === 'starter')
+            ? 'starter' as const
+            : 'user' as const,
+          selectedAt: snapshot.updatedAt,
+        }
+  // Encounter draws and Essence are rewards, not client-authenticated facts.
+  // Existing account rows remain authoritative for all encounter state. On a
+  // first upload only bounded meter/progress evidence is retained; draws and
+  // their reward aggregate are never minted by the upload itself.
+  const encounters = server
+    ? {
+        ...server.encounters,
+        processedTriggerIds: [...server.encounters.processedTriggerIds],
+        draws: [...server.encounters.draws],
+        essenceByFamily: { ...server.encounters.essenceByFamily },
+      }
+    : {
+        meter: snapshot.encounters.meter,
+        totalProgress: snapshot.encounters.totalProgress,
+        nextSequence: snapshot.encounters.nextSequence,
+        draws: [],
+        processedTriggerIds: snapshot.encounters.processedTriggerIds,
+        essenceByFamily: {},
+        progressByTriggerId: { ...snapshot.encounters.progressByTriggerId },
+      }
+  return normalizeOpaqueSnapshotFields({
+    ...snapshot,
+    activeCompanionId,
+    activeSelection,
+    ...(server?.migrationVersion ?? (legacyCredits.length > 0 ? snapshot.migrationVersion : undefined)
+      ? { migrationVersion: server?.migrationVersion ?? snapshot.migrationVersion }
+      : {}),
+    legacyCredits,
+    companions,
+    collection,
+    ...(server ? { catalogVersion: server.catalogVersion } : {}),
+    events: snapshot.events.filter((event) => owned.has(event.companionId)),
+    encounters,
+  })
 }
 
 function canonicalizeDerivedSnapshot(snapshot: ProductSnapshot): ProductSnapshot {
@@ -233,7 +396,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     return json(409, { error: 'account_changed' })
   }
 
-  const rl = checkRateLimit(`product-sync-write:${session.handle}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS)
+  const rl = checkRateLimit(`product-sync-write:${session.githubId}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS)
   if (!rl.allowed) return json(429, { error: 'Rate limit exceeded. Try again shortly.' })
 
   // Guard the body size before parsing (derived snapshots can be large with many events).
@@ -266,15 +429,6 @@ export async function POST(request: NextRequest): Promise<Response> {
       error: `schemaVersion ${incoming.schemaVersion} is newer than this server supports (${PRODUCT_SNAPSHOT_SCHEMA_VERSION}).`,
     })
   }
-  const unknownIds = unknownCompanionIds(incoming)
-  if (unknownIds.length > 0) {
-    return json(400, { error: 'Product snapshot contains an unrecognized companion.', companionIds: unknownIds.slice(0, 5) })
-  }
-  const unownedIds = unownedCompanionIds(incoming)
-  if (unownedIds.length > 0) {
-    return json(400, { error: 'Product snapshot references a companion outside its collection.', companionIds: unownedIds.slice(0, 5) })
-  }
-
   /**
    * Why one event was rejected. Naming the reason and the event matters: a
    * generic 400 made a payload that no longer matches look identical to a
@@ -352,24 +506,87 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
 
   const handle = session.handle.toLowerCase()
-  const canonicalIncoming = canonicalizeDerivedSnapshot(incoming)
 
   // Retry a short optimistic-concurrency window. This keeps two tabs/devices
   // from silently replacing one another's event history while preserving the
-  // simple provider-neutral store contract.
+  // simple provider-neutral store contract. Sanitization is deliberately
+  // repeated inside the retry: a concurrent writer may have added a trusted
+  // collection reference after the first read.
   try {
     const store = getProductStore()
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const serverRecord = await store.getRecord(session.githubId, handle)
       const server = serverRecord ? trustStoredProductSnapshot(serverRecord.snapshot, session.githubId) : null
+      // A first upload has no trusted ownership source, so it must prove its
+      // own collection. Once an account row exists, these checks are deferred
+      // until after server-owned references have replaced conflicting client
+      // fields; otherwise a forged version of a trusted starter ID would be
+      // rejected before it could be safely ignored.
+      if (!server) {
+        const unknownIds = unknownCompanionIds(incoming)
+        if (unknownIds.length > 0) {
+          return json(400, { error: 'Product snapshot contains an unrecognized companion.', companionIds: unknownIds.slice(0, 5) })
+        }
+        const unownedIds = unownedCompanionIds(incoming)
+        if (unownedIds.length > 0 || hasIncompleteEncounterWeights(incoming)) {
+          return json(400, { error: 'Product snapshot references a companion outside its collection.', companionIds: unownedIds.slice(0, 5) })
+        }
+        try {
+          validateProductSnapshotForCatalog(incoming, PROTOTYPE_COMPANION_CATALOG)
+        } catch {
+          return json(400, { error: 'Product snapshot active companion or migration credit is invalid.' })
+        }
+      }
+      let canonicalIncoming: ProductSnapshot
+      try {
+        canonicalIncoming = canonicalizeDerivedSnapshot(sanitizeIncomingSnapshot(incoming, server))
+      } catch {
+        return json(400, { error: 'Product snapshot is inconsistent after server-owned fields were sanitized.' })
+      }
       if (server && server.guestId !== canonicalIncoming.guestId) {
         return json(409, { error: 'This GitHub account already has a different guest profile.' })
       }
-      const merged = server ? mergeProductSnapshots(canonicalIncoming, server) : canonicalIncoming
+      let merged: ProductSnapshot
+      try {
+        merged = server ? mergeProductSnapshots(canonicalIncoming, server) : canonicalIncoming
+      } catch {
+        // Two individually valid snapshots can still exceed a cumulative
+        // bound when their event IDs are unioned. That is a retryable conflict,
+        // not a storage outage and must not be reported as one.
+        return json(409, { error: 'This condition is too large to merge in one upload. Sync again from the latest account state.' })
+      }
+      const authoritative = server
+        ? {
+            ...merged,
+            // Selection changes are committed by the account activation path;
+            // an uploaded snapshot, even with a future selectedAt, cannot
+            // replace the trusted server selection.
+            activeCompanionId: server.activeCompanionId,
+            activeSelection: { ...server.activeSelection },
+          }
+        : merged
+      try {
+        // The structural validator protects the transport. This second check
+        // protects the catalog/ownership invariant after merge, where a
+        // conflicting client collection reference could otherwise make a
+        // formerly owned companion appear newly acquired.
+        validateProductSnapshotForCatalog(authoritative, PROTOTYPE_COMPANION_CATALOG)
+      } catch {
+        return json(400, { error: 'Product snapshot is invalid after merge.' })
+      }
+      if (checkpoint) {
+        const authoritativeEventIds = new Set(authoritative.events.map((event) => event.eventId))
+        if (checkpoint.eventIds.some((eventId) => !authoritativeEventIds.has(eventId))) {
+          // Sanitization may intentionally discard a client event. Never
+          // advance the GitHub baseline for a signed checkpoint whose events
+          // did not survive the trusted merge.
+          return json(409, { error: 'Sync checkpoint events were discarded by the trusted product merge.' })
+        }
+      }
       const saved = await store.put(
         session.githubId,
         handle,
-        merged,
+        authoritative,
         new Date().toISOString(),
         serverRecord?.updatedAt ?? null,
       )
@@ -385,7 +602,7 @@ export async function POST(request: NextRequest): Promise<Response> {
             return json(409, { error: 'GitHub activity changed while this condition was being saved. Sync again.' })
           }
         }
-        return json(200, merged)
+        return json(200, authoritative)
       }
     }
   } catch {

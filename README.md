@@ -59,24 +59,18 @@ are in [`docs/DESIGN.md`](docs/DESIGN.md), the implementation sequence is in
 ### First use
 
 The user does not authenticate before using the app and does not need a desktop
-download. On first visit, the app creates a local guest profile and shows a
-starter companion. The user can then choose:
-
-- **Let my work decide:** connect notes or GitHub and use existing history to
-  choose a weighted first companion.
-- **Surprise me:** receive a fully random valid companion.
-- **Connect later:** keep the starter and personalize it later.
-
-Existing history chooses identity and origin. It does not create retroactive XP.
+download. On first visit, the app creates one persisted local guest profile,
+chooses exactly one random starter-eligible base-stage companion, and starts it
+at `0 XP`. Refreshes and navigation never reroll that starter. Existing history
+may be migrated only through the documented, versioned migration path; it does
+not create retroactive XP for a new profile.
 
 ### XP
 
 XP belongs to the one active companion. Switching companions is always allowed;
-each companion keeps its own XP. These are the initial playtest values:
-
-> The checked-in runtime still contains the legacy snapshot engine. The values
-> below are the target contract for the new event-ledger implementation in
-> `docs/PLAN.md`, not a claim that the migration is already complete.
+each companion keeps its own XP. Only qualifying new source events award XP, and
+they are bound to the active companion when accepted. These are the initial
+playtest values:
 
 | Event | XP |
 |---|---:|

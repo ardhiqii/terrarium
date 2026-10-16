@@ -114,6 +114,7 @@ describe('partial GitHub receipt-repair projection', () => {
       draws: [],
       processedTriggerIds: [],
       essenceByFamily: {},
+      progressByTriggerId: {},
     })
     expect(projected.companions.map((companion) => companion.companionId)).toEqual([
       'pikachu-family',

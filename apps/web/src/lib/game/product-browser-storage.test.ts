@@ -8,11 +8,13 @@ import {
   DEFAULT_STORED_SYNC_SCHEDULE,
   browserProductStorage,
   loadGithubSyncRecovery,
+  loadMarkdownKnownPaths,
   loadSyncRequestUsage,
   loadSyncScheduleState,
   loadVerifiedEventProofs,
   mergeVerifiedEventProofs,
   saveGithubSyncRecovery,
+  rememberMarkdownPaths,
   saveSyncRequestUsage,
   saveSyncScheduleState,
   saveVerifiedEventProofs,
@@ -108,6 +110,27 @@ describe('browser GitHub receipt storage', () => {
     expect(loadVerifiedEventProofs(value, 'github-42')).toEqual({})
   })
 
+  it('keeps Markdown path tombstones local and merges them by source namespace', () => {
+    const value = storage()
+
+    expect(loadMarkdownKnownPaths(value, 'garden:one', 'github-42')).toBeNull()
+    expect(rememberMarkdownPaths(value, 'garden:one', ['notes/a.md', 'notes/b.md'], 'github-42'))
+      .toEqual(['notes/a.md', 'notes/b.md'])
+    expect(rememberMarkdownPaths(value, 'garden:one', ['notes/a.md', 'notes/c.md'], 'github-42'))
+      .toEqual(['notes/a.md', 'notes/b.md', 'notes/c.md'])
+    expect(loadMarkdownKnownPaths(value, 'garden:one', 'github-42'))
+      .toEqual(['notes/a.md', 'notes/b.md', 'notes/c.md'])
+    expect(loadMarkdownKnownPaths(value, 'garden:two', 'github-42')).toBeNull()
+    expect(loadMarkdownKnownPaths(value, 'garden:one', 'github-43')).toBeNull()
+  })
+
+  it('fails closed for a malformed Markdown path manifest', () => {
+    const value = storage()
+    value.setItem('terrarium:markdown-known-paths:garden:one:github-42', '{bad json')
+
+    expect(loadMarkdownKnownPaths(value, 'garden:one', 'github-42')).toBeNull()
+  })
+
   it('round-trips the automatic-sync cadence per account namespace', () => {
     const value = storage()
 
@@ -189,5 +212,14 @@ describe('browser GitHub receipt storage', () => {
     // The merged in-memory record survives the refused write.
     expect(saveSyncRequestUsage(hostile, [{ at: 1, requests: 10 }], 'github-42', 1))
       .toEqual([{ at: 1, requests: 10 }])
+
+    const recovery = {
+      snapshot: productSnapshot(),
+      checkpoint: null,
+      failures: [],
+      blockedEventIds: [],
+      attemptedAt: '2026-09-23T10:05:00.000Z',
+    } satisfies StoredGithubSyncRecovery
+    expect(saveGithubSyncRecovery(hostile, recovery, 'github-42')).toBe(false)
   })
 })

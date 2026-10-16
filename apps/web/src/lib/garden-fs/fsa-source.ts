@@ -6,8 +6,8 @@
  * to or from a server.
  */
 import type { GardenConnection, GardenFile, GardenSource } from './types'
-import { isMarkdownFile } from './types'
-import { clearHandle, loadHandle, saveHandle } from './handle-store'
+import { createGardenSourceId, isMarkdownFile } from './types'
+import { clearHandle, loadStoredHandle, saveHandle } from './handle-store'
 
 /** True only on browsers that expose the File System Access API. Today that
  * means Chromium; Firefox and Safari do not implement it. */
@@ -109,7 +109,18 @@ function hasIgnoredDirectorySegment(segments: string[]): boolean {
  * POSIX path, e.g. `projects/ideas.md`. Treats `.md` and `.mdx` alike, per
  * the frozen contract. */
 export class FsaGardenSource implements GardenSource {
-  constructor(private readonly handle: FileSystemDirectoryHandle) {}
+  readonly sourceId: string
+
+  constructor(
+    private readonly handle: FileSystemDirectoryHandle,
+    sourceId = createGardenSourceId()
+  ) {
+    const normalizedSourceId = sourceId.trim()
+    this.sourceId =
+      normalizedSourceId && normalizedSourceId !== handle.name
+        ? normalizedSourceId
+        : createGardenSourceId()
+  }
 
   get name(): string {
     return this.handle.name
@@ -117,7 +128,7 @@ export class FsaGardenSource implements GardenSource {
 
   async list(): Promise<GardenFile[]> {
     const files: GardenFile[] = []
-    await this.scanDirectory(this.handle, '', files, true)
+    await this.scanDirectory(this.handle, '', files)
     return files
   }
 
@@ -125,16 +136,15 @@ export class FsaGardenSource implements GardenSource {
     directory: FileSystemDirectoryHandle,
     prefix: string,
     files: GardenFile[],
-    isRoot = false
   ): Promise<void> {
     try {
       for await (const [entryName, entry] of directory.entries()) {
         if (entry.kind === 'directory') {
           if (isIgnoredDirectory(entryName)) continue
           const nestedPrefix = prefix ? `${prefix}/${entryName}` : entryName
-          // A revoked/unreadable nested directory should not hide files in
-          // its siblings. The root failure is allowed to reject list(), as it
-          // did before recursion was introduced.
+          // A revoked/unreadable nested directory makes the whole scan
+          // incomplete. Let list() reject instead of publishing a partial
+          // activity baseline.
           await this.scanDirectory(
             entry as FileSystemDirectoryHandle,
             nestedPrefix,
@@ -153,15 +163,18 @@ export class FsaGardenSource implements GardenSource {
             content,
             lastModified: file.lastModified,
           })
-        } catch {
-          // A single unreadable file (permission race, deleted mid-scan) must
-          // not take the whole listing down.
+        } catch (error) {
+          // A partial scan is unsafe for the activity ledger: publishing it
+          // would make the next successful scan look like a set of new notes.
+          // Fail closed so the caller keeps the previous baseline and retries.
+          throw error
         }
       }
     } catch (error) {
-      if (isRoot) throw error
-      // A single unreadable directory (permission race, deleted mid-scan)
-      // must not take the whole listing down.
+      // A partial scan is unsafe for the activity ledger: publishing it would
+      // make the next successful scan look like a set of new notes. Siblings
+      // are intentionally not returned as a misleading "complete" listing.
+      throw error
     }
   }
 
@@ -204,8 +217,27 @@ export class FsaGardenSource implements GardenSource {
       if (hasIgnoredDirectorySegment(segments)) return
       const directory = await this.directoryAt(segments.slice(0, -1))
       await directory.removeEntry(segments[segments.length - 1])
-    } catch {
-      // No-op when already absent, per the GardenSource contract.
+    } catch (error) {
+      // No-op when already absent, per the GardenSource contract. Permission
+      // and I/O failures must still reject so the editor does not publish a
+      // scan for a delete that never completed.
+      if (
+        typeof DOMException !== 'undefined' &&
+        error instanceof DOMException &&
+        error.name === 'NotFoundError'
+      ) {
+        return
+      }
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'name' in error &&
+        (error as { name?: unknown }).name === 'NotFoundError'
+      ) {
+        return
+      }
+      if (error instanceof Error && error.message === 'NotFoundError') return
+      throw error
     }
   }
 
@@ -218,8 +250,23 @@ export class FsaGardenSource implements GardenSource {
     if (fromSegments.join('/') === toSegments.join('/')) return
     const content = await this.read(from)
     if (content === null) return
+    const destinationBefore = await this.read(to)
     await this.write(to, content)
-    await this.remove(from)
+    try {
+      await this.remove(from)
+    } catch (error) {
+      // `write(to)` is the only portable move primitive in FSA. If deleting the
+      // source fails, restore the destination's prior bytes (or remove the new
+      // destination) so callers never observe a half-completed rename.
+      try {
+        if (destinationBefore === null) await this.remove(to)
+        else await this.write(to, destinationBefore)
+      } catch {
+        // Preserve the original source-removal error; the caller can surface a
+        // retryable I/O failure and the next scan will reconcile the paths.
+      }
+      throw error
+    }
   }
 
   private async directoryAt(
@@ -254,8 +301,9 @@ export class FsaGardenConnection implements GardenConnection {
     if (!this.isSupported()) return null
     try {
       const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
-      await saveHandle(handle)
-      return new FsaGardenSource(handle)
+      const sourceId = createGardenSourceId()
+      await saveHandle(handle, sourceId)
+      return new FsaGardenSource(handle, sourceId)
     } catch {
       // AbortError on user cancel, or any other failure. Either way the
       // caller sees "no connection", never a thrown exception.
@@ -274,11 +322,11 @@ export class FsaGardenConnection implements GardenConnection {
    */
   async restore(): Promise<GardenSource | null> {
     if (!this.isSupported()) return null
-    const handle = await loadHandle()
-    if (!handle) return null
-    const granted = await hasPermission(handle, 'readwrite')
+    const stored = await loadStoredHandle()
+    if (!stored) return null
+    const granted = await hasPermission(stored.handle, 'readwrite')
     if (!granted) return null
-    return new FsaGardenSource(handle)
+    return new FsaGardenSource(stored.handle, stored.sourceId)
   }
 
   async disconnect(): Promise<void> {

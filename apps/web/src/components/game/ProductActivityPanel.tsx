@@ -1,7 +1,10 @@
 'use client'
 
 import { DEFAULT_ENCOUNTER_CONFIG } from '@/lib/game/encounters'
+import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
+import { resolveCompanionAsset } from '@/lib/game/companion-asset-resolver'
 import type { ProductState } from '@/lib/game/product-state'
+import CompanionSprite from './CompanionSprite'
 import { displayCompanionName } from './display-name'
 
 export interface ProductActivityPanelProps {
@@ -43,10 +46,17 @@ export function ProductActivityPanel({
   const hasVerifiedActivity = state.ledger.events.some(
     (event) => event.provenance === 'verified',
   )
-  const companionName = activeCompanion
+  const companionDefinition = activeCompanion
+    ? PROTOTYPE_COMPANION_CATALOG.get(activeCompanion.companionId)
+    : undefined
+  const asset = activeCompanion && companionDefinition && progression
+    ? resolveCompanionAsset(companionDefinition, progression.form.id)
+    : null
+  const companionName = progression?.form.name ?? (activeCompanion
     ? displayCompanionName(activeCompanion.companionId)
-    : 'No active companion'
-  const progressionName = progression?.step.name ?? 'Not started'
+    : 'No active companion')
+  const progressionName = progression?.form.name ?? 'Not started'
+  const ownedCompanionCount = new Set(state.profile.collection.map((reference) => reference.companionId)).size
 
   return (
     <section
@@ -58,19 +68,28 @@ export function ProductActivityPanel({
       }}
     >
       <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
-        <div>
-          <p
-            className="font-data text-xs uppercase tracking-widest"
-            style={{ color: 'var(--ink-muted)', letterSpacing: '0.15em' }}
-          >
-            {normalizedSourceLabel ?? 'Product activity'}
-          </p>
-          <h2
-            id="product-activity-title"
-            className="font-ui mt-1 text-2xl font-semibold tracking-tighter leading-[1.05]"
-          >
-            {companionName}
-          </h2>
+        <div className="flex items-center gap-4">
+          {/* Alignment slot only: deliberately no fill, so the sprite reads
+              bare against whatever surface renders this panel (DESIGN.md 2.3). */}
+          {asset && (
+            <div data-companion-slot className="flex h-20 w-20 shrink-0 items-center justify-center">
+              <CompanionSprite descriptor={asset} scale={2} alt={`${companionName} companion`} />
+            </div>
+          )}
+          <div>
+            <p
+              className="font-data text-xs uppercase tracking-widest"
+              style={{ color: 'var(--ink-muted)', letterSpacing: '0.15em' }}
+            >
+              {normalizedSourceLabel ?? 'Product activity'}
+            </p>
+            <h2
+              id="product-activity-title"
+              className="font-ui mt-1 text-2xl font-semibold tracking-tighter leading-[1.05]"
+            >
+              {companionName}
+            </h2>
+          </div>
         </div>
         <p className="font-data text-xs sm:text-right" style={{ color: 'var(--ink-muted)' }}>
           Active companion
@@ -97,7 +116,7 @@ export function ProductActivityPanel({
             Collection
           </dt>
           <dd className="font-data mt-1 text-sm">
-            {state.profile.collection.length.toLocaleString()} companions
+            {ownedCompanionCount.toLocaleString()} companions
           </dd>
         </div>
       </dl>

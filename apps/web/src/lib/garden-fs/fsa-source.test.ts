@@ -199,7 +199,7 @@ describe('FsaGardenSource: list', () => {
     ])
   })
 
-  it('continues scanning sibling directories when a nested directory is unreadable', async () => {
+  it('fails closed when a nested directory is unreadable', async () => {
     const handle = makeFakeDirectory(
       {
         'blocked/secret.md': 'unreadable',
@@ -209,15 +209,30 @@ describe('FsaGardenSource: list', () => {
     )
     const source = new FsaGardenSource(handle)
 
-    await expect(source.list()).resolves.toEqual([
-      expect.objectContaining({ name: 'available/note.md', content: 'readable' }),
-    ])
+    // A partial listing must never become a baseline: when the blocked folder
+    // is readable again, its files must not be misclassified as new notes.
+    await expect(source.list()).rejects.toThrow('NotAllowedError')
   })
 
-  it('exposes the folder name', () => {
+  it('exposes the folder name and an opaque source ID', () => {
     const handle = makeFakeDirectory({})
     const source = new FsaGardenSource(handle)
     expect(source.name).toBe('fake-garden')
+    expect(source.sourceId).not.toBe(source.name)
+    expect(source.sourceId).toMatch(/^garden:/)
+  })
+
+  it('gives same-name directories different source IDs', () => {
+    const first = new FsaGardenSource(makeFakeDirectory({}))
+    const second = new FsaGardenSource(makeFakeDirectory({}))
+
+    expect(first.name).toBe(second.name)
+    expect(first.sourceId).not.toBe(second.sourceId)
+  })
+
+  it('preserves an explicitly restored source ID for direct construction', () => {
+    const source = new FsaGardenSource(makeFakeDirectory({}), 'garden:restored')
+    expect(source.sourceId).toBe('garden:restored')
   })
 })
 
@@ -253,6 +268,16 @@ describe('FsaGardenSource: read/write/remove/rename', () => {
     await source.rename('old.md', 'new.md')
     await expect(source.read('old.md')).resolves.toBeNull()
     await expect(source.read('new.md')).resolves.toBe('content here')
+  })
+
+  it('restores the destination when removing the source fails', async () => {
+    const handle = makeFakeDirectory({ 'old.md': 'content here' })
+    vi.spyOn(handle, 'removeEntry').mockRejectedValueOnce(new Error('permission denied'))
+    const source = new FsaGardenSource(handle)
+
+    await expect(source.rename('old.md', 'new.md')).rejects.toThrow('permission denied')
+    await expect(source.read('old.md')).resolves.toBe('content here')
+    await expect(source.read('new.md')).resolves.toBeNull()
   })
 
   it('creates, edits, renames, and removes files in nested directories', async () => {

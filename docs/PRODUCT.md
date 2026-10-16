@@ -35,19 +35,22 @@ collection and the event history explain what happened.
 
 The first visit must not require authentication or a desktop download.
 
-1. The user opens the website and receives a starter companion immediately.
-2. The app creates a local guest profile in browser storage.
-3. The user may personalize the first companion in two ways:
-   - **Let my work decide:** inspect approved GitHub or mounted Markdown
-     signals and use them to choose a weighted companion family.
-   - **Surprise me:** choose a fully random valid companion family.
-4. The user can also keep the immediate starter and connect a source later.
-5. Existing history affects the first companion’s identity and origin story. It
-   does not become retroactive XP. XP starts from the baseline recorded when the
-   source is first connected.
+1. The user opens the website and receives exactly one random, starter-eligible
+   base-stage companion immediately.
+2. The app creates a local guest profile in browser storage and persists the
+   starter before rendering the onboarding copy.
+3. The selected starter is active and begins at `0 XP`.
+4. Refreshing, navigating, or reopening the page never rerolls the starter.
+   A later encounter or an explicit activation on `/companions` is the only way
+   to change the active companion.
+5. Existing history may be migrated for an existing profile, but it does not
+   become retroactive XP for a newly created profile. New source XP begins from
+   the source baseline recorded when that source is first connected.
 
 The starter must be visible before the user makes any connection. A source is an
-optional way to personalize the companion, not a gate in the onboarding flow.
+optional way to grow the companion, not a gate in the onboarding flow. The
+current prototype uses an injectable random source in the domain layer so tests
+can prove eligibility and persistence without relying on live randomness.
 
 ## 4. Sources and privacy
 
@@ -99,13 +102,16 @@ GitHub activity, verified receipts, and the deferred baseline commit. A cadence
 that has never run waits one full interval after the page opens rather than
 syncing on load; **Sync GitHub now** is always available. Each sync reads a
 window of repositories derived from GitHub's hourly request budget *and* from
-the deferred checkpoint's event capacity (16 repositories at the current
-bounds), so a cycle costs only a few hundred requests, and repositories that
+the deferred checkpoint's event capacity (4 repositories at the current
+worst-case bounds), so the scheduler does not assume a cheap short-history read, and repositories that
 still need a baseline are read first so a larger tracked set is covered window
 by window. A cycle that would overdraw the account's hourly GitHub request
 budget is skipped and *says so*, then resumes automatically when the rolling
 hour window clears. Terrarium budgets the requests it actually spent, and folds
-in what another open tab recorded rather than overwriting it.
+in what another open tab recorded rather than overwriting it. A bounded
+activity read that cannot prove it reached the prior checkpoint fails closed:
+its baseline and receipt checkpoint remain unchanged for retry, rather than
+silently skipping older activity.
 The local-note cloud-write schedule (scan first, write only when the scan found
 relevant derived changes) remains tied to folder mounting and is not part of
 this schedule.
@@ -152,7 +158,7 @@ in the account-local recovery record instead of clearing them. **Repair receipts
 and retry** sends the bounded opaque event IDs together with the short-lived
 signed checkpoint that originally named them, or preserves the old server
 receipt for a legacy event, to `POST /api/github/repair`; the server re-reads
-the approved 16-repository window, checks GitHub attribution
+the approved bounded repository window, checks GitHub attribution
 and ownership, and mints receipts only for independently confirmed activity.
 Unrecoverable events remain visible as blocked and are never downgraded to local
 provenance. Valid events may be backed up without advancing the checkpoint; the
@@ -160,11 +166,14 @@ last successful checkpoint advances only after a repaired snapshot is stored.
 Repeated repair or sync is idempotent, and XP/caps are recomputed server-side.
 
 The `/companions` archive reads the trusted account product snapshot when a
-user is signed in and one exists. It shows that account-scoped XP and
-progression separately from the local garden archive. A signed-in user with no
-product row or an unavailable row sees an explicit not-synced/unavailable state;
-the legacy `github-cache.json` aggregate is not presented as account XP. A
-storage outage is an explicit retryable `storage_unavailable` condition, never
+user is signed in and one exists. It shows that account-scoped companions, XP,
+progression, images, and active selection separately from the local garden
+archive. Activation is persisted through the account product route with
+ownership and optimistic-version checks; an inactive companion cannot be
+activated unless it is already in the account collection. A signed-in user with
+no product row or an unavailable row sees an explicit not-synced/unavailable
+state; the legacy `github-cache.json` aggregate is not presented as account XP.
+A storage outage is an explicit retryable `storage_unavailable` condition, never
 an empty account that may overwrite the browser copy.
 
 ### 4.4 GitHub
@@ -199,7 +208,9 @@ treated as an empty account: nothing is pruned or unselected from it, and a
 sync never drops a repository baseline from a listing it could not refresh.
 A listing that fills GitHub's last permitted page (500 repositories) is stored
 with a `truncated` flag: it is usable, but it is never treated as complete, so
-nothing is pruned or silently unselected from it either. The browser copy is
+nothing is pruned or silently unselected from it either. Explicitly tracked IDs missing from that bounded
+listing are verified through GitHub's stable `/repositories/{id}` endpoint;
+automatic inclusion remains limited to the visible listing. The browser copy is
 keyed to the active GitHub account; a copy stored for another account is
 discarded instead of painted, and a failed read only keeps showing a list the
 server confirmed belongs to this account.
@@ -273,22 +284,24 @@ before it can resume. If
 GitHub no longer exposes enough history to verify an event, Terrarium does not
 guess.
 
-A bounded sync reads only the newest page of each activity list, and it reads a
-derived window of repositories. There is no arbitrary repository count: the
-window comes from GitHub's hourly request budget on one side and the deferred
-checkpoint's event capacity on the other, so a sync can never build a
-checkpoint its own validator rejects. A forty-four repository account covers all
-forty-four across a few syncs, and repositories that still need a baseline are
-always read first, so a repository can never be stranded without one. When a scan
-reaches the end of that window with the final page still full, the read is
-reported as **truncated** rather than failed: the baseline is still recorded and
-the sync reports that the scan window ended. Because every list is read
-newest-first, the unread material is older than the recorded baseline and can
-never be awarded anyway. A genuinely failed request is treated differently and
-still withholds the baseline, so activity that could be newer than the
-checkpoint is retried rather than skipped. The sync route streams newline-
-delimited progress, so a long read reports the repository it is currently
-reading out of the known total instead of appearing frozen.
+A bounded sync reads up to three newest-first pages of each activity list and a
+bounded detail page for issue timelines. It reads a derived window of
+repositories: there is no arbitrary repository count, and the window comes
+from GitHub's hourly request budget on one side and the deferred checkpoint's
+event capacity on the other, so a sync can never build a checkpoint its own
+validator rejects. A forty-four repository account covers all forty-four across
+a few syncs, and repositories that still need a baseline are always read first,
+so a repository can never be stranded without one. A repository's initial
+baseline is recorded without walking its old history; later reads filter to
+activity newer than that baseline.
+
+When an existing checkpoint's bounded read reaches a full page ceiling, the
+read is reported as **truncated** and the sync is retryable: no baseline,
+receipt, or signed checkpoint advances. This prevents unread newer activity
+from aging out permanently. A genuinely failed request has the same no-advance
+behavior. The sync route streams newline-delimited progress, so a long read
+reports the repository it is currently reading out of the known total instead
+of appearing frozen.
 
 Commits are evidence of activity rather than unlimited direct XP. Empty and
 generated-only commits award no XP. Active days and work sessions are capped;
@@ -390,8 +403,9 @@ the durable cross-device source for verified development activity.
 
 When a guest signs in:
 
-- If there is no server profile, import the current companion condition and
-  collection; keep detailed local-note history on the device.
+- If there is no server profile, import the current starter and any
+  receipt-backed account evidence; keep detailed local-note history on the
+  device.
 - If a server profile exists, merge GitHub event IDs and reconcile local-note
   condition snapshots through sync checkpoints instead of uploading note events.
 - The browser account namespace is keyed by immutable GitHub ID. The older
@@ -400,17 +414,24 @@ When a guest signs in:
   collection reference are staged into the account namespace. Unsupported or
   ownerless records remain archived, and generic keys are removed only after a
   validated server response contains the staged events.
-- Union collections and preserve each companion’s XP independently.
-- Keep the selected active companion when it still exists; otherwise ask the
-  user to choose one.
+- The server snapshot is authoritative for collection membership, Essence,
+  encounter draws, migration credits, and active selection. A browser cannot
+  mint an encounter reference, duplicate Essence, or checkpoint by uploading a
+  local aggregate. Unverified local encounter rewards remain device-local and
+  are not silently presented as account-owned state.
+- Keep detailed mounted-note history and its local events on the device; note
+  contents and private source details never cross the sync boundary.
 - Make the server snapshot authoritative after the merge.
 
-Sync conflicts deliberately separate progression from preferences. XP,
-evolution, Essence, collection membership, and persisted encounters merge
-automatically and never move backward. If mutable preferences differ—such as
-the active companion, nickname, dialogue frequency, or public-profile settings—
+Sync conflicts deliberately separate progression from preferences. Server-
+accepted XP, evolution, Essence, collection membership, and persisted encounters
+never move backward. Local note events can be retried through the account
+namespace, but unverified local encounter state is not auto-merged because the
+server cannot prove it without note contents. If mutable preferences differ—such
+as the active companion, nickname, dialogue frequency, or public-profile settings—
 the user may choose the local or cloud version. A failed sync preserves local
-state and can be retried; it never silently discards progression.
+state and can be retried; the server never silently accepts a forged encounter
+reward.
 
 A signed-in account can hold two different guest identities: the one in this
 browser and the one inside the account's cloud snapshot. The product route
@@ -420,11 +441,14 @@ choice on the GitHub panel, with both copies shown (events, companions, XP,
 and created date) before anything changes:
 
 - **Keep both** (recommended) adopts the account's guest identity locally,
-  keeps the browser's ledger, XP, and collection, and uploads the combined
-  copy; the server merges the two event sets without double-counting.
+  keeps the browser's local ledger while the upload is attempted, and merges
+  only receipt-backed events plus server-proven collection state. Local note
+  history and unverified encounter rewards remain device-local rather than
+  being minted into the account.
 - **Use this browser** deletes the account's cloud snapshot and replaces it
-  with the browser's copy. This is destructive and requires a two-step
-  confirmation naming what is deleted.
+  with the browser's receipt-backed product copy. This is destructive and
+  requires a two-step confirmation naming what is deleted; unverified local
+  encounter rewards are still not a server trust source.
 - **Use the account** replaces the browser's product state for that account
   with the cloud snapshot, adopts its guest identity, and uploads the result.
 

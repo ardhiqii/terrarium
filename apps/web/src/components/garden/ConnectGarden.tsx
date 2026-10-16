@@ -9,27 +9,15 @@
  * file's contents. A reviewer can grep this whole directory for `fetch(` and
  * find nothing that sends note text anywhere.
  *
- * Component reuse note (see the T23 report for the full explanation): `XpBar`
- * and `XpLedger` are reused verbatim, unmodified, since both are plain
- * presentational functions with no `async`/`fs` dependency. `SpecimenPlate`
- * and `CollectionGrid` could NOT be reused as-is: both are `async` Server
- * Components (React/Next.js do not support rendering an async component
- * inside a Client Component tree at all). `CreatureSprite` itself also
- * cannot be imported here for the same reason plus one more: it pulls in
- * `sprites/source.ts` -> `sprites/pokeapi.ts`, which imports `node:fs` for
- * its on-disk cache writer, and that import would break this whole 'use
- * client' bundle even if the fs code path were never called at runtime
- * (T25; this was the "home page shows Oddish, /garden shows the pixel
- * fallback" bug).
+ * `CreatureState` remains here only as garden evidence: folder metrics and
+ * tag clusters are computed locally and shown below the editor. Companion and
+ * XP presentation belongs to the shared ProductState runtime mounted above
+ * this workspace, so this component must not render a second creature or XP
+ * ledger from the legacy aggregate.
  *
- * The fix (T25): `sprites/pokeapi-pure.ts` is a client-safe module that
- * reads the *committed* `pokeapi-cache.json` as a plain data import -- no
- * fs, no network -- and resolves a stage to the same PokeAPI sprite the
- * server renders, falling back to the local sprite only when a stage truly
- * has no cached entry yet. `MiniCreature`/`ClusterTile` below render through
- * that plus `RemoteSprite`, the same hook-free rendering component
- * `CreatureSprite` uses server-side, so this really is the same renderer
- * and the same resolved sprite as the rest of the site, not a lookalike.
+ * `sprites/pokeapi-pure.ts` is client-safe and has no filesystem or network
+ * dependency. It is still used by the evidence cluster tiles, which are not
+ * the account/guest companion projection.
  */
 
 import { useCallback, useEffect, useState } from 'react'
@@ -37,6 +25,7 @@ import { FsaGardenConnection, withTimeout } from '@/lib/garden-fs/fsa-source'
 import EditorPane from './EditorPane'
 import { loadHandle } from '@/lib/garden-fs/handle-store'
 import type { GardenSource } from '@/lib/garden-fs/types'
+import type { MarkdownRenameHint } from '@/lib/game/markdown-events'
 import { parseGardenFiles } from '@/lib/garden-fs/parse'
 import { getGardenStatsFrom } from '@/lib/game/stats-from-items'
 // Import from `clusters-from-items`, NOT `clusters`: the latter imports
@@ -52,8 +41,6 @@ import type { CreatureState } from '@/lib/game/types'
 import { resolvePureSpriteWithFallback } from '@/lib/game/sprites/pokeapi-pure'
 import Sprite from '@/components/game/Sprite'
 import RemoteSprite from '@/components/game/RemoteSprite'
-import { XpBar } from '@/components/game/XpBar'
-import { XpLedger } from '@/components/game/XpLedger'
 
 const connection = new FsaGardenConnection()
 
@@ -87,49 +74,6 @@ function sectionLabel(text: string) {
     >
       {text}
     </p>
-  )
-}
-
-function MiniCreature({ state }: { state: CreatureState }) {
-  const resolved = resolvePureSpriteWithFallback(state.stage.id)
-  return (
-    <div
-      className="p-6 sm:p-8"
-      style={{
-        background: 'var(--paper-raised)',
-        border: '1px solid var(--rule)',
-        boxShadow: '0 2px 12px -4px rgba(20, 20, 22, 0.12)',
-      }}
-    >
-      <div className="flex flex-col sm:flex-row gap-6 sm:gap-8 items-center sm:items-start">
-        <div className="shrink-0 flex items-center justify-center">
-          {resolved.kind === 'remote' ? (
-            <RemoteSprite resolved={resolved} scale={3} alt={state.stage.name} stage={state.stage.id} />
-          ) : (
-            <Sprite sprite={resolved.data} scale={3} alt={state.stage.name} />
-          )}
-        </div>
-        <div className="flex-1 w-full">
-          <p
-            className="font-data text-xs uppercase tracking-widest mb-1"
-            style={{ color: 'var(--ink-muted)', letterSpacing: '0.15em' }}
-          >
-            Specimen {state.stage.index} of 4
-          </p>
-          <h2 className="font-ui text-2xl font-semibold tracking-tighter leading-[1.05] mb-2">
-            {state.stage.name}
-          </h2>
-          <p className="font-prose text-sm leading-relaxed mb-5" style={{ color: 'var(--ink-muted)' }}>
-            {state.stage.blurb}
-          </p>
-          <XpBar
-            xpIntoStage={state.xpIntoStage}
-            xpForNextStage={state.xpForNextStage}
-            progress={state.progress}
-          />
-        </div>
-      </div>
-    </div>
   )
 }
 
@@ -178,9 +122,12 @@ function ClusterTile({ cluster }: { cluster: Cluster }) {
 
 async function computeFromSource(
   source: GardenSource,
-  onPhase: (phase: Phase) => void
+  onPhase: (phase: Phase) => void,
+  options: { showReading?: boolean; renameHint?: MarkdownRenameHint } = {}
 ): Promise<void> {
-  onPhase({ kind: 'reading', folderName: source.name })
+  if (options.showReading !== false) {
+    onPhase({ kind: 'reading', folderName: source.name })
+  }
   try {
     const files = await source.list()
 
@@ -190,12 +137,13 @@ async function computeFromSource(
     window.dispatchEvent(
       new CustomEvent('terrarium:markdown-scan', {
         detail: {
-          sourceId: `mounted-markdown:${source.name}`,
+          sourceId: source.sourceId,
           files: files.map((file) => ({
             path: file.name,
             content: file.content,
             modifiedAt: new Date(file.lastModified ?? Date.now()).toISOString(),
           })),
+          ...(options.renameHint ? { renameHints: [options.renameHint] } : {}),
         },
       }),
     )
@@ -347,6 +295,18 @@ export function ConnectGarden() {
     setPhase({ kind: 'disconnected' })
   }, [])
 
+  // EditorPane calls this only after a complete write/rename/remove has
+  // succeeded. Reuse the normal scan path so mutations publish exactly the
+  // same local markdown event as the initial connection. Keep the workspace
+  // in its ready phase while refreshing so the editor itself is not replaced.
+  const handleMutation = useCallback(async (renameHint?: MarkdownRenameHint) => {
+    if (!source) return
+    await computeFromSource(source, setPhase, {
+      showReading: false,
+      ...(renameHint ? { renameHint } : {}),
+    })
+  }, [source])
+
   // ---------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------
@@ -374,7 +334,6 @@ export function ConnectGarden() {
             build for the commit-driven view of the creature.
           </p>
         </div>
-        <MiniCreature state={fallbackCreatureState(false)} />
       </Hero>
     )
   }
@@ -540,15 +499,12 @@ export function ConnectGarden() {
       </div>
 
       <div className="flex-1 min-h-0">
-        {source && <EditorPane source={source} creatureState={phase.state} />}
+        {source && <EditorPane source={source} onMutation={handleMutation} />}
       </div>
 
-      {/* The observation log, folder stats and companions used to sit here as
-          a plain sibling, which is what guaranteed the column overflowed the
-          viewport. They are the same content, now a collapsed-by-default
-          panel with its own scroll, capped so it can never take more than
-          half the shell. Closed, it costs nothing; open, the editor keeps
-          the rest. */}
+      {/* Folder metrics and garden clusters are evidence, not a second
+          companion projection. Keep them collapsed so opening evidence never
+          takes the editor's full workspace. */}
       {statsOpen && (
         <div
           id="gc-stats-panel"
@@ -556,54 +512,48 @@ export function ConnectGarden() {
           style={{ borderColor: 'var(--rule)', maxHeight: '45%' }}
         >
           <div className="w-full px-4 sm:px-6 py-8">
-        <div className="grid sm:grid-cols-2 gap-8">
-          <div>
-            {sectionLabel('Observation log')}
-            <XpLedger entries={phase.state.breakdown} total={phase.state.totalXp} />
-          </div>
-          <div>
-            {sectionLabel('Folder stats')}
-            <div className="font-data text-xs flex flex-col gap-2">
-              <div className="flex items-baseline justify-between">
-                <span style={{ color: 'var(--ink-muted)' }}>Notes read</span>
-                <span>{phase.noteCount}</span>
-              </div>
-              <div className="flex items-baseline justify-between">
-                <span style={{ color: 'var(--ink-muted)' }}>Words</span>
-                <span>{phase.state.stats.totalWords.toLocaleString()}</span>
-              </div>
-              <div className="flex items-baseline justify-between">
-                <span style={{ color: 'var(--ink-muted)' }}>Resolved links</span>
-                <span>{phase.state.stats.resolvedWikilinks}</span>
-              </div>
-              <div className="flex items-baseline justify-between">
-                <span style={{ color: 'var(--ink-muted)' }}>Backlinks</span>
-                <span>{phase.state.stats.backlinksReceived}</span>
-              </div>
-              <div className="flex items-baseline justify-between">
-                <span style={{ color: 'var(--ink-muted)' }}>Tags</span>
-                <span>{phase.state.stats.tagCount}</span>
+            <div>
+              {sectionLabel('Folder stats')}
+              <div className="font-data text-xs flex flex-col gap-2">
+                <div className="flex items-baseline justify-between">
+                  <span style={{ color: 'var(--ink-muted)' }}>Notes read</span>
+                  <span>{phase.noteCount}</span>
+                </div>
+                <div className="flex items-baseline justify-between">
+                  <span style={{ color: 'var(--ink-muted)' }}>Words</span>
+                  <span>{phase.state.stats.totalWords.toLocaleString()}</span>
+                </div>
+                <div className="flex items-baseline justify-between">
+                  <span style={{ color: 'var(--ink-muted)' }}>Resolved links</span>
+                  <span>{phase.state.stats.resolvedWikilinks}</span>
+                </div>
+                <div className="flex items-baseline justify-between">
+                  <span style={{ color: 'var(--ink-muted)' }}>Backlinks</span>
+                  <span>{phase.state.stats.backlinksReceived}</span>
+                </div>
+                <div className="flex items-baseline justify-between">
+                  <span style={{ color: 'var(--ink-muted)' }}>Tags</span>
+                  <span>{phase.state.stats.tagCount}</span>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
 
-        <div className="mt-12">
-          {sectionLabel('Companions')}
-          {phase.clusters.length === 0 ? (
-            <p className="font-prose text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-              No companions yet. A tag hatches one once it reaches {CLUSTER_THRESHOLD} notes.
-            </p>
-          ) : (
-            <div
-              className="grid gap-3"
-              style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))' }}
-            >
-              {phase.clusters.map((cluster) => (
-                <ClusterTile key={cluster.tag} cluster={cluster} />
-              ))}
-            </div>
-          )}
+            <div className="mt-12">
+              {sectionLabel('Garden clusters')}
+              {phase.clusters.length === 0 ? (
+                <p className="font-prose text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
+                  No qualifying clusters yet. A tag hatches one once it reaches {CLUSTER_THRESHOLD} notes.
+                </p>
+              ) : (
+                <div
+                  className="grid gap-3"
+                  style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))' }}
+                >
+                  {phase.clusters.map((cluster) => (
+                    <ClusterTile key={cluster.tag} cluster={cluster} />
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -46,20 +46,43 @@ describe('GitHub source policy', () => {
       trackedRepositoryIds: [],
       autoIncludePersonal: true,
     })
-    expect(selected.eligible.length).toBe(16)
-    expect(selected.skippedCount).toBe(4)
+    expect(selected.eligible.length).toBe(4)
+    expect(selected.skippedCount).toBe(16)
   })
 
-  it('filters normal activity strictly after the stored baseline', () => {
+  it('rotates the oldest successful baselines after new repositories', () => {
+    const repositories = Array.from({ length: 8 }, (_, index) => repository(String(index + 1)))
+    const selected = selectGithubRepositoryWindow(repositories, {
+      ...settings,
+      trackedRepositoryIds: [],
+      autoIncludePersonal: true,
+      baselineByRepositoryId: Object.fromEntries(
+        repositories.map((entry, index) => [entry.id, `2026-09-${String(index + 10).padStart(2, '0')}T00:00:00.000Z`]),
+      ),
+    })
+
+    expect(selected.eligible.map((entry) => entry.id)).toEqual(['1', '2', '3', '4'])
+    expect(selectGithubRepositoryWindow(repositories, {
+      ...settings,
+      trackedRepositoryIds: [],
+      autoIncludePersonal: true,
+      baselineByRepositoryId: Object.fromEntries(
+        repositories.map((entry, index) => [entry.id, `2026-09-${String(index + 10).padStart(2, '0')}T00:00:00.000Z`]),
+      ),
+    }).skippedCount).toBe(4)
+  })
+
+  it('filters normal activity at or after the stored baseline', () => {
     const input = {
       sourceId: '9001',
       companionId: 'pikachu-family',
       commits: [
-        { id: 'old', repositoryId: '1', occurredAt: '2026-01-01T00:00:00Z' },
+        { id: 'before', repositoryId: '1', occurredAt: '2025-12-31T23:59:59Z' },
+        { id: 'boundary', repositoryId: '1', occurredAt: '2026-01-01T00:00:00Z' },
         { id: 'new', repositoryId: '1', occurredAt: '2026-01-02T00:00:00Z' },
       ],
     }
-    const filtered = filterInputAfterBaselines(input, { '1': '2026-01-01T00:00:00Z' })
-    expect(filtered.commits?.map((commit) => commit.id)).toEqual(['new'])
+    const filtered = filterInputAfterBaselines(input, { '1': '2026-01-01T00:00:00.500Z' })
+    expect(filtered.commits?.map((commit) => commit.id)).toEqual(['boundary', 'new'])
   })
 })

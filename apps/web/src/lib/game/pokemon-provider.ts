@@ -268,6 +268,55 @@ function providerMetadataFromReference(reference: PokeApiReference): ProviderMet
   return { ...provider }
 }
 
+function normalizedIdentityName(value: string): string {
+  return value.trim().toLowerCase().replace(/[\s_]+/g, '-')
+}
+
+function numericIdentity(value: unknown): number | null {
+  if (typeof value !== 'string' && typeof value !== 'number') return null
+  const normalized = String(value).trim()
+  if (!/^\d+$/.test(normalized)) return null
+  const parsed = Number(normalized)
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null
+}
+
+/**
+ * Checks provider output against the opaque catalog reference before any URL
+ * is exposed to a renderer. Numeric form IDs are the strongest identity; the
+ * Pokémon name, evolution chain, and default-form marker protect references
+ * that use a non-numeric form slug as well.
+ */
+export function isPokeApiReferenceIdentityMatch(
+  reference: PokeApiReference,
+  metadata: PokeApiMetadata,
+): boolean {
+  const provider = 'provider' in reference ? reference.provider : reference
+  if (provider.providerId !== POKEAPI_PROVIDER_ID) return false
+
+  const expectedId =
+    numericIdentity(provider.formId) ??
+    numericIdentity(provider.metadata?.pokemonId) ??
+    numericIdentity(provider.entityId)
+  if (expectedId !== null && metadata.pokemonId !== expectedId) return false
+
+  const expectedName = normalizedIdentityName(provider.entityId)
+  if (!/^\d+$/.test(expectedName) && normalizedIdentityName(metadata.pokemonName) !== expectedName) {
+    return false
+  }
+
+  const expectedChain = provider.metadata?.evolutionChainId
+  if (typeof expectedChain === 'number' && metadata.evolutionChainId !== expectedChain) {
+    return false
+  }
+
+  const expectedDefault = provider.metadata?.isDefaultForm
+  if (typeof expectedDefault === 'boolean' && metadata.form.isDefault !== expectedDefault) {
+    return false
+  }
+
+  return true
+}
+
 function opaqueAssetKey(provider: ProviderMetadata, form: PokeApiFormIdentity): string {
   return `${provider.providerId}:pokemon:${provider.entityId}:${form.id ?? 'default'}`
 }
@@ -317,7 +366,7 @@ export async function resolvePokeApiReference(
       ? await fetchJson(client, speciesUrl)
       : null
   const metadata = extractPokeApiMetadata(pokemonRecord, speciesRecord, provider.formId)
-  if (!metadata) return null
+  if (!metadata || !isPokeApiReferenceIdentityMatch(provider, metadata)) return null
 
   const sprites = extractPokeApiSpriteUrls(pokemonRecord)
   if (!sprites.selectedUrl || !sprites.selectedKind) return null

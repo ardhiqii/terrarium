@@ -79,10 +79,9 @@ describe('scheduled GitHub sync', () => {
   it('derives the read window from the request budget and the checkpoint capacity together', () => {
     // REGRESSION: the window used to come from the hourly request budget alone
     // (222 repositories), while the checkpoint accepted only 5,000 event IDs.
-    // A heavy repository produces up to 300 events, so a full window could
-    // build a checkpoint its own validator rejects -- the sync failed in-band
-    // and the baseline never committed. The two bounds must agree by
-    // construction, and this is the assertion that keeps them from drifting.
+    // A heavy repository produces up to 1,080 events, so the checkpoint bound
+    // must derive the window from the full activity fan-out. The two bounds
+    // must agree by construction, and this assertion keeps them from drifting.
     expect(MAX_SYNC_REPOSITORIES).toBe(Math.min(
       Math.floor(SYNC_REQUEST_BUDGET_PER_HOUR / REQUESTS_PER_REPOSITORY_ESTIMATE),
       Math.floor(MAX_EVENTS_PER_SYNC / MAX_EVENTS_PER_REPOSITORY),
@@ -90,9 +89,9 @@ describe('scheduled GitHub sync', () => {
     expect(MAX_SYNC_REPOSITORIES * MAX_EVENTS_PER_REPOSITORY)
       .toBeLessThanOrEqual(MAX_EVENTS_PER_SYNC)
     // The repository-side bound is real: each repository can genuinely emit
-    // this many events (30 commit days + 90 pull requests + 30 releases +
-    // 30 linked issues + 90 CI successes).
-    expect(MAX_EVENTS_PER_REPOSITORY).toBe(300)
+    // this many events (360 direct events + up to 540 active-day events +
+    // 180 work-session events).
+    expect(MAX_EVENTS_PER_REPOSITORY).toBe(1_080)
   })
 
   it('runs when the cadence is due', () => {
@@ -114,20 +113,19 @@ describe('scheduled GitHub sync', () => {
     })
   })
 
-  it('keeps a 5-minute cadence affordable for the window a sync actually reads', () => {
-    // The window reads at most MAX_SYNC_REPOSITORIES repositories (16), so its
-    // cost is the window estimate, not the 44-repository total: 12 x 16 x 18 =
-    // 3,456 requests per hour, inside the 4,000 budget. Estimating from the
-    // whole tracked set is what used to pause this cadence forever.
+  it('uses the bounded window and conservative provider estimate for scheduling', () => {
+    // The window reads at most four repositories. A worst-case activity read
+    // is intentionally not treated as a cheap short-history sync: twelve
+    // five-minute runs would exceed the reserved 4,000-request budget.
     const windowEstimate = estimateSyncRequests(MAX_SYNC_REPOSITORIES, null)
     expect(windowEstimate).toBe(MAX_SYNC_REPOSITORIES * REQUESTS_PER_REPOSITORY_ESTIMATE)
-    expect(12 * windowEstimate).toBeLessThanOrEqual(SYNC_REQUEST_BUDGET_PER_HOUR)
+    expect(12 * windowEstimate).toBeGreaterThan(SYNC_REQUEST_BUDGET_PER_HOUR)
     expect(plan({
       interval: '5',
       lastAttemptAt: NOW - 5 * MINUTE,
       trackedRepositoryCount: MAX_SYNC_REPOSITORIES,
-      requestsInWindow: SYNC_REQUEST_BUDGET_PER_HOUR - windowEstimate,
-    })).toMatchObject({ run: true })
+      requestsInWindow: 3_000,
+    })).toMatchObject({ run: false, reason: 'request-budget' })
   })
 
   it('merges usage records from another tab instead of replacing them', () => {
@@ -149,30 +147,36 @@ describe('scheduled GitHub sync', () => {
 
   it('estimates a sync from the observed cost, with a per-repository floor', () => {
     expect(estimateSyncRequests(TRACKED_REPOSITORIES, null))
-      .toBe(TRACKED_REPOSITORIES * REQUESTS_PER_REPOSITORY_ESTIMATE)
+      .toBe(MAX_SYNC_REPOSITORIES * REQUESTS_PER_REPOSITORY_ESTIMATE)
     expect(estimateSyncRequests(TRACKED_REPOSITORIES, OBSERVED_REQUESTS_PER_SYNC))
-      .toBe(OBSERVED_REQUESTS_PER_SYNC)
+      .toBe(MAX_SYNC_REPOSITORIES * REQUESTS_PER_REPOSITORY_ESTIMATE)
     // A tracked set that grew since the last sync must not be undercounted.
-    expect(estimateSyncRequests(80, OBSERVED_REQUESTS_PER_SYNC)).toBe(80 * REQUESTS_PER_REPOSITORY_ESTIMATE)
+    expect(estimateSyncRequests(80, OBSERVED_REQUESTS_PER_SYNC)).toBe(MAX_SYNC_REPOSITORIES * REQUESTS_PER_REPOSITORY_ESTIMATE)
     expect(estimateSyncRequests(0, null)).toBe(1)
     expect(estimateSyncRequests(Number.NaN, Number.NaN)).toBe(1)
   })
 
   it('keeps the documented 15-minute cadence inside GitHub hourly limits', () => {
-    // 44 repositories x 18 requests = 792 requests per sync.
+    // Four repositories per window x 792 observed requests = 3,168 requests
+    // per hour for a short-history account.
     const syncsPerHour = 60 / 15
     const hourly = syncsPerHour * OBSERVED_REQUESTS_PER_SYNC
 
     expect(hourly).toBe(3168)
     expect(hourly).toBeLessThan(GITHUB_HOURLY_REQUEST_CEILING)
     expect(hourly).toBeLessThanOrEqual(SYNC_REQUEST_BUDGET_PER_HOUR)
-    // 3,168 is 63% of GitHub's 5,000/hour ceiling, so the schedule fits.
-    expect(plan({ lastAttemptAt: NOW - 15 * MINUTE, requestsInWindow: 3168 })).toMatchObject({ run: true })
+    // 3,168 is 63% of GitHub's 5,000/hour ceiling, so the schedule fits
+    // after a short-history run has established that measured cost.
+    expect(plan({
+      lastAttemptAt: NOW - 15 * MINUTE,
+      requestsInWindow: 0,
+      lastObservedRequests: OBSERVED_REQUESTS_PER_SYNC,
+    })).toMatchObject({ run: true })
   })
 
   it('pauses before a 5-minute cadence can overdraw the account', () => {
-    // 44 repositories x 792 = 9,600 requests/hour: five times the documented
-    // 15-minute cost and well past GitHub's ceiling.
+    // Twelve five-minute runs at 792 observed requests would overdraw the
+    // reserved budget; the planner pauses before spending the next window.
     const hourly = 12 * OBSERVED_REQUESTS_PER_SYNC
     expect(hourly).toBeGreaterThan(GITHUB_HOURLY_REQUEST_CEILING)
 
@@ -186,7 +190,7 @@ describe('scheduled GitHub sync', () => {
     expect(result).toMatchObject({
       run: false,
       reason: 'request-budget',
-      estimatedRequests: OBSERVED_REQUESTS_PER_SYNC,
+      estimatedRequests: MAX_SYNC_REPOSITORIES * REQUESTS_PER_REPOSITORY_ESTIMATE,
     })
     const notice = describeSyncSchedulePause(result, 3_300)
     expect(notice).toContain('3300 of 4000')

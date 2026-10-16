@@ -7,9 +7,21 @@
  * makes the eventual account-sync format explicit.
  */
 
+import {
+  COMPANION_CATALOG_VERSION,
+  isStarterEligible,
+  selectStarterCompanion,
+  type CompanionCatalog,
+  type RandomSource,
+} from './companion-catalog'
+
 export const GUEST_PROFILE_SCHEMA_VERSION = 1
 export const GUEST_PROFILE_STORAGE_KEY = 'terrarium:guest-profile'
 const LEGACY_GUEST_PROFILE_STORAGE_KEY = 'digital-garden:guest-profile'
+
+/** Stable migration namespace for the legacy CreatureState projection. */
+export const LEGACY_CREATURE_MIGRATION_VERSION = 'legacy-creature:v1'
+export const LEGACY_MIGRATION_VERSION = LEGACY_CREATURE_MIGRATION_VERSION
 
 export type GuestSourceKind = 'notes' | 'github'
 
@@ -28,6 +40,36 @@ export interface LocalSourceBaseline {
 }
 
 export type GuestCompanionAcquisition = 'starter' | 'history' | 'encounter'
+
+export type ActiveSelectionProvenance = 'starter' | 'user' | 'migration'
+
+/**
+ * Serializable provenance for the currently active companion. Keeping this
+ * beside (rather than replacing) `activeCompanionId` lets old profile and
+ * snapshot callers continue to read the original field.
+ */
+export interface ActiveCompanionSelection {
+  companionId: string
+  provenance: ActiveSelectionProvenance
+  selectedAt: string
+  migrationVersion?: string
+}
+
+/** Alias used by snapshot adapters that call this an active selection. */
+export type ActiveSelection = ActiveCompanionSelection
+
+/**
+ * A non-replayable XP grant from a versioned legacy projection. It is kept
+ * separate from normalized source events so migration cannot invent proofs,
+ * caps, or encounter triggers for historical aggregate counters.
+ */
+export interface LegacyXpCredit {
+  creditId: string
+  migrationVersion: string
+  companionId: string
+  totalXp: number
+  sourceFingerprint: string
+}
 
 /**
  * A reference to an acquired companion. Repeated `companionId` values are
@@ -58,6 +100,14 @@ export interface GuestProfile {
   createdAt: string
   updatedAt: string
   activeCompanionId: string
+  /** Optional on schema-v1 profiles; new profiles always persist it. */
+  activeSelection?: ActiveCompanionSelection
+  /** Content manifest used when the profile selected its starter. */
+  catalogVersion?: string
+  /** Marker for a completed versioned legacy migration. */
+  migrationVersion?: string
+  /** Aggregate historical grants, never replayed as source events. */
+  legacyCredits?: readonly LegacyXpCredit[]
   sourceBaselines: readonly LocalSourceBaseline[]
   collection: readonly GuestCollectionReference[]
   recoverabilityWarning: GuestRecoverabilityWarning
@@ -65,7 +115,13 @@ export interface GuestProfile {
 
 export interface CreateGuestProfileInput {
   guestId: string
-  starterCompanionId: string
+  /** Existing callers may provide an explicit starter ID. */
+  starterCompanionId?: string
+  /** New callers can let the domain choose an eligible base-stage starter. */
+  catalog?: CompanionCatalog
+  random?: RandomSource
+  /** Alias for callers that name the injected source `rng`. */
+  rng?: RandomSource
   now: string
 }
 
@@ -99,23 +155,44 @@ export class InMemoryGuestProfileStorage implements GuestProfileStorage {
 export function createGuestProfile({
   guestId,
   starterCompanionId,
+  catalog,
+  random,
+  rng,
   now,
 }: CreateGuestProfileInput): GuestProfile {
   assertNonEmptyString(guestId, 'guestId')
-  assertNonEmptyString(starterCompanionId, 'starterCompanionId')
   assertNonEmptyString(now, 'now')
+  const selectedStarter = starterCompanionId ?? (
+    catalog
+      ? selectStarterCompanion(catalog, random ?? rng).id
+      : null
+  )
+  if (!selectedStarter) {
+    throw new TypeError('starterCompanionId or catalog is required')
+  }
+  assertNonEmptyString(selectedStarter, 'starterCompanionId')
+  if (catalog && starterCompanionId && !isStarterEligible(catalog, selectedStarter)) {
+    throw new TypeError('starterCompanionId must be an eligible base-stage starter')
+  }
 
   return {
     schemaVersion: GUEST_PROFILE_SCHEMA_VERSION,
     guestId,
     createdAt: now,
     updatedAt: now,
-    activeCompanionId: starterCompanionId,
+    activeCompanionId: selectedStarter,
+    activeSelection: {
+      companionId: selectedStarter,
+      provenance: 'starter',
+      selectedAt: now,
+    },
+    catalogVersion: catalog?.version ?? COMPANION_CATALOG_VERSION,
+    legacyCredits: [],
     sourceBaselines: [],
     collection: [
       {
         referenceId: `${guestId}:starter`,
-        companionId: starterCompanionId,
+        companionId: selectedStarter,
         acquiredAt: now,
         acquisition: 'starter',
       },
@@ -127,6 +204,101 @@ export function createGuestProfile({
       updatedAt: now,
     },
   }
+}
+
+/**
+ * Resolve provenance for old schema-v1 profiles that only persisted an active
+ * ID. A profile pointing at its original starter reference is still untouched;
+ * any other owned reference is treated as an explicit user selection.
+ */
+export function getActiveCompanionSelection(
+  profile: GuestProfile,
+): ActiveCompanionSelection {
+  const persisted = profile.activeSelection
+  if (persisted?.companionId === profile.activeCompanionId) return persisted
+
+  const starterReference = profile.collection.find((reference) =>
+    reference.referenceId === `${profile.guestId}:starter` &&
+    reference.companionId === profile.activeCompanionId &&
+    reference.acquisition === 'starter',
+  )
+  return {
+    companionId: profile.activeCompanionId,
+    provenance: starterReference ? 'starter' : 'user',
+    selectedAt: starterReference?.acquiredAt ?? profile.updatedAt,
+  }
+}
+
+/** True only while the active ID still represents the untouched starter. */
+export function hasUntouchedStarterSelection(profile: GuestProfile): boolean {
+  return getActiveCompanionSelection(profile).provenance === 'starter' &&
+    profile.collection.some((reference) =>
+      reference.referenceId === `${profile.guestId}:starter` &&
+      reference.companionId === profile.activeCompanionId &&
+      reference.acquisition === 'starter',
+    )
+}
+
+/**
+ * Set active selection without allowing an unowned companion ID into the
+ * profile. The migration path uses the same helper with `provenance: migration`.
+ */
+export function setActiveCompanionSelection(
+  profile: GuestProfile,
+  companionId: string,
+  provenance: ActiveSelectionProvenance,
+  selectedAt: string,
+  migrationVersion?: string,
+): GuestProfile {
+  assertNonEmptyString(companionId, 'companionId')
+  assertNonEmptyString(selectedAt, 'selectedAt')
+  if (!profile.collection.some((reference) => reference.companionId === companionId)) {
+    throw new Error('active companion must be owned by the profile')
+  }
+  return {
+    ...profile,
+    activeCompanionId: companionId,
+    activeSelection: {
+      companionId,
+      provenance,
+      selectedAt,
+      ...(migrationVersion ? { migrationVersion } : {}),
+    },
+  }
+}
+
+/** Common alternative name for persistence and sync adapters. */
+export const resolveActiveSelection = getActiveCompanionSelection
+
+/**
+ * Deduplicates credit IDs defensively when rebuilding state from untrusted
+ * in-memory data. Serialization is stricter and rejects duplicate IDs.
+ */
+export function dedupeLegacyXpCredits(
+  credits: readonly LegacyXpCredit[] | undefined,
+): readonly LegacyXpCredit[] {
+  const seen = new Set<string>()
+  const result: LegacyXpCredit[] = []
+  for (const credit of credits ?? []) {
+    if (!isValidLegacyXpCredit(credit) || seen.has(credit.creditId)) continue
+    seen.add(credit.creditId)
+    result.push(credit)
+  }
+  return result
+}
+
+export function sumLegacyXpPerCompanion(
+  credits: readonly LegacyXpCredit[] | undefined,
+): Readonly<Record<string, number>> {
+  const totals: Record<string, number> = {}
+  for (const credit of dedupeLegacyXpCredits(credits)) {
+    const next = (totals[credit.companionId] ?? 0) + credit.totalXp
+    // Keep malformed/hostile aggregates from turning the derived projection
+    // into Infinity. Snapshot validation still rejects invalid individual
+    // credits at the persistence boundary.
+    totals[credit.companionId] = Number.isFinite(next) ? next : Number.MAX_SAFE_INTEGER
+  }
+  return totals
 }
 
 /**
@@ -226,8 +398,59 @@ function validateGuestProfile(value: unknown): void {
     }
     referenceIds.add(reference.referenceId)
   }
+  if (!value.collection.some((reference) => reference.companionId === value.activeCompanionId)) {
+    throw new TypeError('activeCompanionId must be owned by the profile')
+  }
+
+  if (value.activeSelection !== undefined) {
+    validateActiveSelection(value.activeSelection)
+    if (value.activeSelection.companionId !== value.activeCompanionId) {
+      throw new TypeError('activeSelection must match activeCompanionId')
+    }
+  }
+  if (value.catalogVersion !== undefined) assertNonEmptyString(value.catalogVersion, 'catalogVersion')
+  if (value.migrationVersion !== undefined) assertNonEmptyString(value.migrationVersion, 'migrationVersion')
+  if (value.legacyCredits !== undefined) {
+    if (!Array.isArray(value.legacyCredits)) throw new TypeError('legacyCredits must be an array')
+    const creditIds = new Set<string>()
+    for (const credit of value.legacyCredits) {
+      validateLegacyXpCredit(credit)
+      if (creditIds.has(credit.creditId)) throw new TypeError('legacyCredits contains a duplicate creditId')
+      creditIds.add(credit.creditId)
+    }
+  }
 
   validateWarning(value.recoverabilityWarning)
+}
+
+export function validateLegacyXpCredit(value: unknown): asserts value is LegacyXpCredit {
+  if (!isRecord(value)) throw new TypeError('Invalid legacy XP credit')
+  assertNonEmptyString(value.creditId, 'legacy creditId')
+  assertNonEmptyString(value.migrationVersion, 'legacy migrationVersion')
+  assertNonEmptyString(value.companionId, 'legacy companionId')
+  if (typeof value.totalXp !== 'number' || !Number.isFinite(value.totalXp) || value.totalXp < 0) {
+    throw new TypeError('legacy totalXp must be a finite non-negative number')
+  }
+  assertNonEmptyString(value.sourceFingerprint, 'legacy sourceFingerprint')
+}
+
+function isValidLegacyXpCredit(value: unknown): value is LegacyXpCredit {
+  try {
+    validateLegacyXpCredit(value)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function validateActiveSelection(value: unknown): asserts value is ActiveCompanionSelection {
+  if (!isRecord(value)) throw new TypeError('Invalid activeSelection')
+  assertNonEmptyString(value.companionId, 'activeSelection.companionId')
+  if (value.provenance !== 'starter' && value.provenance !== 'user' && value.provenance !== 'migration') {
+    throw new TypeError('Invalid activeSelection.provenance')
+  }
+  assertNonEmptyString(value.selectedAt, 'activeSelection.selectedAt')
+  if (value.migrationVersion !== undefined) assertNonEmptyString(value.migrationVersion, 'activeSelection.migrationVersion')
 }
 
 function validateSourceBaseline(value: unknown): asserts value is LocalSourceBaseline {

@@ -83,6 +83,18 @@ describe('fetchGitHubEvents', () => {
           pull_request: { url: 'x' },
         },
       ],
+      [`https://api.github.com/repos/${repo}/issues/10/timeline?per_page=30`]: [
+        {
+          event: 'cross-referenced',
+          source: {
+            issue: {
+              node_id: 'PR_node1',
+              number: 7,
+              pull_request: { url: 'https://api.github.com/repos/widgets/pulls/7' },
+            },
+          },
+        },
+      ],
       [`https://api.github.com/repos/${repo}/commits?per_page=30`]: [
         { sha: 'headsha1' },
       ],
@@ -106,13 +118,60 @@ describe('fetchGitHubEvents', () => {
     expect(result.input.releases ?? []).toHaveLength(1)
     expect(result.input.releases?.[0]).toMatchObject({ id: 'REL_node1', tagName: 'v1.0.0' })
 
-    // The second issues[] entry is a PR and must be excluded.
+    // The second issues[] entry is a PR and must be excluded. The remaining
+    // issue is included only after its timeline proves a merged-PR link.
     expect(result.input.linkedIssues ?? []).toHaveLength(1)
-    expect(result.input.linkedIssues?.[0]).toMatchObject({ id: 'ISS_node1', number: 10 })
+    expect(result.input.linkedIssues?.[0]).toMatchObject({
+      id: 'ISS_node1',
+      number: 10,
+      linkedPullRequestId: 'PR_node1',
+    })
 
     // Only the successful check survives.
     expect(result.input.ciChecks ?? []).toHaveLength(1)
     expect(result.input.ciChecks?.[0]).toMatchObject({ id: 'CHECK1', name: 'test' })
+  })
+
+  it('marks a full bounded issue timeline as incomplete instead of skipping a late cross-reference', async () => {
+    const now = '2026-09-12T12:00:00Z'
+    const repo = 'widgets'
+    const timelinePage = Array.from({ length: 30 }, () => ({
+      event: 'cross-referenced',
+      source: {
+        issue: {
+          node_id: 'PR_node1',
+          number: 7,
+          pull_request: { url: 'https://api.github.com/repos/widgets/pulls/7' },
+        },
+      },
+    }))
+    const routes: Record<string, unknown> = {
+      [`https://api.github.com/repos/${repo}/pulls?state=closed&per_page=30&page=1`]: [{
+        node_id: 'PR_node1',
+        id: 11,
+        number: 7,
+        user: { login: 'octo' },
+        merged_at: now,
+      }],
+      [`https://api.github.com/repos/${repo}/releases?per_page=30`]: [],
+      [`https://api.github.com/repos/${repo}/issues?state=closed&per_page=30&page=1`]: [{
+        node_id: 'ISS_node1',
+        id: 31,
+        number: 10,
+        user: { login: 'octo' },
+        closed_at: now,
+      }],
+      [`https://api.github.com/repos/${repo}/issues/10/timeline?per_page=30`]: timelinePage,
+      [`https://api.github.com/repos/${repo}/issues/10/timeline?per_page=30&page=2`]: timelinePage,
+      [`https://api.github.com/repos/${repo}/issues/10/timeline?per_page=30&page=3`]: timelinePage,
+      [`https://api.github.com/repos/${repo}/commits?author=octo&per_page=30&page=1`]: [],
+      [`https://api.github.com/repos/${repo}/commits?committer=octo&per_page=30&page=1`]: [],
+    }
+
+    const result = await fetchGitHubEvents({ ...opts, fetch: stubFetch(routes) })
+
+    expect(result.truncated).toBe(true)
+    expect(result.input.linkedIssues ?? []).toHaveLength(1)
   })
 
   it('does not treat missing actor metadata as proof of account attribution', async () => {
@@ -247,7 +306,43 @@ describe('fetchGitHubEvents', () => {
 
     expect(result.status).toBe('ok')
     expect(result.truncated).toBe(true)
+    expect(result.continuation).toEqual({ widgets: { pullRequestsPage: 4 } })
     expect(result.input.mergedPullRequests ?? []).toHaveLength(90)
+  })
+
+  it('resumes each activity list from its own cursor instead of reusing one page number', async () => {
+    const repo = 'widgets'
+    const routes: Record<string, unknown> = {
+      [`https://api.github.com/repos/${repo}/pulls?state=closed&per_page=30&page=4`]: [{
+        node_id: 'PR_page4',
+        id: 44,
+        number: 44,
+        user: { login: 'octo' },
+        merged_at: '2026-09-12T12:00:00Z',
+        head: { sha: 'head-page4' },
+      }],
+      [`https://api.github.com/repos/${repo}/releases?per_page=30`]: [{
+        node_id: 'release-page1',
+        id: 55,
+        author: { login: 'octo' },
+        published_at: '2026-09-12T12:00:00Z',
+        draft: false,
+      }],
+      [`https://api.github.com/repos/${repo}/issues?state=closed&per_page=30&page=1`]: [],
+      [`https://api.github.com/repos/${repo}/commits?author=octo&per_page=30&page=1`]: [],
+      [`https://api.github.com/repos/${repo}/commits?committer=octo&per_page=30&page=1`]: [],
+      [`https://api.github.com/repos/${repo}/commits/head-page4/check-runs?per_page=30`]: [],
+    }
+    const result = await fetchGitHubEvents({
+      ...opts,
+      continuation: { widgets: { pullRequestsPage: 4, releasesPage: 1, issuesPage: 1 } },
+      fetch: stubFetch(routes),
+    })
+
+    expect(result.status).toBe('ok')
+    expect(result.input.mergedPullRequests).toHaveLength(1)
+    expect(result.input.releases).toHaveLength(1)
+    expect(Object.keys(result.continuation ?? {})).toHaveLength(0)
   })
 
   it('treats GitHub\'s 409 for an empty repository as a successful empty read', async () => {

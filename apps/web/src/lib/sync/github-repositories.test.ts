@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fetchGithubRepositories } from './github-repositories'
+import { fetchGithubRepositories, fetchGithubRepositoriesById } from './github-repositories'
 
 function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status })
@@ -52,6 +52,28 @@ describe('fetchGithubRepositories', () => {
     ])
     expect(fetchMock.mock.calls[0][0]).toContain('/user/repos?')
     expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({ Authorization: 'Bearer secret' })
+  })
+
+  it('hydrates an explicitly tracked repository by stable ID when discovery was truncated', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response({
+      id: 501,
+      name: 'old-garden',
+      full_name: 'octo/old-garden',
+      owner: { login: 'octo', type: 'User' },
+      permissions: { pull: true },
+    }))
+
+    const result = await fetchGithubRepositoriesById({
+      token: 'secret',
+      repositoryIds: ['501'],
+      fetch: fetchMock,
+    })
+
+    expect(result).toEqual({
+      status: 'ok',
+      repositories: [expect.objectContaining({ id: '501', fullName: 'octo/old-garden', canRead: true })],
+    })
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/repositories/501')
   })
 
   it('does not return repositories after a revoked token response', async () => {

@@ -8,13 +8,8 @@ import { Markdown } from 'tiptap-markdown'
 import type { GardenFile, GardenSource } from '@/lib/garden-fs/types'
 import { parseNote, serializeNote, titleToFileName, type NoteFrontMatter } from '@/lib/garden-fs/serialize'
 import { renameNoteEverywhere } from '@/lib/garden-fs/rewrite'
-import { extractWikilinks, slugify } from '@/lib/utils'
-import { computeGardenXp } from '@/lib/game/xp'
-import type { CreatureState, GardenStats, Maturity, XpEntry } from '@/lib/game/types'
-import { resolvePureSpriteWithFallback } from '@/lib/game/sprites/pokeapi-pure'
-import Sprite from '@/components/game/Sprite'
-import RemoteSprite from '@/components/game/RemoteSprite'
-import { XpBar } from '@/components/game/XpBar'
+import type { Maturity } from '@/lib/game/types'
+import type { MarkdownRenameHint } from '@/lib/game/markdown-events'
 import NoteList, { type NoteSummary } from './NoteList'
 import MaturitySegmented from './MaturitySegmented'
 import WikilinkAutocomplete from './WikilinkAutocomplete'
@@ -22,11 +17,17 @@ import { Wikilink } from './wikilink-node'
 
 interface EditorPaneProps {
   source: GardenSource
-  /** Rendered as a compact status readout at the bottom of the sidebar
-   *  (T25 problem 1): sprite, name, stage, a thin XP bar. Optional so this
-   *  component stays usable without a computed creature (e.g. an empty
-   *  folder mid-first-read). */
-  creatureState?: CreatureState | null
+  /** Called once after a complete create/edit/rename/delete succeeds. */
+  onMutation?: (hint?: MarkdownRenameHint) => void | Promise<void>
+}
+
+export async function runGardenMutation(
+  mutation: () => void | Promise<void>,
+  onMutation?: (hint?: MarkdownRenameHint) => void | Promise<void>,
+  hint?: MarkdownRenameHint,
+): Promise<void> {
+  await mutation()
+  await onMutation?.(hint)
 }
 
 interface DraftForm {
@@ -60,51 +61,6 @@ function parseTagsInput(raw: string): string[] {
     .split(',')
     .map((t) => t.trim())
     .filter(Boolean)
-}
-
-/**
- * Word count for a draft body, matching `apps/web/src/lib/game/stats.ts`'s
- * whitespace-split convention so the live preview and the real build-time
- * count never disagree about what "words" means.
- */
-function countWords(body: string): number {
-  const trimmed = body.trim()
-  if (trimmed.length === 0) return 0
-  return trimmed.split(/\s+/).length
-}
-
-/**
- * Live XP feedback while writing: "+100 note, +40 words, +30 links". Built
- * from a one-note `GardenStats` snapshot run through the real
- * `computeGardenXp`, per the spec ("do not invent new maths"). Backlinks,
- * tags, and maturity promotions are not previewable from a single draft in
- * isolation, so this only ever returns the subset that is: note-published,
- * words, and resolved wikilinks.
- */
-export function computeDraftXpPreview(body: string, existingTitles: string[]): XpEntry[] {
-  const titleSet = new Set(existingTitles.map((t) => t.toLowerCase()))
-  const slugSet = new Set(existingTitles.map((t) => slugify(t).toLowerCase()))
-
-  const links = extractWikilinks(body)
-  const resolvedWikilinks = links.filter((target) => {
-    const lower = target.toLowerCase()
-    return titleSet.has(lower) || slugSet.has(slugify(target).toLowerCase())
-  }).length
-
-  const stats: GardenStats = {
-    noteCount: 1,
-    projectCount: 0,
-    totalWords: countWords(body),
-    resolvedWikilinks,
-    backlinksReceived: 0,
-    tagCount: 0,
-    maturityCounts: { seedling: 0, budding: 0, evergreen: 0 },
-    maxBacklinksOnSingleNote: 0,
-    firstPublishedAt: null,
-    lastPublishedAt: null,
-  }
-
-  return computeGardenXp(stats).filter((entry) => entry.count > 0)
 }
 
 export interface WikilinkTrigger {
@@ -159,50 +115,7 @@ function findWikilinkTrigger(editor: Editor): ResolvedWikilinkTrigger | null {
   return { from: blockStart + trigger.start, to: $from.pos, query: trigger.query }
 }
 
-/**
- * Compact creature status readout for the bottom of the sidebar (T25
- * problem 1): sprite, name, stage, a thin XP bar. Clicking goes to the full
- * creature view (`/companions`). A status readout, not a dashboard, so
- * nothing here is interactive beyond that one link.
- *
- * Renders through `resolvePureSpriteWithFallback` + `RemoteSprite`, the
- * exact same client-safe resolver `ConnectGarden`'s `MiniCreature` uses,
- * which is what guarantees this matches the home page's creature for the
- * same stage (T25 problem 3).
- */
-function SidebarCreature({ state }: { state: CreatureState }) {
-  const resolved = resolvePureSpriteWithFallback(state.stage.id)
-  return (
-    <a
-      href="/companions"
-      className="flex items-center gap-3 px-3 py-3 border-t transition-colors hover:opacity-80"
-      style={{ borderColor: 'var(--rule)' }}
-    >
-      <div className="shrink-0 flex items-center justify-center w-10 h-10">
-        {resolved.kind === 'remote' ? (
-          <RemoteSprite resolved={resolved} scale={2} alt={state.stage.name} stage={state.stage.id} />
-        ) : (
-          <Sprite sprite={resolved.data} scale={2} alt={state.stage.name} />
-        )}
-      </div>
-      <div className="flex-1 min-w-0">
-        <p className="font-ui text-xs font-medium truncate">
-          {state.stage.name}{' '}
-          <span className="font-data" style={{ color: 'var(--ink-muted)' }}>
-            L{state.stage.index}
-          </span>
-        </p>
-        <XpBar
-          xpIntoStage={state.xpIntoStage}
-          xpForNextStage={state.xpForNextStage}
-          progress={state.progress}
-        />
-      </div>
-    </a>
-  )
-}
-
-export default function EditorPane({ source, creatureState }: EditorPaneProps) {
+export default function EditorPane({ source, onMutation }: EditorPaneProps) {
   const [files, setFiles] = useState<GardenFile[]>([])
   // Starts true so the initial fetch never needs a synchronous setState call
   // inside the effect that kicks it off; `refresh` only touches state after
@@ -280,11 +193,6 @@ export default function EditorPane({ source, creatureState }: EditorPaneProps) {
   const otherTitles = useMemo(
     () => allTitles.filter((t) => t !== originalTitle),
     [allTitles, originalTitle]
-  )
-
-  const xpPreview = useMemo(
-    () => computeDraftXpPreview(draft.body, otherTitles),
-    [draft.body, otherTitles]
   )
 
   function startCreate() {
@@ -373,7 +281,10 @@ export default function EditorPane({ source, creatureState }: EditorPaneProps) {
           setError(`A note named "${trimmedTitle}" already exists.`)
           return
         }
-        await source.write(fileName, serializeNote(frontMatter, draft.body))
+        await runGardenMutation(
+          () => source.write(fileName, serializeNote(frontMatter, draft.body)),
+          onMutation
+        )
         await refresh()
         setSelectedFileName(fileName)
         setOriginalTitle(trimmedTitle)
@@ -387,26 +298,36 @@ export default function EditorPane({ source, creatureState }: EditorPaneProps) {
       if (!selectedFileName) return
       let finalFileName = selectedFileName
 
-      if (originalTitle !== null && trimmedTitle !== originalTitle) {
-        // Title changed: rewrite every inbound wikilink across the folder
-        // before writing this note's own edited body, so the rename and the
-        // content edit both land in one save.
-        const summary = await renameNoteEverywhere(source, selectedFileName, trimmedTitle)
-        finalFileName = summary.renamedFile
-        if (summary.updatedFiles.length > 0) {
-          setStatus(
-            `Renamed. Updated ${summary.updatedFiles.length} linking note${
-              summary.updatedFiles.length === 1 ? '' : 's'
-            }.`
-          )
-        } else {
-          setStatus('Renamed.')
-        }
-      } else {
-        setStatus('Saved.')
-      }
+      const renameHint: MarkdownRenameHint | undefined = originalTitle !== null && trimmedTitle !== originalTitle
+        ? { from: selectedFileName, to: titleToFileName(trimmedTitle) }
+        : undefined
 
-      await source.write(finalFileName, serializeNote(frontMatter, draft.body))
+      await runGardenMutation(
+        async () => {
+          if (originalTitle !== null && trimmedTitle !== originalTitle) {
+            // Title changed: rewrite every inbound wikilink across the folder
+            // before writing this note's own edited body, so the rename and the
+            // content edit both land in one save.
+            const summary = await renameNoteEverywhere(source, selectedFileName, trimmedTitle)
+            finalFileName = summary.renamedFile
+            if (summary.updatedFiles.length > 0) {
+              setStatus(
+                `Renamed. Updated ${summary.updatedFiles.length} linking note${
+                  summary.updatedFiles.length === 1 ? '' : 's'
+                }.`
+              )
+            } else {
+              setStatus('Renamed.')
+            }
+          } else {
+            setStatus('Saved.')
+          }
+
+          await source.write(finalFileName, serializeNote(frontMatter, draft.body))
+        },
+        onMutation,
+        renameHint,
+      )
       await refresh()
       setSelectedFileName(finalFileName)
       setOriginalTitle(trimmedTitle)
@@ -427,7 +348,7 @@ export default function EditorPane({ source, creatureState }: EditorPaneProps) {
     setSaving(true)
     setError(null)
     try {
-      await source.remove(selectedFileName)
+      await runGardenMutation(() => source.remove(selectedFileName), onMutation)
       await refresh()
       setSelectedFileName(null)
       setMode('list')
@@ -494,7 +415,6 @@ export default function EditorPane({ source, creatureState }: EditorPaneProps) {
           onCreate={startCreate}
         />
       </div>
-      {creatureState && <SidebarCreature state={creatureState} />}
     </div>
   )
 
@@ -655,11 +575,6 @@ export default function EditorPane({ source, creatureState }: EditorPaneProps) {
                 style={{ borderColor: 'var(--rule)' }}
               >
                 <div className="flex items-center gap-3">
-                  {xpPreview.length > 0 && (
-                    <p className="font-data text-xs" style={{ color: 'var(--accent)' }}>
-                      {xpPreview.map((e) => `+${e.xp} ${e.label.toLowerCase()}`).join(', ')}
-                    </p>
-                  )}
                   {error && (
                     <p className="font-ui text-xs" style={{ color: 'var(--accent)' }}>
                       {error}

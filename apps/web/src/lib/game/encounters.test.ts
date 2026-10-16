@@ -37,6 +37,22 @@ describe('encounter engine', () => {
     expect(left.newDraws[0]).toEqual(right.newDraws[0])
   })
 
+  it('uses distinct stable draw IDs for concurrent trigger branches', () => {
+    const first = advanceEncounter(
+      createEncounterState(),
+      { id: 'first-trigger', progress: 100, seed: 'same', signals: {}, ownedCompanionIds: [] },
+      PROTOTYPE_COMPANION_CATALOG,
+    )
+    const second = advanceEncounter(
+      createEncounterState(),
+      { id: 'second-trigger', progress: 100, seed: 'same', signals: {}, ownedCompanionIds: [] },
+      PROTOTYPE_COMPANION_CATALOG,
+    )
+
+    expect(first.newDraws[0].id).not.toBe(second.newDraws[0].id)
+    expect(first.newDraws[0].sequence).toBe(second.newDraws[0].sequence)
+  })
+
   it('persists the result and ignores replayed trigger IDs', () => {
     const trigger = {
       id: 'activity-1',

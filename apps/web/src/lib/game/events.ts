@@ -192,8 +192,13 @@ export function sumXpPerCompanion(
 ): Readonly<Record<CompanionId, number>> {
   const totals: Record<CompanionId, number> = {}
   for (const event of acceptedLedgerEvents(ledger)) {
-    totals[event.companionId] =
-      (totals[event.companionId] ?? 0) + XP_BY_EVENT_CATEGORY[event.category]
+    const xp = XP_BY_EVENT_CATEGORY[event.category]
+    // Persisted ledgers are validated at their boundaries, but keep this pure
+    // projection fail-closed for malformed runtime values instead of exposing
+    // NaN/Infinity to progression math.
+    if (typeof xp !== 'number' || !Number.isFinite(xp) || xp < 0) continue
+    const next = (totals[event.companionId] ?? 0) + xp
+    totals[event.companionId] = Number.isFinite(next) ? next : Number.MAX_SAFE_INTEGER
   }
 
   return totals

@@ -220,9 +220,8 @@ export class ProductSqliteStore implements ProductStore {
     const row = this.row(githubId)
     if (!row || !row.row_version) return null
     const snapshot = deserializeProductSnapshot(row.snapshot_json)
-    return snapshot
-      ? { githubId, handle: row.handle, snapshot, updatedAt: row.updated_at, version: row.row_version }
-      : null
+    if (!snapshot) throw new Error('Stored product snapshot is corrupt')
+    return { githubId, handle: row.handle, snapshot, updatedAt: row.updated_at, version: row.row_version }
   }
 
   /** The stored snapshot for an immutable GitHub identity, or null when absent. */

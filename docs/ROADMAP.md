@@ -6,7 +6,7 @@ This is the execution status for the product described in
 remain useful as historical implementation notes, but they are not the current
 product contract.
 
-Last reviewed: **2026-09-19**
+Last reviewed: **2026-09-24**
 
 ## Product direction
 
@@ -45,20 +45,31 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
 - Legacy cache entries refresh once to gain the new metadata, then remain
   cache-first.
 - `npm run typecheck` passes.
-- New product engine tests pass: 640 tests across 56 files.
+- The current Vitest suite covers 88 test files and 1,000+ tests; the exact
+  count is reported by the final `npm test` gate.
 - `npm run build` succeeds.
 
 ### New product loop shipped
 
-- Guest onboarding creates an immediate local starter without authentication.
-- The `/write` route now exposes starter selection, recoverability warning, and
-  a local activity panel.
+- Guest onboarding creates and persists exactly one random, starter-eligible
+  base-stage companion at `0 XP` without authentication; refreshes never reroll
+  it.
+- The `/write` route now exposes the persisted starter, recoverability warning,
+  and a local activity panel.
 - Mounted Markdown scans are recursive, baseline-aware, and emit local,
   idempotent events without uploading note text.
 - Per-companion XP, hidden encounter progress, deterministic draws, duplicate
-  Essence, and free active-companion switching have provider-neutral contracts.
-- The prototype catalog now references real PokeAPI Pikachu → Raichu and Ditto
-  assets; animation and static fallback are resolved at the provider boundary.
+  Essence, and free active-companion switching have provider-neutral contracts;
+  qualifying XP is assigned only to the active companion.
+- The prototype catalog now includes canonical Grass, Pikachu, and Ditto lines;
+  animation, static, and local fallback are resolved at the provider boundary,
+  with the Heartwood/Mega form kept static.
+- `/` and `/companions` render the same active-companion projection. The archive
+  owns activation controls, account writes validate ownership and optimistic
+  versions, and the signed-in home never falls back to guest storage when the
+  account condition is missing.
+- Existing owner data migrates Pikachu plus the legacy Grass/Mossling history
+  idempotently; new profiles do not receive that legacy credit.
 - A derived-only product snapshot and guest/server merge adapter are ready for
   the account API; the legacy sync endpoint remains backward compatible.
 - The extension can consume both the legacy creature payload and the future
@@ -77,11 +88,11 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
   namespaces from the cloud snapshot; SQLite remains the local/single-server
   fallback. Product snapshots now key by immutable GitHub ID, protect writes
   with optimistic timestamps, and keep restored event IDs replay-safe.
-- A bounded GitHub scan that reaches its page ceiling is now reported as
-  **truncated** instead of failed, so a long-history repository records its
-  baseline and can earn XP. Previously every such repository reported `partial`,
-  the baseline was withheld indefinitely, and the account stayed at zero XP no
-  matter how often the user synced.
+- A bounded GitHub scan that reaches its page ceiling is reported as
+  **truncated** and now fails closed at the sync route: no baseline or signed
+  checkpoint advances until the activity window is complete. This prevents a
+  long-history repository from silently aging skipped activity out of the
+  account; the user can retry or narrow the tracked sources.
 - CI checks are read from merged pull request head and merge commits rather than
   by walking the default branch, removing roughly ninety to two hundred requests
   per repository. GitHub's `403` is now reported as a rate limit rather than as
@@ -129,11 +140,13 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
 - The `/github` panel turns the account's identity-guard `409` into an explicit
   choice instead of a dead end. Both copies are described from their snapshots
   (events, companions, XP, created date) and the user picks **Keep both**
-  (adopt the account's guest identity, keep local progress, re-upload),
+  (adopt the account's guest identity and merge receipt-backed progress),
   **Use this browser** (delete the cloud row and re-upload the browser copy,
   behind a two-step confirmation), or **Use the account** (replace local
-  product state with the cloud snapshot and adopt its identity). The guard
-  itself is unchanged, and each action reports its outcome in the sync summary.
+  product state with the cloud snapshot and adopt its identity). Unverified
+  local encounter draws, Essence, and encounter-only collection references are
+  not accepted as account ownership; the guard itself is unchanged, and each
+  action reports its outcome in the sync summary.
 
 ### Main-aufa recovery iteration (in progress)
 
@@ -181,16 +194,16 @@ generated-only, unchanged, repeated, or duplicate activity adds no XP.
   `GITHUB_REPOSITORY_CACHE_MAX_ENTRIES` accounts.
 - Accounts with more than 500 repositories get a truncated listing. The
   `/user/repos` walk stops at five pages; the flag stops pruning and unselection
-  from it, but repositories past page 5 still need a narrower listing to become
-  trackable.
+  from it. Explicitly tracked IDs past page 5 are now hydrated through the
+  stable `/repositories/{id}` endpoint, while automatic inclusion remains
+  bounded to the visible pages; full cursor-based discovery is still open.
 
 ### Known prototype mismatch
 
-The old `SPECIES_LINES` configuration is a visual progression, not a set of
-canonical Pokémon evolution families. For example, its current line combines
-Pichu, Pikachu, Electabuzz, and Electivire. This must be replaced by provider
-configurations that declare real families and valid evolution paths before the
-collection is considered final.
+The old `SPECIES_LINES` configuration is still used by legacy garden/archive
+surfaces and is not the authority for product companions. Product surfaces now
+use the versioned provider-neutral catalog, but public collection/profile
+adapters and the legacy item archive still need a deliberate migration.
 
 ## Delivery order
 
@@ -198,11 +211,11 @@ collection is considered final.
 |---|---|---|
 | 0 | Product and data contracts | **complete** |
 | 1 | Guest onboarding and local profile | **partial, usable on `/write`** |
-| 2 | Event ledger and basic XP | **partial, Markdown and GitHub wired; broader surfaces pending** |
-| 3 | Companion catalog, forms, and encounters | **partial, engine and PokeAPI bridge shipped** |
+| 2 | Event ledger and basic XP | **partial, active-companion attribution and migration wired; broader source coverage pending** |
+| 3 | Companion catalog, forms, and encounters | **partial, catalog/assets and collection projection shipped; persistent source summaries pending** |
 | 4 | Recursive Markdown and Obsidian mounting | partial, needs upgrade |
-| 5 | GitHub verification and guest sync merge | **partial, main-aufa recovery in progress; live schema/GET prerequisite verified; client deployment, replay, account verification, and profile migration pending** |
-| 6 | Collection UI, profiles, extension integration | **partial, extension adapter shipped; surfaces pending** |
+| 5 | GitHub verification and guest sync merge | **partial, account hydration/activation and owner migration wired; main-aufa recovery and deployment verification pending** |
+| 6 | Collection UI, profiles, extension integration | **partial, home/Companions collection surfaces shipped; public profile and extension policy work pending** |
 | 7 | Licensed marketplace providers and original art | future |
 
 The detailed acceptance criteria for each phase are in [`PLAN.md`](PLAN.md).
@@ -232,10 +245,11 @@ production runtime are explicitly out of scope for this recovery iteration.
 The progress timezone described in [`PRODUCT.md`](PRODUCT.md) section 5 is **not
 implemented**: days and sessions are currently bucketed in UTC, so a commit made
 late in the local evening can land on the previous day for a user east of UTC.
-The sync window is also bounded by page ceilings, so only the newest page of each
-activity list is read; the sync reports this as truncation rather than claiming a
-complete catch-up. Repository pagination beyond the collection cap, and broader
-hosted-path/profile migration work, remain open.
+The sync window is also bounded by page ceilings: up to three newest-first
+pages of each activity list and bounded issue-timeline detail pages are read.
+Existing-checkpoint reads report a full ceiling as truncation and fail closed
+rather than claiming a complete catch-up. Automatic repository pagination beyond the
+collection cap, and broader hosted-path/profile migration work, remain open.
 
 ### 3. Complete public profile privacy and account lifecycle
 
@@ -243,16 +257,16 @@ Gate `/u/[handle]`, leaderboard rows, and extension payloads behind the existing
 opt-in visibility policy. Add explicit disconnect, cloud-delete, guest export,
 and account-switch flows before exposing public companion state widely.
 
-### 4. Replace legacy collection surfaces
+### 4. Finish collection/profile distribution
 
 The account archive now reads the trusted product-sync snapshot when one exists,
-keeps synced XP separate from the local garden/cache archive, and reports an
-explicit not-synced state instead of displaying the global legacy GitHub cache
-as account progress. The remaining migration is the full provider-neutral
-collection and sprite presentation: add a quiet encounter meter, persisted
-weighted draws, duplicate conversion, one active companion, free switching,
-and per-companion XP to the legacy collection surface. Test refreshes, repeated
-events, duplicate results, offline mode, and deterministic replay.
+keeps synced XP separate from the local garden/cache archive, renders owned
+companions with provider fallbacks, and reports an explicit not-synced state
+instead of displaying the global legacy GitHub cache as account progress. The
+remaining work is public provider-neutral collection/profile presentation,
+visibility policy, and extension distribution. Test refreshes, repeated events,
+duplicate results, offline mode, activation persistence, and deterministic
+replay.
 
 ### 5. Upgrade local source handling
 

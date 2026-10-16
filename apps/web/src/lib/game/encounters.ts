@@ -51,6 +51,8 @@ export interface EncounterState {
   processedTriggerIds: readonly string[]
   /** Family ID -> family-specific duplicate Essence. */
   essenceByFamily: Readonly<Record<string, number>>
+  /** Local merge aid: progress contributed by each idempotent trigger. */
+  readonly progressByTriggerId?: Readonly<Record<string, number>>
 }
 
 export interface EncounterConfig {
@@ -146,6 +148,119 @@ export function createEncounterState(): EncounterState {
     draws: [],
     processedTriggerIds: [],
     essenceByFamily: {},
+    progressByTriggerId: {},
+  }
+}
+
+function encounterTriggerHash(value: string): string {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
+/** Stable opaque representation used at the product snapshot boundary. */
+export function opaqueEncounterTriggerId(value: string): string {
+  const marker = 'trigger-'
+  if (value.startsWith(marker) && /^[0-9a-f]{8}-[0-9a-f]{8}$/u.test(value.slice(marker.length))) return value
+  let first = 2166136261
+  let second = 2246822519
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    first = Math.imul(first ^ code, 16777619)
+    second = Math.imul(second ^ (code + index), 3266489917)
+  }
+  return `trigger-${(first >>> 0).toString(16).padStart(8, '0')}-${(second >>> 0).toString(16).padStart(8, '0')}`
+}
+
+function progressTotal(progress: Readonly<Record<string, number>>): number {
+  return Object.values(progress).reduce((total, value) => total + value, 0)
+}
+
+/**
+ * Union local encounter states from two browser writers. A trigger normally
+ * produces one draw, but a large progress increment can legitimately produce
+ * several draws for the same trigger. Only an identical draw ID is a duplicate;
+ * trigger IDs are not a merge key. Sequence collisions are re-keyed while the
+ * stable draw ID remains readable enough for local recovery.
+ */
+export function mergeEncounterStates(left: EncounterState, right: EncounterState): EncounterState {
+  const draws = new Map<string, EncounterState['draws'][number]>()
+  const sequences = new Set<number>()
+  let nextSequence = Math.max(left.nextSequence, right.nextSequence)
+
+  const addDraw = (draw: EncounterState['draws'][number]): void => {
+    let id = draw.id
+    if (draws.has(id)) {
+      const existing = draws.get(id)
+      if (existing && JSON.stringify(existing) === JSON.stringify(draw)) return
+      id = `${id}:${encounterTriggerHash(`${draw.triggerId}:${draw.sequence}:${draw.seed}`)}`
+      while (draws.has(id)) id = `${id}:x`
+    }
+    let sequence = draw.sequence
+    if (sequences.has(sequence)) {
+      sequence = nextSequence
+      nextSequence += 1
+    } else {
+      nextSequence = Math.max(nextSequence, sequence + 1)
+    }
+    const normalized = sequence === draw.sequence && id === draw.id
+      ? draw
+      : { ...draw, id, sequence }
+    draws.set(id, normalized)
+    sequences.add(sequence)
+  }
+
+  for (const draw of left.draws) addDraw(draw)
+  for (const draw of right.draws) addDraw(draw)
+
+  const progressByCanonicalTriggerId = new Map<string, { key: string; progress: number }>()
+  for (const [triggerId, progress] of [
+    ...Object.entries(left.progressByTriggerId ?? {}),
+    ...Object.entries(right.progressByTriggerId ?? {}),
+  ]) {
+    if (!Number.isFinite(progress) || progress < 0) continue
+    const canonicalId = opaqueEncounterTriggerId(triggerId)
+    const existing = progressByCanonicalTriggerId.get(canonicalId)
+    progressByCanonicalTriggerId.set(canonicalId, {
+      key: existing?.key ?? triggerId,
+      progress: Math.max(existing?.progress ?? 0, progress),
+    })
+  }
+  const progressByTriggerId: Record<string, number> = Object.fromEntries(
+    [...progressByCanonicalTriggerId.values()].map(({ key, progress }) => [key, progress]),
+  )
+  const hasTriggerProgress = Object.keys(progressByTriggerId).length > 0
+  const legacyProgress = hasTriggerProgress
+    ? Math.max(0, Math.max(left.totalProgress, right.totalProgress) - progressTotal(progressByTriggerId))
+    : Math.max(left.totalProgress, right.totalProgress)
+  const totalProgress = hasTriggerProgress
+    ? legacyProgress + progressTotal(progressByTriggerId)
+    : legacyProgress
+
+  const essenceByFamily: Record<string, number> = {}
+  for (const draw of draws.values()) {
+    if (draw.essenceAwarded <= 0) continue
+    essenceByFamily[draw.selectedFamilyId] =
+      (essenceByFamily[draw.selectedFamilyId] ?? 0) + draw.essenceAwarded
+  }
+  // Preserve aggregate awards from legacy states whose draw list was already
+  // compacted, while never allowing a concurrent branch to overwrite a sum
+  // recomputed from the union of its distinct draws.
+  for (const [familyId, amount] of Object.entries({ ...left.essenceByFamily, ...right.essenceByFamily })) {
+    essenceByFamily[familyId] = Math.max(essenceByFamily[familyId] ?? 0, amount)
+  }
+
+  return {
+    meter: totalProgress % 100,
+    totalProgress,
+    nextSequence,
+    draws: [...draws.values()].sort((a, b) => a.sequence - b.sequence || a.id.localeCompare(b.id)),
+    processedTriggerIds: [...new Set([...left.processedTriggerIds, ...right.processedTriggerIds])],
+    essenceByFamily,
+    progressByTriggerId,
   }
 }
 
@@ -222,8 +337,12 @@ function chooseWeighted(
   return weights[weights.length - 1]
 }
 
-function drawId(config: EncounterConfig, sequence: number): string {
-  return `${config.profileKey}:${sequence}`
+function drawId(config: EncounterConfig, sequence: number, triggerId: string): string {
+  // Sequence numbers are local ordering, not a concurrency lock. Including a
+  // stable trigger digest keeps two tabs processing different milestones from
+  // producing the same persisted draw ID while retaining the old readable
+  // profile/sequence prefix for older data and UI.
+  return `${config.profileKey}:${sequence}:${hashSeed(triggerId).toString(16).padStart(8, '0')}`
 }
 
 function addEssence(
@@ -247,7 +366,8 @@ export function advanceEncounter(
   validateConfig(config)
   validateTrigger(trigger)
 
-  if (state.processedTriggerIds.includes(trigger.id)) {
+  const opaqueTriggerId = opaqueEncounterTriggerId(trigger.id)
+  if (state.processedTriggerIds.some((id) => id === trigger.id || id === opaqueTriggerId)) {
     return {
       state,
       newDraws: state.draws.filter((draw) => draw.triggerId === trigger.id),
@@ -266,7 +386,7 @@ export function advanceEncounter(
 
   for (let offset = 0; offset < drawCount; offset += 1) {
     const sequence = state.nextSequence + offset
-    const id = drawId(config, sequence)
+    const id = drawId(config, sequence, trigger.id)
     const existing = draws.find((draw) => draw.id === id)
     if (existing) {
       newDraws.push(existing)
@@ -298,6 +418,10 @@ export function advanceEncounter(
 
   // Floating point noise must never leave the persisted hidden meter outside its range.
   if (meter >= config.threshold) meter = 0
+  const progressByTriggerId = {
+    ...(state.progressByTriggerId ?? {}),
+    [trigger.id]: trigger.progress,
+  }
   const nextState: EncounterState = {
     meter,
     totalProgress: state.totalProgress + trigger.progress,
@@ -305,6 +429,7 @@ export function advanceEncounter(
     draws,
     processedTriggerIds: [...state.processedTriggerIds, trigger.id],
     essenceByFamily,
+    progressByTriggerId,
   }
   return { state: nextState, newDraws, ignored: false }
 }

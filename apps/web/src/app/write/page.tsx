@@ -2,6 +2,9 @@ import type { Metadata } from 'next'
 import { ConnectGarden } from '@/components/garden/ConnectGarden'
 import { GuestCompanionOnboarding } from '@/components/game/GuestCompanionOnboarding'
 import { GuestProductRuntime } from '@/components/game/GuestProductRuntime'
+import { getCreatureState } from '@/lib/game/state'
+import { loadAccountProductState } from '@/lib/game/account-product-state'
+import { accountNamespaceForGithubId } from '@/lib/game/github-account-scope'
 
 // One name in all three places. This route used to call itself "Garden" in
 // the nav, "Connect your Terrarium" in its title, and "Connect a folder" in its
@@ -23,13 +26,24 @@ export const metadata: Metadata = {
  * centered column -- two different shapes that can't share one fixed
  * wrapper.
  */
-export default function GardenPage() {
+export const dynamic = 'force-dynamic'
+
+export default async function GardenPage() {
+  const accountProduct = await loadAccountProductState(getCreatureState(null))
+  const accountScoped = accountProduct.status !== 'signed-out'
   return (
     <>
       <div className="max-w-5xl mx-auto px-4 sm:px-6 pt-8">
-        <GuestCompanionOnboarding />
+        <GuestCompanionOnboarding
+          initialState={accountProduct.state}
+          accountScoped={accountScoped}
+        />
         <div className="mt-6">
-          <GuestProductRuntime />
+          <GuestProductRuntime
+            initialState={accountProduct.state}
+            accountScoped={accountScoped}
+            namespace={accountScoped ? accountNamespaceForGithubId(accountProduct.githubId) : undefined}
+          />
         </div>
       </div>
       <ConnectGarden />

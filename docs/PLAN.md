@@ -45,17 +45,18 @@ versus local evidence without storing note contents.
 Build the first-run flow:
 
 1. Create a local guest profile on first visit.
-2. Show a starter companion immediately.
-3. Offer “Let my work decide,” “Surprise me,” and “Connect later.”
+2. Select and persist exactly one random, starter-eligible base-stage companion.
+3. Show that starter immediately; source connection remains optional and does
+   not reroll it.
 4. Store the local profile and event ledger in browser storage.
 5. Offer a privacy-safe local state export/import path for backups.
 6. Warn that guest state can be lost on a new device or cleared browser data.
 
 The app must remain useful with no source connected and no network.
 
-**Status: partial — guest onboarding and local persistence are shipped; account
-recovery, portable state export/import, and compact cross-session source
-snapshots remain.**
+**Status: partial — random persisted starter onboarding, local persistence, and
+recoverability warning are shipped; account recovery, portable state
+export/import, and compact cross-session source snapshots remain.**
 
 ## Phase 2. Event ledger and basic XP
 
@@ -89,7 +90,9 @@ commit bursts, and generated-only changes.
 Done when the same source scan can run repeatedly with no extra XP and every XP
 point can be traced to one ledger event.
 
-**Status: partial — rules engine, deterministic encounters, duplicate Essence, and PokeAPI bridge are shipped; legacy surfaces still need migration.**
+**Status: partial — rules engine, active-only XP attribution, deterministic
+encounters, duplicate Essence, migration-safe product state, and the PokeAPI
+bridge are shipped; broader source coverage and portable exports remain.**
 
 ## Phase 3. Companion catalog and encounters
 
@@ -132,7 +135,9 @@ not be required to evolve a companion.
 The PokeAPI adapter may populate the prototype catalog, but the game engine must
 not depend on PokeAPI names, numeric IDs, or URL conventions.
 
-**Status: partial — recursive FSA mounting and baseline-aware in-session scans are shipped; persistent compact scan summaries remain.**
+**Status: partial — provider-neutral catalog/forms, animated/static/local asset
+fallbacks, recursive FSA mounting, and baseline-aware in-session scans are
+shipped; persistent compact scan summaries remain.**
 
 ## Phase 4. Sources: editor and mounted Markdown
 
@@ -159,7 +164,11 @@ progressive enhancement; one-time directory selection or drag-and-drop scanning
 must remain available where that API is unsupported. Monitoring a closed
 browser is out of scope for this phase.
 
-**Status: partial — verified event normalization, GitHub OAuth credential storage, repository selection, the first activity-sync slice, the Supabase durable-store adapter, and cloud product hydration are implemented; production deployment verification and broader account/profile migration remain.**
+**Status: partial — verified event normalization, GitHub OAuth credential storage,
+repository selection, product snapshot hydration, owner-only legacy migration,
+account activation persistence, and the Supabase durable-store adapter are
+implemented; production deployment verification and broader account/profile
+migration remain.**
 
 ## Phase 5. GitHub identity and sync
 
@@ -274,7 +283,9 @@ restart/redeploy end-to-end test.
 Do not make sign-in a prerequisite for using the editor, mounting notes, or
 earning local XP.
 
-**Status: partial — `/write` onboarding/activity and extension payload compatibility are shipped; public collection/profile migration remains.**
+**Status: partial — `/write` onboarding/activity, shared home/Companions
+projections, activation controls, account-safe product hydration, and extension
+payload compatibility are shipped; public collection/profile migration remains.**
 
 ## Phase 5.1. GitHub receipt recovery and checkpoint repair
 
@@ -389,7 +400,7 @@ replay oracle are:
      ownership, and deduplication identity.
    - Refuse events that cannot be recovered; never convert a failed GitHub event
      into `local` provenance merely to make the upload pass. The repair scan uses
-     the same server-approved, 16-repository window as normal sync and reports
+     the same server-approved bounded repository window as normal sync and reports
      events outside that window as blocked.
 
 3. **Replay the preserved local condition and checkpoint.**
@@ -434,7 +445,7 @@ replay oracle are:
 - An unrecoverable event remains visible as blocked and cannot poison unrelated
   valid progress forever.
 - Stale checkpoint, guest identity, row-version, concurrent-device, empty
-  ledger, zero-event, and 16-repository scan cases remain safe.
+  ledger, zero-event, and bounded repository-window scan cases remain safe.
 - Client-bundle safety continues to exclude receipt secrets and Node-only trust
   code from client components.
 

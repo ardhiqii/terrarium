@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { saveHandle, loadHandle, clearHandle } from './handle-store'
+import { saveHandle, loadHandle, loadStoredHandle, clearHandle } from './handle-store'
 
 /**
  * The test environment has no `indexedDB` global (vitest.config.mts:
@@ -102,6 +102,105 @@ function stubIndexedDb(mode: 'blocked' | 'abort' | 'request-error') {
 
   return closed
 }
+
+describe('handle-store: persists source identity', () => {
+  function stubWorkingIndexedDb(initial: unknown) {
+    let stored = initial
+
+    const db = {
+      objectStoreNames: { contains: () => true },
+      createObjectStore: () => {},
+      close: () => {},
+      onversionchange: null as Handler,
+      transaction: () => {
+        const tx: Record<string, unknown> = {
+          onabort: null,
+          onerror: null,
+          error: null,
+        }
+        const store = {
+          get: () => {
+            const req = fakeRequest()
+            req.result = stored
+            queueMicrotask(() => req.onsuccess?.())
+            return req
+          },
+          put: (value: unknown) => {
+            const req = fakeRequest()
+            stored = value
+            queueMicrotask(() => req.onsuccess?.())
+            return req
+          },
+          delete: () => {
+            const req = fakeRequest()
+            stored = undefined
+            queueMicrotask(() => req.onsuccess?.())
+            return req
+          },
+        }
+        ;(tx as { objectStore: () => typeof store }).objectStore = () => store
+        return tx
+      },
+    }
+
+    vi.stubGlobal('indexedDB', {
+      open: () => {
+        const req: Record<string, unknown> = {
+          onsuccess: null,
+          onerror: null,
+          onblocked: null,
+          onupgradeneeded: null,
+          result: db,
+          error: null,
+        }
+        queueMicrotask(() => (req.onsuccess as Handler)?.())
+        return req
+      },
+    })
+
+    return {
+      read: () => stored,
+    }
+  }
+
+  it('round-trips a handle and its stable source ID', async () => {
+    const handle = { name: 'same-name' } as unknown as FileSystemDirectoryHandle
+    stubWorkingIndexedDb(undefined)
+
+    await saveHandle(handle, 'garden:stable')
+
+    await expect(loadStoredHandle()).resolves.toEqual({
+      handle,
+      sourceId: 'garden:stable',
+    })
+    await expect(loadHandle()).resolves.toBe(handle)
+  })
+
+  it('migrates an old raw handle once and keeps its generated ID', async () => {
+    const handle = { name: 'same-name' } as unknown as FileSystemDirectoryHandle
+    const db = stubWorkingIndexedDb(handle)
+
+    const first = await loadStoredHandle()
+    expect(first?.handle).toBe(handle)
+    expect(first?.sourceId).toMatch(/^garden:/)
+    expect(first?.sourceId).not.toBe(handle.name)
+
+    const second = await loadStoredHandle()
+    expect(second?.sourceId).toBe(first?.sourceId)
+    expect(db.read()).toEqual({
+      handle,
+      sourceId: first?.sourceId,
+    })
+  })
+
+  it('clears the stored handle and source ID together', async () => {
+    const handle = { name: 'same-name' } as unknown as FileSystemDirectoryHandle
+    stubWorkingIndexedDb(undefined)
+    await saveHandle(handle, 'garden:to-clear')
+    await clearHandle()
+    await expect(loadStoredHandle()).resolves.toBeNull()
+  })
+})
 
 describe('handle-store: never hangs', () => {
   beforeEach(() => {

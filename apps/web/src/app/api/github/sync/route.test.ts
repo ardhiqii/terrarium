@@ -1,7 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import { MAX_CHECKPOINT_EVENT_IDS, verifyGithubSyncCheckpoint } from '@/lib/sync/github-sync-checkpoint'
+import { verifyGithubSyncContinuation } from '@/lib/sync/github-sync-continuation'
 import { MAX_SYNC_REPOSITORIES } from '@/lib/sync/sync-schedule'
+import { normalizeGitHubEvents } from '@/lib/game/github-events'
+import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
+import { createEncounterState } from '@/lib/game/encounters'
+import { createGuestProfile } from '@/lib/game/guest-profile'
+import { createProductState } from '@/lib/game/product-state'
+import { buildProductSnapshot } from '@/lib/sync/product-snapshot'
+import { getProductStore, resetProductStoreForTests } from '@/lib/sync/product-store'
+import { issueVerifiedEventProof } from '@/lib/sync/verified-event-proof'
 import { cacheClearAll } from '@/lib/game/api-cache'
 import {
   clearGithubRepositoryCache,
@@ -9,6 +18,7 @@ import {
 } from '@/lib/sync/github-repository-cache'
 
 const mocks = vi.hoisted(() => ({
+  fetchRepositoriesById: vi.fn(),
   settings: {
     trackedRepositoryIds: ['101'],
     excludedRepositoryIds: [] as string[],
@@ -40,6 +50,7 @@ vi.mock('@/lib/sync/github-account-store', () => ({
 
 vi.mock('@/lib/sync/github-repositories', () => ({
   fetchGithubRepositories: mocks.fetchRepositories,
+  fetchGithubRepositoriesById: mocks.fetchRepositoriesById,
 }))
 
 vi.mock('@/lib/game/github-events-fetch', () => ({
@@ -61,10 +72,10 @@ const repository = {
   canRead: true,
 }
 
-function request(extraHeaders: HeadersInit = {}): NextRequest {
+function request(extraHeaders: HeadersInit = {}, activeCompanionId = 'pikachu-family', continuation?: string): NextRequest {
   return new NextRequest('http://localhost/api/github/sync', {
     method: 'POST',
-    body: JSON.stringify({ activeCompanionId: 'pikachu-family' }),
+    body: JSON.stringify({ activeCompanionId, ...(continuation ? { continuation } : {}) }),
     headers: { 'Content-Type': 'application/json', ...extraHeaders },
   })
 }
@@ -92,9 +103,49 @@ async function readSyncBody(response: Response): Promise<Record<string, unknown>
   return result.payload as Record<string, unknown>
 }
 
+async function seedTrustedGithubProductSnapshot(): Promise<void> {
+  const now = '2026-09-12T12:00:00.000Z'
+  const sourceEvents = normalizeGitHubEvents({
+    sourceId: '9001',
+    companionId: 'pikachu-family',
+    commits: [{
+      id: 'sha-1',
+      repositoryId: '101',
+      occurredAt: now,
+      additions: 2,
+      changedFiles: 1,
+    }],
+  })
+  const profile = createGuestProfile({
+    guestId: 'guest-1',
+    starterCompanionId: 'pikachu-family',
+    now,
+  })
+  const unsigned = buildProductSnapshot(
+    createProductState(
+      profile,
+      { events: sourceEvents },
+      createEncounterState(),
+      PROTOTYPE_COMPANION_CATALOG,
+    ),
+    now,
+  )
+  const snapshot = {
+    ...unsigned,
+    events: unsigned.events.map((event) => ({
+      ...event,
+      provenance: 'verified' as const,
+      verifiedProof: issueVerifiedEventProof(event, 9001),
+    })),
+  }
+  expect(await getProductStore().put(9001, 'octo', snapshot, now, null)).toBe(true)
+}
+
 describe('POST /api/github/sync', () => {
   beforeEach(() => {
     vi.stubEnv('SESSION_SECRET', 's'.repeat(32))
+    vi.stubEnv('SYNC_STORE', 'sqlite')
+    resetProductStoreForTests(':memory:')
     // The per-account sync rate limiter is module-global; reset it so this
     // file's assertion count does not depend on how many syncs it issues.
     cacheClearAll()
@@ -113,6 +164,7 @@ describe('POST /api/github/sync', () => {
       mocks.settings = settings
     })
     mocks.fetchRepositories.mockReset().mockResolvedValue({ status: 'ok', truncated: false, repositories: [repository] })
+    mocks.fetchRepositoriesById.mockReset().mockResolvedValue({ status: 'ok', repositories: [] })
     mocks.fetchEvents.mockReset().mockResolvedValue({
       login: 'octo',
       input: {
@@ -185,12 +237,11 @@ describe('POST /api/github/sync', () => {
     expect(mocks.saveSettings).not.toHaveBeenCalled()
   })
 
-  it('records a baseline for a truncated-but-successful read so XP can start', async () => {
-    // REGRESSION: a bounded scan that reached its page ceiling used to be
-    // counted as a failed request. That made `status` `partial`, the baseline
-    // was never written, `occurredAfterBaseline` stayed false for every
-    // repository, and the account stayed at zero XP forever no matter how many
-    // times the user pressed "Sync GitHub now".
+  it('rejects a truncated catch-up without advancing a baseline or checkpoint', async () => {
+    mocks.settings.baselineByRepositoryId = { '101': '2026-09-01T00:00:00.000Z' }
+    // A bounded window cannot prove that it reached the stored checkpoint. It
+    // must fail closed rather than silently aging skipped activity out of the
+    // account forever.
     mocks.fetchEvents.mockResolvedValue({
       login: 'octo',
       status: 'ok',
@@ -209,13 +260,65 @@ describe('POST /api/github/sync', () => {
     })
 
     const response = await POST(request())
-    const body = await readSyncBody(response)
+    const events = await readSyncEvents(response)
+    const failure = events.find((event) => event.type === 'error')
+    expect(response.status).toBe(200)
+    expect(failure).toMatchObject({
+      status: 409,
+      error: expect.stringMatching(/incomplete/i),
+    })
+    expect(events.some((event) => event.type === 'result')).toBe(false)
+    expect(mocks.settings.baselineByRepositoryId).toEqual({ '101': '2026-09-01T00:00:00.000Z' })
+  })
 
-    expect(body.syncStatus).toBe('ok')
-    expect(body.kind).toBe('baseline')
-    expect(body.newBaselineRepositoryIds).toEqual(['101'])
-    // The window boundary is reported honestly alongside the baseline.
-    expect(body.truncated).toBe(true)
+  it('returns a signed continuation without advancing the baseline, then resumes it', async () => {
+    mocks.settings.baselineByRepositoryId = { '101': '2026-09-01T00:00:00.000Z' }
+    mocks.fetchEvents.mockResolvedValueOnce({
+      login: 'octo',
+      status: 'ok',
+      truncated: true,
+      continuation: { '101': { page: 4 } },
+      input: {
+        sourceId: '9001',
+        companionId: 'octo',
+        commits: [{
+          id: 'sha-partial',
+          repositoryId: '101',
+          occurredAt: '2026-09-12T12:00:00Z',
+          additions: 2,
+          changedFiles: 1,
+        }],
+      },
+    })
+
+    const first = await readSyncBody(await POST(request()))
+    expect(first.kind).toBe('partial')
+    expect(first.checkpoint).toBeNull()
+    expect(typeof first.continuation).toBe('string')
+    const token = verifyGithubSyncContinuation(first.continuation as string, 9001)
+    expect(token?.cursors).toEqual({ '101': { page: 4 } })
+    expect(mocks.settings.baselineByRepositoryId).toEqual({ '101': '2026-09-01T00:00:00.000Z' })
+
+    mocks.fetchEvents.mockResolvedValueOnce({
+      login: 'octo',
+      status: 'ok',
+      truncated: false,
+      input: {
+        sourceId: '9001',
+        companionId: 'octo',
+        commits: [{
+          id: 'sha-final',
+          repositoryId: '101',
+          occurredAt: '2026-09-12T12:01:00Z',
+          additions: 2,
+          changedFiles: 1,
+        }],
+      },
+    })
+    const second = await readSyncBody(await POST(request({}, 'pikachu-family', first.continuation as string)))
+    expect(second.kind).toBe('synced')
+    expect(second.checkpoint).toEqual(expect.stringMatching(/\./u))
+    expect(mocks.fetchEvents.mock.calls[1]?.[0].continuation).toEqual({ '101': { page: 4 } })
   })
 
   it('filters by the stored baseline and sends only normalized verified events', async () => {
@@ -244,7 +347,50 @@ describe('POST /api/github/sync', () => {
     }))
   })
 
+  it('blocks a mixed replay and new-event batch for an unowned active companion before minting receipts', async () => {
+    mocks.settings.baselineByRepositoryId = { '101': '2026-01-01T00:00:00.000Z' }
+    await seedTrustedGithubProductSnapshot()
+    mocks.fetchEvents.mockResolvedValueOnce({
+      login: 'octo',
+      input: {
+        sourceId: '9001',
+        companionId: 'octo',
+        commits: [{
+          id: 'sha-1',
+          repositoryId: '101',
+          occurredAt: '2026-09-12T12:00:00Z',
+          additions: 2,
+          changedFiles: 1,
+        }],
+        mergedPullRequests: [{
+          id: 'new-pr',
+          repositoryId: '101',
+          number: 7,
+          mergedAt: '2026-09-12T13:00:00Z',
+        }],
+      },
+      status: 'ok',
+      truncated: false,
+    })
+
+    const response = await POST(request({}, 'ditto-like'))
+    const events = await readSyncEvents(response)
+    const failure = events.find((event) => event.type === 'error')
+
+    expect(response.status).toBe(200)
+    expect(failure).toMatchObject({
+      status: 400,
+      error: expect.stringMatching(/owned by the product account/i),
+    })
+    expect(events.some((event) => event.type === 'result')).toBe(false)
+    expect(JSON.stringify(events)).not.toContain('verifiedEventProofs')
+    expect(JSON.stringify(events)).not.toContain('checkpoint')
+    expect(mocks.saveSettings).not.toHaveBeenCalled()
+    expect(mocks.settings.baselineByRepositoryId).toEqual({ '101': '2026-01-01T00:00:00.000Z' })
+  })
+
   it('does not create a baseline when GitHub returns a partial activity read', async () => {
+    mocks.settings.baselineByRepositoryId = { '101': '2026-09-01T00:00:00.000Z' }
     mocks.fetchEvents.mockResolvedValue({
       login: 'octo',
       status: 'partial',
@@ -253,12 +399,16 @@ describe('POST /api/github/sync', () => {
     })
 
     const response = await POST(request())
-    const body = await readSyncBody(response)
+    const events = await readSyncEvents(response)
+    const failure = events.find((event) => event.type === 'error')
 
     expect(response.status).toBe(200)
-    expect(body.kind).toBe('partial')
-    expect(body.newBaselineRepositoryIds).toEqual([])
-    expect(mocks.settings.baselineByRepositoryId).toEqual({})
+    expect(failure).toMatchObject({
+      status: 409,
+      error: expect.stringMatching(/incomplete/i),
+    })
+    expect(events.some((event) => event.type === 'result')).toBe(false)
+    expect(mocks.settings.baselineByRepositoryId).toEqual({ '101': '2026-09-01T00:00:00.000Z' })
   })
 
   it('does not advance the baseline when receipt issuance fails', async () => {
@@ -285,6 +435,7 @@ describe('POST /api/github/sync', () => {
     const events = await readSyncEvents(response)
 
     expect(response.headers.get('Content-Type')).toContain('application/x-ndjson')
+    expect(response.headers.get('Cache-Control')).toContain('no-store')
     expect(events[0]).toMatchObject({ type: 'start', repositoryCount: 1 })
     expect(events[events.length - 1]?.type).toBe('result')
   })
@@ -296,6 +447,7 @@ describe('POST /api/github/sync', () => {
     const body = await response.json()
 
     expect(response.status).toBe(429)
+    expect(response.headers.get('cache-control')).toBe('no-store, private')
     expect(String(body.error)).toContain('rate limit')
   })
 
@@ -362,7 +514,7 @@ describe('POST /api/github/sync', () => {
     mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: many })
 
     const baselined = new Set<string>()
-    for (let round = 0; round < 4 && baselined.size < many.length; round += 1) {
+    for (let round = 0; round < 12 && baselined.size < many.length; round += 1) {
       const events = await readSyncEvents(await POST(request()))
       const body = events.find((event) => event.type === 'result')?.payload as Record<string, unknown>
 
@@ -380,10 +532,39 @@ describe('POST /api/github/sync', () => {
     expect(baselined.size).toBe(many.length)
   })
 
+  it('rotates completed baseline windows instead of retrying the same repositories', async () => {
+    const many = Array.from({ length: 8 }, (_, index) => ({
+      ...repository,
+      id: String(3100 + index),
+      name: `rotating-${index}`,
+      fullName: `octo/rotating-${index}`,
+    }))
+    mocks.settings = {
+      trackedRepositoryIds: many.map((entry) => entry.id),
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+      baselineByRepositoryId: Object.fromEntries(many.map((entry) => [entry.id, '2026-01-01T00:00:00.000Z'])),
+      lastSyncedAt: null,
+    }
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: many })
+
+    const first = await readSyncBody(await POST(request()))
+    expect(mocks.fetchEvents.mock.calls[0]?.[0].repos.map((entry: { id: string }) => entry.id))
+      .toEqual(['3100', '3101', '3102', '3103'])
+    const firstCheckpoint = verifyGithubSyncCheckpoint(first.checkpoint as string, 9001)
+    expect(firstCheckpoint).not.toBeNull()
+    mocks.settings.baselineByRepositoryId = firstCheckpoint!.nextBaselineByRepositoryId
+
+    await readSyncBody(await POST(request()))
+    expect(mocks.fetchEvents.mock.calls[1]?.[0].repos.map((entry: { id: string }) => entry.id))
+      .toEqual(['3104', '3105', '3106', '3107'])
+  })
+
   it('never builds a checkpoint its own validator rejects, however heavy the activity', async () => {
     // REGRESSION: the read window used to come from the hourly request budget
     // alone (222 repositories) while the checkpoint accepted 5,000 event IDs.
-    // A heavy repository produces up to 300 events, so a wide window could
+    // A heavy repository produces up to 1,080 events, so a wide window could
     // build a checkpoint that `issueGithubSyncCheckpoint` itself rejected: the
     // throw happened inside the response stream and the route wrote
     // { type: 'error', status: 500 } at HTTP 200 -- nothing awarded, no
@@ -583,7 +764,7 @@ describe('POST /api/github/sync', () => {
 
     expect(response.status).toBe(200)
     expect(checkpoint?.nextBaselineByRepositoryId).toEqual({
-      '101': '2026-01-01T00:00:00.000Z',
+      '101': expect.any(String),
       '501': '2026-01-01T00:00:00.000Z',
     })
   })

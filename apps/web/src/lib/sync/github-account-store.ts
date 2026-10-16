@@ -48,7 +48,17 @@ export interface GithubAccountStore {
   getToken(githubId: number): Promise<string | null>
   get(githubId: number): Promise<GithubAccountRecord | null>
   getSettings(githubId: number): Promise<GithubAccountSettings>
-  saveSettings(githubId: number, settings: GithubAccountSettings): Promise<void>
+  /**
+   * Save repository settings, optionally only when they still match the
+   * settings read by the caller. `false` means the row changed or was
+   * disconnected while the caller was working; omitted expectations preserve
+   * the historical unconditional test/maintenance-call behavior.
+   */
+  saveSettings(
+    githubId: number,
+    settings: GithubAccountSettings,
+    expectedSettings?: GithubAccountSettings,
+  ): Promise<boolean>
   /** Advance a sync baseline only if it is still the expected checkpoint. */
   advanceBaseline(
     githubId: number,
@@ -182,6 +192,19 @@ function sameBaselineMap(
   )
 }
 
+function sameStringList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
+function sameSettings(left: GithubAccountSettings, right: GithubAccountSettings): boolean {
+  return sameStringList(left.trackedRepositoryIds, right.trackedRepositoryIds)
+    && sameStringList(left.excludedRepositoryIds, right.excludedRepositoryIds)
+    && left.autoIncludePersonal === right.autoIncludePersonal
+    && sameStringList(left.autoIncludeOrganizations, right.autoIncludeOrganizations)
+    && sameBaselineMap(left.baselineByRepositoryId, right.baselineByRepositoryId)
+    && left.lastSyncedAt === right.lastSyncedAt
+}
+
 /** Never let a replayed or delayed checkpoint move the successful time back. */
 function latestTimestamp(current: string | null, next: string | null): string | null {
   if (!current || Number.isNaN(Date.parse(current))) return next && !Number.isNaN(Date.parse(next)) ? next : null
@@ -302,30 +325,51 @@ export class GithubAccountSqliteStore implements GithubAccountStore {
     return account?.settings ?? defaultSettings()
   }
 
-  async saveSettings(githubId: number, settings: GithubAccountSettings): Promise<void> {
-    const row = this.row(githubId)
-    if (!row) throw new Error('GitHub account credential not found')
-    const clean = cleanSettings(settings)
-    this.db
-      .prepare(
-        `UPDATE github_accounts SET
-           tracked_repository_ids_json = ?,
-           excluded_repository_ids_json = ?,
-           auto_include_personal = ?,
-           auto_include_organizations_json = ?,
-           baseline_by_repository_id_json = ?,
-           last_synced_at = ?
-         WHERE github_id = ?`,
-      )
-      .run(
-        JSON.stringify(clean.trackedRepositoryIds),
-        JSON.stringify(clean.excludedRepositoryIds),
-        clean.autoIncludePersonal ? 1 : 0,
-        JSON.stringify(clean.autoIncludeOrganizations),
-        JSON.stringify(clean.baselineByRepositoryId),
-        clean.lastSyncedAt,
-        githubId,
-      )
+  async saveSettings(
+    githubId: number,
+    settings: GithubAccountSettings,
+    expectedSettings?: GithubAccountSettings,
+  ): Promise<boolean> {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const row = this.row(githubId)
+      if (!row) throw new Error('GitHub account credential not found')
+      if (row.disconnected_at) {
+        this.db.exec('COMMIT')
+        return false
+      }
+      const current = rowSettings(row)
+      if (expectedSettings && !sameSettings(current, cleanSettings(expectedSettings))) {
+        this.db.exec('COMMIT')
+        return false
+      }
+      const clean = cleanSettings(settings)
+      const result = this.db
+        .prepare(
+          `UPDATE github_accounts SET
+             tracked_repository_ids_json = ?,
+             excluded_repository_ids_json = ?,
+             auto_include_personal = ?,
+             auto_include_organizations_json = ?,
+             baseline_by_repository_id_json = ?,
+             last_synced_at = ?
+           WHERE github_id = ? AND disconnected_at IS NULL`,
+        )
+        .run(
+          JSON.stringify(clean.trackedRepositoryIds),
+          JSON.stringify(clean.excludedRepositoryIds),
+          clean.autoIncludePersonal ? 1 : 0,
+          JSON.stringify(clean.autoIncludeOrganizations),
+          JSON.stringify(clean.baselineByRepositoryId),
+          clean.lastSyncedAt,
+          githubId,
+        )
+      this.db.exec('COMMIT')
+      return Number(result.changes) === 1
+    } catch (error) {
+      try { this.db.exec('ROLLBACK') } catch { /* transaction already ended */ }
+      throw error
+    }
   }
 
   async advanceBaseline(

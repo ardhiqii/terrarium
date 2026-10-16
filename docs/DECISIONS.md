@@ -21,13 +21,13 @@ collection keeps every companion they have encountered.
 - A new user receives a companion immediately, without authentication or a
   desktop download.
 - The first session runs as a local guest profile.
-- The starter is visible immediately. On first setup, the user may either
-  choose **Surprise me** for a random valid family or choose **Let my work
-  decide** so connected GitHub and Markdown sources can influence the family.
-  Keeping the starter and connecting a source later remains available without
-  becoming a separate onboarding gate.
-- Existing history chooses the starter’s identity and origin story. It does
-  not become retroactive XP; progress begins at the first source baseline.
+- The starter is visible immediately. New profiles receive exactly one random,
+  starter-eligible base-stage family, persisted before onboarding renders. There
+  is no reroll or history-based starter choice in first-run onboarding.
+  Connecting a source later remains optional and does not change the starter.
+- Existing history may be migrated for an existing profile. It does not become
+  retroactive XP for a newly created profile; progress begins at the first
+  source baseline.
 - Signing in is an upgrade for sync, recovery, public profiles, and the
   extension—not a prerequisite for using the core loop.
 
@@ -173,16 +173,14 @@ use the activity date, not the sync date. Catch-up is summarized as one return
 update rather than replaying every reaction. Activity before approval or the
 initial baseline never awards retroactive XP; unavailable history is not guessed.
 
-A truncated bounded read is not a failed read. Every activity list is walked
-newest-first, so a scan that reaches its page ceiling has still read the most
-recent activity, and the material it could not reach is older than the baseline
-recorded for that sync and can never be awarded. A truncated read therefore
-records its baseline and reports the truncation separately, and the sync still
-reports `ok`. Treating truncation as a failure previously made every repository
-with a long history report `partial`, which withheld the baseline indefinitely
-and left the account unable to earn XP at all. A genuinely failed request keeps
-the opposite behaviour: the baseline is withheld so activity that may be newer
-than the checkpoint can be retried instead of being skipped permanently.
+A truncated bounded read is an incomplete read, not a successful checkpoint.
+Every activity list is walked newest-first, but an existing checkpoint may sit
+older than the bounded window; advancing it would silently age skipped activity
+out of the account. The adapter reports `truncated`, while the sync route fails
+closed as a retryable `partial` result and issues no baseline or signed
+checkpoint. The user can retry or narrow the tracked sources. A genuinely failed
+request keeps the same no-advance behavior: activity that may be newer than the
+checkpoint must be retried instead of being skipped permanently.
 
 GitHub's `403` is reported as a rate limit, not as revoked access. GitHub
 returns `403` both for a real permission problem and for an exhausted rate
@@ -278,7 +276,9 @@ backfilled as new work. Pruning runs only from a complete listing, and saving
 settings applies the same rule: a tracked repository absent from a stale or
 truncated listing is preserved instead of silently unselected. The sync still
 reads activity from the list it has, because a temporarily unreadable
-repository contributes no activity anyway.
+repository contributes no activity anyway. If an explicitly tracked ID falls
+outside the bounded listing, the server verifies it by stable ID before
+selecting it; automatic inclusion remains bounded to discovered pages.
 
 The browser copy carries its GitHub account ID. A copy stored for another
 account is discarded rather than painted, the copy is cleared when a session

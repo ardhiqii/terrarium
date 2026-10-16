@@ -32,7 +32,11 @@ This runs Stryker, which deliberately introduces bugs into the XP engine and che
 
 Report opens at `reports/mutation/mutation.html`.
 
-Current: **69.00% overall / 71.01% of covered mutants** across 7 legacy game modules. The latest full run had 559 killed, 229 survived, 23 with no coverage, 2 timeouts, and 0 errors. Do not chase 100%. A large share of survivors are provably equivalent mutants, meaning no input can distinguish them, and a good chunk of the rest are blanked display strings the suite intentionally does not assert. `reports/mutation/mutation.html` shows exactly which.
+Current mutation percentages are historical and cover the legacy game modules; run
+`npm run test:mutation` when mutation evidence is required. Do not treat a
+mutation score as a substitute for the product-state and route contracts below.
+A large share of survivors are provably equivalent or display-only mutants;
+`reports/mutation/mutation.html` shows exactly which.
 
 ### Hosted sync validation
 
@@ -53,7 +57,7 @@ new sync hardening tests.
 Receipt recovery has a focused route contract with no live GitHub calls:
 `npx vitest run apps/web/src/app/api/github/repair/route.test.ts apps/web/src/lib/sync/github-receipt-repair.test.ts apps/web/src/lib/sync/github-source-policy.test.ts apps/web/src/lib/game/product-browser-storage.test.ts`.
 It covers server-owned re-reads, signed-checkpoint or preserved-receipt
-authorization, invented/untracked activity, partial reads, the 16-repository window, bounded
+authorization, invented/untracked activity, partial reads, the derived repository window, bounded
 diagnostics, namespace recovery persistence, and proof replacement without
 erasing unrelated receipts. The real-route
 round-trip in `apps/web/src/app/api/sync/product/github-sync-roundtrip.test.ts`
@@ -142,9 +146,10 @@ Check these by eye:
 
 | Page | What should be true |
 |---|---|
-| `/` | Creature sprite is **animated**, stage and XP bar show real numbers, item drawer shows locked and unlocked items |
-| `/companions` | Four stages, unreached ones greyed with "Not yet reached", XP thresholds visible |
-| `/notes`, `/projects` | **No creature UI at all.** Reading surfaces stay clean, that separation is deliberate |
+| `/` | The persisted active companion image, form, XP, progress bar, and evidence wording render; the home surface links to companion management |
+| `/companions` | Owned companions show real images, per-companion XP/progression, active state, and an `Activate` control only for inactive owned companions |
+| `/write` | A new browser gets one random base-stage starter at `0 XP`; refreshing does not reroll it, and local activity is attributed to the active companion |
+| `/notes`, `/projects` | **No competing creature UI.** Reading surfaces stay clean, while the home/Companions projection remains the product companion authority |
 | `/graph` | Force graph renders and is draggable |
 
 Then toggle **dark mode** in the navbar and walk the same pages. Both themes are supposed to hold up.
@@ -153,7 +158,16 @@ Then toggle **dark mode** in the navbar and walk the same pages. Both themes are
 
 This one is easy to get wrong, so it is worth checking. In Chrome DevTools: `Ctrl+Shift+P`, run "Show Rendering", set **Emulate CSS prefers-reduced-motion** to `reduce`, then reload `/companions`.
 
-The creature should go **completely still**. A CSS media query cannot pause a GIF, so this works by swapping to a static PNG. If it still moves, that fix broke.
+The companion should go **completely still**. A CSS media query cannot pause a
+GIF, so the provider descriptor supplies a static counterpart through the
+`<picture>` reduced-motion source; if no remote still exists, the local sprite
+fallback is used.
+
+For mounted Markdown, an unreadable nested directory or file must fail the
+scan closed: the UI shows an error, emits no partial local activity event, and
+keeps the previous baseline for retry. Local path tombstones are stored only in
+the browser's source namespace, so deleting and recreating a known note cannot
+mint a second new-note bonus and no path or note content crosses account sync.
 
 ---
 
@@ -266,6 +280,10 @@ Automated guards for the same paths (offline, no live calls):
   response cannot replace a newer stored listing; the failed-refresh decision
   keeps the visible list only for the account the server answered for and
   drops it for a different account.
+- `apps/web/src/lib/garden-fs/fsa-source.test.ts` and
+  `apps/web/src/lib/game/markdown-events.test.ts` — partial folder reads fail
+  closed, and a known local path is quiet on the first scan after reload rather
+  than earning a duplicate new-note reward.
 - `apps/web/src/app/api/github/repositories/route.test.ts` — an oversized
   chunked body answers 413 even without a `content-length` header; refresh
   values that are not `1`/`true` keep the cache entry; malformed settings,
