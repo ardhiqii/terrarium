@@ -40,10 +40,15 @@ describe('CompanionCollection', () => {
     )
 
     // Every roster sprite sits bare on the page; a filled slot read as a
-    // visible box around the companion.
+    // visible box around the companion. Assert the full allowlist — exact
+    // classes and no inline style — so a utility-class fill (`bg-[...]`) or
+    // an inline style is caught, not just the literal word "background".
     const slots = markup.match(/<div data-companion-slot[^>]*>/g) ?? []
     expect(slots).toHaveLength(2)
-    for (const slot of slots) expect(slot).not.toContain('background')
+    for (const slot of slots) {
+      expect(slot).not.toContain('style=')
+      expect(slot).toContain('class="flex h-24 w-24 shrink-0 items-center justify-center"')
+    }
 
     expect(markup).toContain('data-companion-id="grass-family"')
     expect(markup).toContain('data-companion-id="pikachu-family"')

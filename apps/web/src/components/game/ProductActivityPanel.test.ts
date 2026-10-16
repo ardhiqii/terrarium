@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
@@ -29,9 +30,21 @@ describe('ProductActivityPanel', () => {
 
     // The alignment slot must stay transparent: a filled slot behind the
     // sprite read as a visible box on the home, /github, and /write surfaces.
+    // Assert the full allowlist — exact classes and no inline style — so a
+    // fill reintroduced as a utility class (e.g. `bg-[color:var(--paper)]`)
+    // or as an inline style fails this test, not just the literal word
+    // "background".
     const slot = markup.match(/<div data-companion-slot[^>]*>/)?.[0]
     expect(slot).toBeDefined()
-    expect(slot).not.toContain('background')
+    expect(slot).not.toContain('style=')
+    expect(slot).toContain('class="flex h-20 w-20 shrink-0 items-center justify-center"')
     expect(markup).toContain('data-companion-id="grass-family"')
+  })
+
+  it('keeps the slot free of CSS fills as well', () => {
+    // A stylesheet rule targeting the slot could paint a fill that static
+    // markup tests would never see. The slot must not be styled at all.
+    const css = readFileSync(new URL('../../app/globals.css', import.meta.url), 'utf8')
+    expect(css).not.toContain('data-companion-slot')
   })
 })
