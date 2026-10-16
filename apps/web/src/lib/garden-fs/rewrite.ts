@@ -119,27 +119,69 @@ export async function renameNoteEverywhere(
   const rewrittenByName = new Map(rewritten.map((r) => [r.name, r] as const))
 
   const updatedFiles: string[] = []
-  for (const result of rewritten) {
-    if (result.name === oldFileName) continue
-    if (result.changed) {
-      await source.write(result.name, result.content)
-      updatedFiles.push(result.name)
+  const originalByName = new Map(files.map((file) => [file.name, file.content] as const))
+  let targetMoveAttempted = false
+  const rollback = async (): Promise<void> => {
+    const rollbackErrors: unknown[] = []
+    // Restore the target first. If a source implementation completed only part
+    // of rename() before rejecting, remove the destination and put the original
+    // bytes back at the old path.
+    try {
+      if (newFileName !== oldFileName && targetMoveAttempted) {
+        await source.remove(newFileName)
+        await source.write(oldFileName, target.content)
+      } else if (newFileName === oldFileName) {
+        await source.write(oldFileName, target.content)
+      }
+    } catch (error) {
+      rollbackErrors.push(error)
+    }
+    for (const name of updatedFiles) {
+      const original = originalByName.get(name)
+      if (original === undefined) continue
+      try {
+        await source.write(name, original)
+      } catch (error) {
+        rollbackErrors.push(error)
+      }
+    }
+    if (rollbackErrors.length > 0) {
+      throw new Error(`Rename failed and rollback was incomplete (${rollbackErrors.length} restore operation${rollbackErrors.length === 1 ? '' : 's'} failed).`)
     }
   }
 
-  // The renamed note itself: apply any self-referencing wikilink rewrite,
-  // then set the frontmatter title from the exact same `trimmedTitle` used
-  // to derive the filename, so the two never drift apart.
-  const selfResult = rewrittenByName.get(oldFileName)
-  const selfContent = selfResult ? selfResult.content : target.content
-  const { body: selfBody } = parseNote(selfContent)
-  const newContent = serializeNote({ ...frontMatter, title: trimmedTitle }, selfBody)
+  try {
+    for (const result of rewritten) {
+      if (result.name === oldFileName) continue
+      if (result.changed) {
+        await source.write(result.name, result.content)
+        updatedFiles.push(result.name)
+      }
+    }
 
-  if (newFileName === oldFileName) {
-    await source.write(oldFileName, newContent)
-  } else {
-    await source.rename(oldFileName, newFileName)
-    await source.write(newFileName, newContent)
+    // The renamed note itself: apply any self-referencing wikilink rewrite,
+    // then set the frontmatter title from the exact same `trimmedTitle` used
+    // to derive the filename, so the two never drift apart.
+    const selfResult = rewrittenByName.get(oldFileName)
+    const selfContent = selfResult ? selfResult.content : target.content
+    const { body: selfBody } = parseNote(selfContent)
+    const newContent = serializeNote({ ...frontMatter, title: trimmedTitle }, selfBody)
+
+    if (newFileName === oldFileName) {
+      await source.write(oldFileName, newContent)
+    } else {
+      targetMoveAttempted = true
+      await source.rename(oldFileName, newFileName)
+      await source.write(newFileName, newContent)
+    }
+  } catch (error) {
+    try {
+      await rollback()
+    } catch {
+      // Preserve the original failure below; the rollback helper has already
+      // made the best effort and included its own diagnostic when possible.
+    }
+    throw error
   }
 
   return { renamedFile: newFileName, updatedFiles }

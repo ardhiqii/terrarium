@@ -7,7 +7,7 @@ import type { GithubAccountSettings } from './github-account-store'
  * The repository window is shared by normal sync and receipt repair. Keeping
  * the policy in one server-safe module prevents repair from accidentally
  * reading a repository the account did not approve, or from widening the
- * normal 16-repository request window.
+ * normal derived repository window.
  */
 export function repositoryIsTracked(
   repository: GithubRepository,
@@ -29,18 +29,24 @@ export interface GithubRepositoryWindow {
 /**
  * Select the same bounded window as `/api/github/sync`. Repositories without a
  * baseline go first because they cannot award history until their first read is
- * committed. The repair path uses this ordering too, so a large account never
- * turns a recovery request into an unbounded GitHub scan.
+ * committed; after that, the oldest successful baselines rotate forward so a
+ * large account is not pinned to the first page forever. The repair path uses
+ * this ordering too, so a recovery request never becomes an unbounded scan.
  */
 export function selectGithubRepositoryWindow(
   repositories: readonly GithubRepository[],
   settings: GithubAccountSettings,
 ): GithubRepositoryWindow {
   const candidates = repositories.filter((repository) => repositoryIsTracked(repository, settings))
-  const eligible = [
-    ...candidates.filter((repository) => !settings.baselineByRepositoryId[repository.id]),
-    ...candidates.filter((repository) => Boolean(settings.baselineByRepositoryId[repository.id])),
-  ].slice(0, MAX_SYNC_REPOSITORIES)
+  const eligible = [...candidates]
+    .sort((left, right) => {
+      const leftBaseline = Date.parse(settings.baselineByRepositoryId[left.id] ?? '')
+      const rightBaseline = Date.parse(settings.baselineByRepositoryId[right.id] ?? '')
+      const leftRank = Number.isFinite(leftBaseline) ? leftBaseline : Number.NEGATIVE_INFINITY
+      const rightRank = Number.isFinite(rightBaseline) ? rightBaseline : Number.NEGATIVE_INFINITY
+      return leftRank - rightRank || left.id.localeCompare(right.id)
+    })
+    .slice(0, MAX_SYNC_REPOSITORIES)
   return {
     eligible,
     eligibleCandidateCount: candidates.length,
@@ -57,7 +63,11 @@ export function occurredAfterBaseline(
   if (!baseline) return false
   const eventTime = Date.parse(occurredAt)
   const baselineTime = Date.parse(baseline)
-  return Number.isFinite(eventTime) && Number.isFinite(baselineTime) && eventTime > baselineTime
+  // GitHub timestamps are second-granular while checkpoints carry
+  // milliseconds. Include the boundary second; stable event IDs make the
+  // one-second overlap idempotent and prevent activity from being lost.
+  const boundary = Number.isFinite(baselineTime) ? Math.floor(baselineTime / 1000) * 1000 : Number.NaN
+  return Number.isFinite(eventTime) && Number.isFinite(boundary) && eventTime >= boundary
 }
 
 /** Keep only activity eligible for a normal deferred-baseline sync. */

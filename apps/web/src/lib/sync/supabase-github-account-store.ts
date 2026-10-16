@@ -227,9 +227,15 @@ export class SupabaseGithubAccountStore implements GithubAccountStore {
     return account?.settings ?? defaultSettings()
   }
 
-  async saveSettings(githubId: number, settings: GithubAccountSettings): Promise<void> {
+  async saveSettings(
+    githubId: number,
+    settings: GithubAccountSettings,
+    expectedSettings?: GithubAccountSettings,
+  ): Promise<boolean> {
     const clean = cleanSettings(settings)
-    const { data, error } = await getSupabaseAdminClient()
+    const expected = expectedSettings ? cleanSettings(expectedSettings) : null
+    const client = getSupabaseAdminClient()
+    let query = client
       .from('github_accounts')
       .update({
         tracked_repository_ids_json: clean.trackedRepositoryIds,
@@ -240,10 +246,34 @@ export class SupabaseGithubAccountStore implements GithubAccountStore {
         last_synced_at: clean.lastSyncedAt,
       })
       .eq('github_id', githubId)
+      // The disconnect marker is part of the write guard. A delayed settings
+      // save must not repopulate a row after the user disconnected GitHub.
+      .is('disconnected_at', null)
+    if (expected) {
+      // JSON columns must receive JSON text in PostgREST filters; passing an
+      // object is serialized as `[object Object]` by supabase-js.
+      query = query
+        .eq('tracked_repository_ids_json', JSON.stringify(expected.trackedRepositoryIds))
+        .eq('excluded_repository_ids_json', JSON.stringify(expected.excludedRepositoryIds))
+        .eq('auto_include_personal', expected.autoIncludePersonal)
+        .eq('auto_include_organizations_json', JSON.stringify(expected.autoIncludeOrganizations))
+        .eq('baseline_by_repository_id_json', JSON.stringify(expected.baselineByRepositoryId))
+      query = expected.lastSyncedAt === null
+        ? query.is('last_synced_at', null)
+        : query.eq('last_synced_at', expected.lastSyncedAt)
+    }
+    const { data, error } = await query
       .select('github_id')
       .maybeSingle()
     if (error) throwDatabaseError('github_accounts.saveSettings', error)
-    if (!data) throw new Error('GitHub account credential not found')
+    if (data) return true
+
+    // An update with no returned row is either a stale/disconnected CAS or a
+    // genuinely missing account. Keep the historical missing-row error while
+    // letting the route turn the two retryable cases into a 409.
+    const current = await this.get(githubId)
+    if (!current) throw new Error('GitHub account credential not found')
+    return false
   }
 
   async advanceBaseline(

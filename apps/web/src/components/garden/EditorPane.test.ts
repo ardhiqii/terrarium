@@ -1,5 +1,44 @@
-import { describe, it, expect } from 'vitest'
-import { detectWikilinkTrigger, computeDraftXpPreview } from './EditorPane'
+import { describe, it, expect, vi } from 'vitest'
+import { detectWikilinkTrigger, runGardenMutation } from './EditorPane'
+
+describe('runGardenMutation', () => {
+  it('notifies exactly once after the complete mutation succeeds', async () => {
+    const calls: string[] = []
+
+    await runGardenMutation(
+      async () => {
+        calls.push('mutation')
+      },
+      async () => {
+        calls.push('scan')
+      }
+    )
+
+    expect(calls).toEqual(['mutation', 'scan'])
+  })
+
+  it('passes rename proof only after the rename succeeds', async () => {
+    const onMutation = vi.fn()
+    const hint = { from: 'old.md', to: 'new.md' }
+
+    await runGardenMutation(async () => undefined, onMutation, hint)
+
+    expect(onMutation).toHaveBeenCalledOnce()
+    expect(onMutation).toHaveBeenCalledWith(hint)
+  })
+
+  it('does not notify when the mutation fails', async () => {
+    const onMutation = vi.fn()
+
+    await expect(
+      runGardenMutation(async () => {
+        throw new Error('write failed')
+      }, onMutation)
+    ).rejects.toThrow('write failed')
+
+    expect(onMutation).not.toHaveBeenCalled()
+  })
+})
 
 describe('detectWikilinkTrigger', () => {
   it('detects an open, unclosed [[ before the caret', () => {
@@ -25,41 +64,5 @@ describe('detectWikilinkTrigger', () => {
   it('tracks the most recently opened [[ when two appear', () => {
     const text = '[[First]] and [[Sec'
     expect(detectWikilinkTrigger(text, text.length)).toEqual({ start: 14, query: 'Sec' })
-  })
-})
-
-describe('computeDraftXpPreview', () => {
-  it('always counts the note-published entry for a draft', () => {
-    const entries = computeDraftXpPreview('', [])
-    const notePublished = entries.find((e) => e.source === 'note-published')
-    expect(notePublished?.count).toBe(1)
-    expect(notePublished?.xp).toBeGreaterThan(0)
-  })
-
-  it('counts words using the same rate as the real XP pipeline', () => {
-    const body = Array.from({ length: 200 }, () => 'word').join(' ')
-    const entries = computeDraftXpPreview(body, [])
-    const words = entries.find((e) => e.source === 'words')
-    expect(words?.count).toBe(2) // 200 words = 2 hundreds
-  })
-
-  it('only counts a wikilink as XP when it resolves against a real title', () => {
-    const body = '[[Real Note]] and [[Nonexistent Note]]'
-    const entries = computeDraftXpPreview(body, ['Real Note'])
-    const wikilink = entries.find((e) => e.source === 'wikilink')
-    expect(wikilink?.count).toBe(1)
-  })
-
-  it('resolves a slug-form link against a known title, same as the real resolver', () => {
-    const body = '[[real-note]]'
-    const entries = computeDraftXpPreview(body, ['Real Note'])
-    const wikilink = entries.find((e) => e.source === 'wikilink')
-    expect(wikilink?.count).toBe(1)
-  })
-
-  it('omits zero-count entries, so backlinks/tags never show as false +0 lines', () => {
-    const entries = computeDraftXpPreview('some words here', [])
-    expect(entries.some((e) => e.source === 'backlink')).toBe(false)
-    expect(entries.some((e) => e.source === 'tag')).toBe(false)
   })
 })

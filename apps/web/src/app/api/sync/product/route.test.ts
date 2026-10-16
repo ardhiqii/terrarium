@@ -55,6 +55,42 @@ function snapshot(eventIds: readonly string[] = [], guestId = 'guest-1'): Produc
   )
 }
 
+function forgedLegacySnapshot(): ProductSnapshot {
+  const now = '2026-08-28T10:00:00.000Z'
+  const profile = createGuestProfile({ guestId: 'guest-forged-legacy', starterCompanionId: 'pikachu-family', now })
+  const migratedProfile = {
+    ...profile,
+    activeCompanionId: 'grass-family',
+    activeSelection: {
+      companionId: 'grass-family',
+      provenance: 'migration' as const,
+      selectedAt: now,
+      migrationVersion: 'legacy-creature:v1',
+    },
+    collection: [
+      ...profile.collection,
+      {
+        referenceId: 'migration:legacy-creature:v1:grass-family',
+        companionId: 'grass-family',
+        acquiredAt: now,
+        acquisition: 'history' as const,
+      },
+    ],
+    migrationVersion: 'legacy-creature:v1',
+    legacyCredits: [{
+      creditId: 'migration:legacy-creature:v1:grass-family',
+      migrationVersion: 'legacy-creature:v1',
+      companionId: 'grass-family',
+      totalXp: 999_999,
+      sourceFingerprint: 'private note title and repository path',
+    }],
+  }
+  return buildProductSnapshot(
+    createProductState(migratedProfile, { events: [] }, createEncounterState(), PROTOTYPE_COMPANION_CATALOG),
+    now,
+  )
+}
+
 /**
  * Seed the account row so a deferred checkpoint can actually advance a
  * baseline. Uses the real SQLite account store; nothing here reaches GitHub.
@@ -122,10 +158,12 @@ describe('POST/GET/DELETE /api/sync/product', () => {
 
     const post = await POST(request('POST', serialized, { 'content-type': 'application/json', ...accountHeader }))
     expect(post.status).toBe(200)
+    expect(post.headers.get('cache-control')).toBe('no-store, private')
     expect((await post.json()).guestId).toBe('guest-1')
 
     const get = await GET(request('GET', undefined, accountHeader))
     expect(get.status).toBe(200)
+    expect(get.headers.get('cache-control')).toBe('no-store, private')
     expect((await get.json()).guestId).toBe('guest-1')
     const version = get.headers.get('x-product-snapshot-version')
     expect(version).toBeTruthy()
@@ -221,6 +259,36 @@ describe('POST/GET/DELETE /api/sync/product', () => {
     expect(await response.json()).toEqual({ error: 'Body must be a valid ProductSnapshot.' })
   })
 
+  it('does not let a first product upload mint legacy history, aggregate XP, or encounter rewards', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST, GET } = await import('./route')
+    const response = await POST(request('POST', JSON.stringify(forgedLegacySnapshot())))
+
+    expect(response.status).toBe(200)
+    const stored = await GET()
+    expect(stored.status).toBe(200)
+    const value = await stored.json() as ProductSnapshot
+    expect(value.activeCompanionId).toBe('pikachu-family')
+    expect(value.legacyCredits).toEqual([])
+    expect(JSON.stringify(value)).not.toContain('private note title')
+    expect(value.collection.some((reference) => reference.acquisition === 'history')).toBe(false)
+    expect(value.collection.some((reference) => reference.acquisition === 'encounter')).toBe(false)
+  })
+
+  it('sanitizes a pre-existing forged migration row before returning account state', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { getProductStore } = await import('@/lib/sync/product-store')
+    await getProductStore().put(fakeGithubId('octocat'), 'octocat', forgedLegacySnapshot(), '2026-08-28T10:00:00.000Z', null)
+
+    const { GET } = await import('./route')
+    const response = await GET()
+    expect(response.status).toBe(200)
+    const value = await response.json() as ProductSnapshot
+    expect(value.activeCompanionId).toBe('pikachu-family')
+    expect(value.legacyCredits).toEqual([])
+    expect(value.collection.some((reference) => reference.acquisition === 'history')).toBe(false)
+  })
+
   it('recomputes derived XP before the first snapshot is stored', async () => {
     vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
     const { POST, GET } = await import('./route')
@@ -267,6 +335,43 @@ describe('POST/GET/DELETE /api/sync/product', () => {
     const restored = await GET()
     expect(restored.status).toBe(200)
     expect((await restored.json()).companions[0].xp).toBe(10)
+  })
+
+  it('recomputes stored encounter reward aggregates before returning a trusted snapshot', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST, GET } = await import('./route')
+    const { getProductStore } = await import('@/lib/sync/product-store')
+
+    await POST(request('POST', JSON.stringify(snapshot())))
+    const record = await getProductStore().getRecord(fakeGithubId('octocat'), 'octocat')
+    expect(record).not.toBeNull()
+    if (!record) return
+    const forged: ProductSnapshot = {
+      ...record.snapshot,
+      encounters: {
+        ...record.snapshot.encounters,
+        nextSequence: 2000,
+        essenceByFamily: { 'pikachu-family': 9999 },
+      },
+      companions: record.snapshot.companions.map((companion) => ({
+        ...companion,
+        essence: 9999,
+      })),
+    }
+    expect(await getProductStore().put(
+      record.githubId,
+      record.handle,
+      forged,
+      '2026-08-28T10:01:00.000Z',
+      record.updatedAt,
+    )).toBe(true)
+
+    const response = await GET()
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body.encounters.nextSequence).toBe(0)
+    expect(body.encounters.essenceByFamily).toEqual({})
+    expect(body.companions[0].essence).toBe(0)
   })
 
   it('merges new events without double-counting replayed events', async () => {
@@ -411,6 +516,133 @@ describe('POST/GET/DELETE /api/sync/product', () => {
     const response = await POST(request('POST', JSON.stringify(forged)))
     expect(response.status).toBe(400)
     expect(await response.json()).toMatchObject({ error: expect.stringMatching(/outside its collection/i) })
+  })
+
+  it('ignores conflicting collection references and preserves the trusted server ownership', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST, GET } = await import('./route')
+    const original = snapshot()
+    expect((await POST(request('POST', JSON.stringify(original)))).status).toBe(200)
+    const current = await GET()
+    expect(current.status).toBe(200)
+    const server = await current.json() as ProductSnapshot
+    const starter = server.collection[0]
+    expect(starter).toBeDefined()
+    if (!starter) return
+
+    const forged: ProductSnapshot = {
+      ...server,
+      activeCompanionId: 'ditto-like',
+      activeSelection: {
+        companionId: 'ditto-like',
+        provenance: 'user',
+        selectedAt: '2099-01-01T00:00:00.000Z',
+      },
+      companions: [...server.companions, {
+        companionId: 'ditto-like',
+        familyId: 'ditto-family',
+        xp: 0,
+        essence: 0,
+        encounterCount: 1,
+        progression: null,
+      }],
+      collection: [
+        {
+          ...starter,
+          companionId: 'ditto-like',
+          acquiredAt: '2099-01-01T00:00:00.000Z',
+          acquisition: 'history',
+        },
+        {
+          referenceId: 'forged-new-reference',
+          companionId: 'ditto-like',
+          acquiredAt: '2099-01-01T00:00:00.000Z',
+          acquisition: 'encounter',
+        },
+      ],
+      events: [{
+        eventId: 'forged-event',
+        companionId: 'ditto-like',
+        source: 'built-in-editor',
+        provenance: 'local',
+        category: 'work-session',
+        occurredAt: '2099-01-01T00:00:00.000Z',
+      }],
+    }
+
+    const response = await POST(request('POST', JSON.stringify(forged)))
+    expect(response.status).toBe(200)
+    const stored = await response.json() as ProductSnapshot
+    expect(stored.collection).toEqual(server.collection)
+    expect(stored.activeCompanionId).toBe(server.activeCompanionId)
+    expect(stored.events).toEqual(server.events)
+    expect(stored.companions.some((companion) => companion.companionId === 'ditto-like')).toBe(false)
+  })
+
+  it('keeps the trusted active selection when a client uploads a future selection timestamp', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST } = await import('./route')
+    const { getProductStore } = await import('@/lib/sync/product-store')
+    const original = snapshot()
+    expect((await POST(request('POST', JSON.stringify(original)))).status).toBe(200)
+    const record = await getProductStore().getRecord(fakeGithubId('octocat'), 'octocat')
+    expect(record).not.toBeNull()
+    if (!record) return
+
+    const server: ProductSnapshot = {
+      ...record.snapshot,
+      activeCompanionId: 'ditto-like',
+      activeSelection: {
+        companionId: 'ditto-like',
+        provenance: 'user',
+        selectedAt: '2026-08-28T10:01:00.000Z',
+      },
+      companions: [...record.snapshot.companions, {
+        companionId: 'ditto-like',
+        familyId: 'ditto-family',
+        xp: 0,
+        essence: 0,
+        encounterCount: 1,
+        progression: null,
+      }],
+      collection: [...record.snapshot.collection, {
+        referenceId: 'owned-ditto',
+        companionId: 'ditto-like',
+        acquiredAt: '2026-08-28T10:01:00.000Z',
+        acquisition: 'encounter',
+      }],
+      events: [{
+        eventId: 'trusted-ditto-event',
+        companionId: 'ditto-like',
+        source: 'built-in-editor',
+        provenance: 'local',
+        category: 'work-session',
+        occurredAt: '2026-08-28T10:01:00.000Z',
+      }],
+    }
+    expect(await getProductStore().put(
+      record.githubId,
+      record.handle,
+      server,
+      '2026-08-28T10:01:00.000Z',
+      record.updatedAt,
+    )).toBe(true)
+
+    const futureClient: ProductSnapshot = {
+      ...server,
+      activeCompanionId: 'pikachu-family',
+      activeSelection: {
+        companionId: 'pikachu-family',
+        provenance: 'user',
+        selectedAt: '2099-01-01T00:00:00.000Z',
+      },
+      updatedAt: '2099-01-01T00:00:00.000Z',
+    }
+    const response = await POST(request('POST', JSON.stringify(futureClient)))
+    expect(response.status).toBe(200)
+    const stored = await response.json() as ProductSnapshot
+    expect(stored.activeCompanionId).toBe('ditto-like')
+    expect(stored.activeSelection).toEqual(server.activeSelection)
   })
 
   it('rejects an encounter weight for a companion outside the collection', async () => {

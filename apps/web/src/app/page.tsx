@@ -2,10 +2,10 @@ import { getAllContent, getAllTags } from '@/lib/content'
 import ContentCard from '@/components/ContentCard'
 import GardenLogo from '@/components/GardenLogo'
 import { siteConfig } from '@/lib/site-config'
-import { SpecimenPlate } from '@/components/game/SpecimenPlate'
-import { XpLedger } from '@/components/game/XpLedger'
 import { ItemDrawer } from '@/components/game/ItemDrawer'
+import { HomeCompanionSurface } from '@/components/game/HomeCompanionSurface'
 import { getCreatureState } from '@/lib/game/state'
+import { loadAccountProductState } from '@/lib/game/account-product-state'
 import Link from 'next/link'
 import type { Metadata } from 'next'
 
@@ -14,16 +14,19 @@ export const metadata: Metadata = {
   description: siteConfig.description,
 }
 
-export default function HomePage() {
+export default async function HomePage() {
   const allContent = getAllContent()
   const tags = getAllTags()
 
   const noteCount = allContent.filter((i) => i.type === 'note').length
   const projectCount = allContent.filter((i) => i.type === 'project').length
 
-  // No GitHub data exists yet (T5 lands it later); the creature must render
-  // correctly from garden data alone, so `null` here is correct and expected.
-  const creatureState = getCreatureState(null)
+  // Keep the public/garden evidence path independent from the site's cached
+  // GitHub owner data. Account hydration handles owner-only migration below.
+  const legacyState = getCreatureState(null)
+  const accountProduct = await loadAccountProductState(legacyState)
+  const accountScoped = accountProduct.status !== 'signed-out'
+  const accountNamespace = accountScoped ? `github-${accountProduct.githubId}` : undefined
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6">
@@ -78,30 +81,22 @@ export default function HomePage() {
       {/* Divider */}
       <div className="border-t" style={{ borderColor: 'var(--rule)' }} />
 
-      {/* Creature: the garden's growth made visible. Archive register. */}
+      {/* Active companion: the product projection is the only companion/XP surface. */}
       <section className="py-12">
-        <SpecimenPlate state={creatureState} />
+        <HomeCompanionSurface
+          initialState={accountProduct.state}
+          accountScoped={accountScoped}
+          namespace={accountNamespace}
+        />
 
-        <div className="grid sm:grid-cols-2 gap-8 mt-8">
-          <div>
-            <h3
-              className="font-data text-xs font-semibold uppercase tracking-widest mb-3"
-              style={{ color: 'var(--ink-muted)', letterSpacing: '0.15em' }}
-            >
-              Observation log
-            </h3>
-            <XpLedger entries={creatureState.breakdown} total={creatureState.totalXp} />
-          </div>
-
-          <div>
-            <h3
-              className="font-data text-xs font-semibold uppercase tracking-widest mb-3"
-              style={{ color: 'var(--ink-muted)', letterSpacing: '0.15em' }}
-            >
-              Specimen drawer
-            </h3>
-            <ItemDrawer items={creatureState.items} />
-          </div>
+        <div className="mt-8">
+          <h3
+            className="font-data text-xs font-semibold uppercase tracking-widest mb-3"
+            style={{ color: 'var(--ink-muted)', letterSpacing: '0.15em' }}
+          >
+            Specimen drawer
+          </h3>
+          <ItemDrawer items={legacyState.items} />
         </div>
       </section>
 

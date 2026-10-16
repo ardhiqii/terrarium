@@ -10,6 +10,27 @@
  * storage. See docs/archive/tasks/PHASE3.md for the decisions behind that.
  */
 
+/**
+ * Creates an opaque ID for one mounted garden. It deliberately does not use
+ * the folder name: two folders can have the same name, and a folder can be
+ * renamed without becoming a different source.
+ */
+let sourceIdCounter = 0
+
+export function createGardenSourceId(): string {
+  const randomUUID = globalThis.crypto?.randomUUID
+  if (typeof randomUUID === 'function') {
+    return `garden:${randomUUID.call(globalThis.crypto)}`
+  }
+
+  // `randomUUID` is unavailable in a few older Chromium/test environments.
+  // This is only an opaque client-side correlation ID, not a security token.
+  sourceIdCounter += 1
+  return `garden:${Date.now().toString(36)}-${sourceIdCounter.toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2)}`
+}
+
 /** A single markdown file in the connected folder. */
 export interface GardenFile {
   /** Filename including extension, e.g. `my-note.md`. Unique within a folder. */
@@ -33,6 +54,9 @@ export interface GardenFile {
 export interface GardenSource {
   /** Human-readable folder name, for display. */
   readonly name: string
+
+  /** Stable opaque identity for this mounted folder, never its display name. */
+  readonly sourceId: string
 
   /** Every markdown file in the folder. Non-markdown files are ignored. */
   list(): Promise<GardenFile[]>

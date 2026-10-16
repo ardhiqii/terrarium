@@ -263,8 +263,8 @@ export function describeGuestIdentityConflict(
       actionPlan('keep-both', {
         label: 'Keep both',
         description: cloudAvailable
-          ? "Adopt the account's guest identity here, keep this browser's progress, and upload the combined copy. Nothing is dropped."
-          : "Adopt the account's guest identity here and upload this browser's progress. Needs the account's copy to be readable first.",
+          ? "Adopt the account's guest identity here, keep this browser's ledger while it uploads, and merge only receipt-backed account progress. Local note history and unverified encounter rewards stay device-local."
+          : "Adopt the account's guest identity here and upload this browser's receipt-backed progress. Needs the account's copy to be readable first.",
         recommended: true,
         adoptsAccountIdentity: true,
         discardsCloudSnapshot: false,
@@ -275,8 +275,8 @@ export function describeGuestIdentityConflict(
       actionPlan('use-browser', {
         label: 'Use this browser',
         description: cloudAvailable
-          ? "Delete the account's cloud copy and replace it with this browser's progress. Whatever the cloud copy holds is discarded."
-          : "Delete the account's cloud copy and replace it with this browser's progress. The unreadable cloud copy is discarded.",
+          ? "Delete the account's cloud copy and replace it with this browser's receipt-backed progress. Whatever the cloud copy holds is discarded; unverified encounter rewards remain local."
+          : "Delete the account's cloud copy and replace it with this browser's receipt-backed progress. The unreadable cloud copy is discarded; unverified encounter rewards remain local.",
         destructive: true,
         requiresConfirmation: true,
         adoptsAccountIdentity: false,
@@ -379,7 +379,7 @@ export function guestIdentityActionSummary(
   const detail = outcomeDetail(outcome)
   if (outcome.result === 'succeeded') {
     if (action === 'keep-both') {
-      return "Cloud backup settled · this browser's progress and the account's copy are now one, under the account's guest identity."
+      return "Cloud backup settled · receipt-backed progress is now under the account's guest identity. Local note history and unverified encounter rewards remain device-local."
     }
     if (action === 'use-browser') {
       return "Cloud copy replaced · the account's cloud copy now holds this browser's progress."

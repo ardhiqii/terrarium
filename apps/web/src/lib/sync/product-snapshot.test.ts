@@ -14,6 +14,7 @@ import {
   restoreProductStateFromSnapshot,
   serializeProductSnapshot,
   serializeProductSyncedSnapshot,
+  toOpaqueProductId,
   validateProductSnapshot,
   validateProductSyncedSnapshot,
   type ProductSnapshot,
@@ -103,6 +104,37 @@ describe('product snapshot', () => {
     expect(mergeProductSnapshots(productSnapshot, syncedSnapshot)).toEqual(
       mergeGuestWithServer(productSnapshot, syncedSnapshot),
     )
+  })
+
+  it('round-trips encounter trigger contributions without double-counting old snapshots', () => {
+    const advanced = advanceEncounter(
+      createEncounterState(),
+      {
+        id: 'scan:private-source:batch-1',
+        progress: 150,
+        seed: 'seed-1',
+        signals: {},
+        ownedCompanionIds: ['pikachu-family'],
+      },
+      PROTOTYPE_COMPANION_CATALOG,
+    ).state
+    const withEncounter = createProductState(
+      createGuestProfile({ guestId: 'guest-1', starterCompanionId: 'pikachu-family', now }),
+      { events: [] },
+      advanced,
+      PROTOTYPE_COMPANION_CATALOG,
+    )
+    const snapshot = buildProductSnapshot(withEncounter, now)
+    expect(snapshot.encounters.progressByTriggerId).toBeDefined()
+    expect(JSON.stringify(snapshot)).not.toContain('scan:private-source:batch-1')
+    const restored = restoreProductStateFromSnapshot(snapshot, createGuestProfile({ guestId: 'fallback', starterCompanionId: 'pikachu-family', now }), PROTOTYPE_COMPANION_CATALOG)
+    expect(restored.encounters.totalProgress).toBe(150)
+    expect(restored.encounters.progressByTriggerId).toEqual(snapshot.encounters.progressByTriggerId)
+
+    const { progressByTriggerId: _oldProgress, ...oldEncounters } = snapshot.encounters
+    const oldServer = { ...snapshot, encounters: oldEncounters }
+    const merged = mergeProductSnapshots(snapshot, oldServer)
+    expect(merged.encounters.totalProgress).toBe(150)
   })
 
   it('contains derived product state while excluding authored metadata and opaque source IDs', () => {
@@ -290,6 +322,213 @@ describe('product snapshot', () => {
     expect(restored.profile.sourceBaselines).toEqual([])
     expect(restored.ledger.events).toHaveLength(1)
     expect(restored.companions.find((companion) => companion.companionId === 'pikachu-family')?.xp).toBe(25)
+  })
+
+  it('persists migration metadata and recomputes legacy-credit XP through restore', () => {
+    const profile = createGuestProfile({
+      guestId: 'guest-migration',
+      starterCompanionId: 'pikachu-family',
+      catalog: PROTOTYPE_COMPANION_CATALOG,
+      now,
+    })
+    const migratedProfile = {
+      ...profile,
+      activeCompanionId: 'grass-family',
+      activeSelection: {
+        companionId: 'grass-family',
+        provenance: 'migration' as const,
+        selectedAt: now,
+        migrationVersion: 'legacy-creature:v1',
+      },
+      catalogVersion: 'companion-catalog:v1',
+      migrationVersion: 'legacy-creature:v1',
+      legacyCredits: [{
+        creditId: 'migration:legacy-creature:v1:grass-family',
+        migrationVersion: 'legacy-creature:v1',
+        companionId: 'grass-family',
+        totalXp: 1550,
+        sourceFingerprint: 'legacy:fixture',
+      }],
+      collection: [
+        ...profile.collection,
+        {
+          referenceId: 'migration:legacy-creature:v1:grass-family',
+          companionId: 'grass-family',
+          acquiredAt: now,
+          acquisition: 'history' as const,
+        },
+      ],
+    }
+    const migrated = createProductState(
+      migratedProfile,
+      { events: [event('migration-event-1'), event('migration-event-2')] },
+      createEncounterState(),
+      PROTOTYPE_COMPANION_CATALOG,
+    )
+    const snapshot = buildProductSnapshot(migrated, now)
+
+    expect(snapshot.activeSelection).toMatchObject({
+      companionId: 'grass-family',
+      provenance: 'migration',
+    })
+    expect(snapshot.catalogVersion).toBe('companion-catalog:v1')
+    expect(snapshot.migrationVersion).toBe('legacy-creature:v1')
+    expect(snapshot.legacyCredits).toHaveLength(1)
+    expect(snapshot.companions.find((companion) => companion.companionId === 'grass-family')).toMatchObject({ xp: 1550 })
+
+    const restored = restoreProductStateFromSnapshot(
+      snapshot,
+      createGuestProfile({ guestId: 'fresh-browser', starterCompanionId: 'pikachu-family', now }),
+      PROTOTYPE_COMPANION_CATALOG,
+    )
+    expect(restored.profile.activeSelection).toMatchObject({
+      companionId: 'grass-family',
+      provenance: 'migration',
+    })
+    expect(restored.profile.catalogVersion).toBe('companion-catalog:v1')
+    expect(restored.profile.migrationVersion).toBe('legacy-creature:v1')
+    expect(restored.profile.collection.some((reference) => (
+      reference.referenceId === 'migration:legacy-creature:v1:grass-family'
+    ))).toBe(true)
+    expect(restored.profile.legacyCredits).toEqual(snapshot.legacyCredits)
+    expect(restored.companions.find((companion) => companion.companionId === 'grass-family')?.xp).toBe(1550)
+
+    const server = buildProductSnapshot(
+      createProductState(profile, { events: [event('migration-event-1'), event('migration-event-2')] }, createEncounterState(), PROTOTYPE_COMPANION_CATALOG),
+      now,
+    )
+    const merged = mergeGuestWithServer(snapshot, server)
+    expect(merged.legacyCredits).toEqual(snapshot.legacyCredits)
+    expect(merged.activeSelection).toMatchObject({ companionId: 'pikachu-family', provenance: 'starter' })
+    expect(merged.companions.find((companion) => companion.companionId === 'grass-family')?.xp).toBe(1550)
+    expect(merged.companions.find((companion) => companion.companionId === 'pikachu-family')?.xp).toBe(50)
+
+    const { activeSelection: _activeSelection, catalogVersion: _catalogVersion, migrationVersion: _migrationVersion, legacyCredits: _legacyCredits, ...v1Rest } = snapshot
+    const upgraded = deserializeProductSnapshot(JSON.stringify({
+      ...v1Rest,
+      schemaVersion: 1,
+    }))
+    expect(upgraded).not.toBeNull()
+    expect(upgraded?.schemaVersion).toBe(PRODUCT_SNAPSHOT_SCHEMA_VERSION)
+    expect(upgraded?.activeSelection.companionId).toBe('grass-family')
+    expect(upgraded?.legacyCredits).toEqual([])
+  })
+
+  it('compacts only receipt-backed events when an upload ledger reaches its bound', () => {
+    const events = Array.from({ length: 5_001 }, (_, index) => ({
+      ...githubEvent(`github:42:work-session:${index}`),
+      occurredAt: new Date(Date.parse(now) + index * 1_000).toISOString(),
+    }))
+    const proofs = Object.fromEntries(events.map((sourceEvent) => [
+      toOpaqueProductId(sourceEvent.eventId, 'event'),
+      'server-proof',
+    ]))
+
+    const snapshot = buildProductSnapshot(state(events), now, proofs, new Set(Object.keys(proofs)))
+
+    expect(snapshot.events).toHaveLength(5_000)
+    expect(snapshot.events.some((event) => event.eventId === toOpaqueProductId(events[0].eventId, 'event'))).toBe(false)
+    expect(snapshot.events.every((event) => event.verifiedProof === 'server-proof')).toBe(true)
+    expect(() => buildProductSnapshot(state(events.map((event) => ({ ...event, provenance: 'local' as const }))), now)).toThrow(/too large/i)
+    expect(() => buildProductSnapshot(state(events), now, proofs)).toThrow(/too large/i)
+  })
+
+  it('recomputes encounter Essence from draws and rejects oversized encounter control values', () => {
+    const base = buildProductSnapshot(state())
+    const weights = PROTOTYPE_COMPANION_CATALOG.list().map((definition) => ({
+      companionId: definition.id,
+      baseWeight: 1,
+      tagMatchCount: 0,
+      languageMatchCount: 0,
+      fileTypeMatchCount: 0,
+      tagBonus: 0,
+      languageBonus: 0,
+      fileTypeBonus: 0,
+      finalWeight: 1,
+    }))
+    const draw = {
+      id: 'draw-00000001-00000001',
+      sequence: 0,
+      triggerId: 'trigger-00000001-00000001',
+      seed: 'seed-00000001-00000001',
+      selectedCompanionId: 'pikachu-family',
+      selectedFamilyId: 'pikachu-family',
+      isDuplicate: true,
+      essenceAwarded: 3,
+      weights,
+    }
+    const guest: ProductSnapshot = {
+      ...base,
+      collection: [...base.collection, {
+        referenceId: 'encounter-ref',
+        companionId: 'pikachu-family',
+        acquiredAt: now,
+        acquisition: 'encounter',
+      }],
+      encounters: {
+        meter: 99,
+        totalProgress: 100,
+        nextSequence: 1,
+        draws: [draw],
+        processedTriggerIds: ['trigger-00000001-00000001'],
+        essenceByFamily: { 'pikachu-family': 9999 },
+      },
+    }
+
+    const merged = mergeGuestWithServer(guest, base)
+    expect(merged.encounters.essenceByFamily).toEqual({ 'pikachu-family': 3 })
+    expect(merged.companions.find((companion) => companion.companionId === 'pikachu-family')?.essence).toBe(3)
+    expect(() => validateProductSnapshot({
+      ...base,
+      encounters: { ...base.encounters, meter: 100 },
+    })).toThrow(/threshold/i)
+    expect(() => validateProductSnapshot({
+      ...base,
+      encounters: { ...base.encounters, totalProgress: Number.MAX_SAFE_INTEGER },
+    })).toThrow(/too large/i)
+  })
+
+  it('keeps the trusted server selection ahead of a future client selection', () => {
+    const base = createGuestProfile({ guestId: 'guest-selection', starterCompanionId: 'pikachu-family', now })
+    const collection = [
+      ...base.collection,
+      {
+        referenceId: 'history:grass-family',
+        companionId: 'grass-family',
+        acquiredAt: now,
+        acquisition: 'history' as const,
+      },
+    ]
+    const makeSnapshot = (activeCompanionId: string, activeSelection: ProductSnapshot['activeSelection'], updatedAt: string) =>
+      buildProductSnapshot(
+        createProductState(
+          { ...base, collection, activeCompanionId, activeSelection, updatedAt },
+          { events: [] },
+          createEncounterState(),
+          PROTOTYPE_COMPANION_CATALOG,
+        ),
+        updatedAt,
+      )
+
+    const userChoice = makeSnapshot('grass-family', {
+      companionId: 'grass-family',
+      provenance: 'user',
+      selectedAt: now,
+    }, now)
+    const newerMigration = makeSnapshot('pikachu-family', {
+      companionId: 'pikachu-family',
+      provenance: 'migration',
+      selectedAt: '2026-08-29T10:00:00.000Z',
+      migrationVersion: 'legacy-creature:v1',
+    }, '2026-08-29T10:00:00.000Z')
+
+    const merged = mergeProductSnapshots(userChoice, newerMigration)
+    expect(merged.activeCompanionId).toBe('pikachu-family')
+    expect(merged.activeSelection).toMatchObject({
+      companionId: 'pikachu-family',
+      provenance: 'migration',
+      selectedAt: '2026-08-29T10:00:00.000Z',
+    })
   })
 
   it('keeps restored GitHub events idempotent when the provider delivers the same source ID again', () => {

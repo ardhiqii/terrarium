@@ -39,7 +39,18 @@ export function projectPartialProductSnapshot(
   )
   if (presentBlockedEventIds.size === 0) return snapshot
 
-  const collection = snapshot.collection.filter((reference) => reference.acquisition !== 'encounter')
+  const retainedCollection = snapshot.collection.filter((reference) => reference.acquisition !== 'encounter')
+  // A normal profile always has a starter reference. If a partial recovery is
+  // handed only encounter references, keep the projection structurally valid
+  // with the same explicit legacy fallback used by the trusted server boundary.
+  const collection = retainedCollection.length > 0
+    ? retainedCollection
+    : [{
+        referenceId: 'ref-00000000-00000001',
+        companionId: 'pikachu-family',
+        acquiredAt: snapshot.createdAt,
+        acquisition: 'starter' as const,
+      }]
   const ownedCompanionIds = new Set(collection.map((reference) => reference.companionId))
   const events = snapshot.events.filter((event) => (
     !presentBlockedEventIds.has(event.eventId) && ownedCompanionIds.has(event.companionId)
@@ -54,7 +65,7 @@ export function projectPartialProductSnapshot(
   // Companion totals/progression are derived fields. Zero them in the partial
   // request so a client or future server cannot accept blocked-derived XP or
   // essence merely because the event ledger was projected.
-  const companions = snapshot.companions
+  const projectedCompanions = snapshot.companions
     .filter((companion) => ownedCompanionIds.has(companion.companionId))
     .map((companion) => ({
       ...companion,
@@ -63,14 +74,38 @@ export function projectPartialProductSnapshot(
       encounterCount: collectionCountByCompanion.get(companion.companionId) ?? 0,
       progression: null,
     }))
-  const starter = collection.find((reference) => reference.acquisition === 'starter') ?? collection[0]
+  const companions = projectedCompanions.length > 0
+    ? projectedCompanions
+    : [{
+        companionId: 'pikachu-family',
+        familyId: 'pikachu-family',
+        xp: 0,
+        essence: 0,
+        encounterCount: 1,
+        progression: null,
+      }]
+  const fallbackReference = [...collection].sort((left, right) => (
+    (left.acquisition === 'starter' ? 0 : left.acquisition === 'history' ? 1 : 2) -
+    (right.acquisition === 'starter' ? 0 : right.acquisition === 'history' ? 1 : 2) ||
+    left.acquiredAt.localeCompare(right.acquiredAt) ||
+    left.referenceId.localeCompare(right.referenceId) ||
+    left.companionId.localeCompare(right.companionId)
+  ))[0]
   const activeCompanionId = ownedCompanionIds.has(snapshot.activeCompanionId)
     ? snapshot.activeCompanionId
-    : starter?.companionId ?? snapshot.activeCompanionId
+    : fallbackReference?.companionId ?? 'pikachu-family'
+  const activeSelection = snapshot.activeSelection.companionId === activeCompanionId
+    ? snapshot.activeSelection
+    : {
+        companionId: activeCompanionId,
+        provenance: fallbackReference?.acquisition === 'starter' ? 'starter' as const : 'user' as const,
+        selectedAt: fallbackReference?.acquiredAt ?? snapshot.updatedAt,
+      }
 
   return {
     ...snapshot,
     activeCompanionId,
+    activeSelection,
     companions,
     collection,
     events,
@@ -82,6 +117,7 @@ export function projectPartialProductSnapshot(
       draws: [],
       processedTriggerIds: [],
       essenceByFamily: {},
+      progressByTriggerId: {},
     },
   }
 }

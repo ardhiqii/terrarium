@@ -120,10 +120,15 @@ describe('SupabaseGithubAccountStore', () => {
   it('normalizes settings before sending them to Supabase', async () => {
     const update = vi.fn().mockReturnThis()
     const maybeSingle = vi.fn().mockResolvedValue({ data: { github_id: 42 }, error: null })
-    const select = vi.fn().mockReturnValue({ maybeSingle })
-    const eq = vi.fn().mockReturnValue({ select })
+    const query = {
+      update,
+      eq: vi.fn().mockReturnThis(),
+      is: vi.fn().mockReturnThis(),
+      select: vi.fn().mockReturnThis(),
+      maybeSingle,
+    }
     mockedGetClient.mockReturnValue({
-      from: vi.fn().mockReturnValue({ update, eq }),
+      from: vi.fn().mockReturnValue(query),
     } as never)
 
     await new SupabaseGithubAccountStore().saveSettings(42, {
@@ -139,7 +144,65 @@ describe('SupabaseGithubAccountStore', () => {
       tracked_repository_ids_json: ['repo-1'],
       auto_include_organizations_json: ['acme'],
     }))
-    expect(eq).toHaveBeenCalledWith('github_id', 42)
+    expect(query.eq).toHaveBeenCalledWith('github_id', 42)
+  })
+
+  it('uses atomic settings and disconnect guards for stale writes', async () => {
+    const baseline = { 'repo-1': '2024-01-01T00:00:00.000Z' }
+    const currentRow = {
+      github_id: 42,
+      handle: 'torvalds',
+      token_iv: 'iv',
+      token_tag: 'tag',
+      token_ciphertext: 'ciphertext',
+      scopes_json: [],
+      tracked_repository_ids_json: ['repo-1'],
+      excluded_repository_ids_json: [],
+      auto_include_personal: false,
+      auto_include_organizations_json: [],
+      baseline_by_repository_id_json: baseline,
+      last_synced_at: '2024-01-02T00:00:00.000Z',
+      disconnected_at: null,
+    }
+    const maybeSingle = vi.fn()
+      .mockResolvedValueOnce({ data: null, error: null })
+      .mockResolvedValueOnce({ data: currentRow, error: null })
+    const query = {
+      update: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      is: vi.fn().mockReturnThis(),
+      select: vi.fn().mockReturnThis(),
+      maybeSingle,
+    }
+    mockedGetClient.mockReturnValue({ from: vi.fn().mockReturnValue(query) } as never)
+    const store = new SupabaseGithubAccountStore()
+    const expected = {
+      trackedRepositoryIds: ['repo-1'],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+      baselineByRepositoryId: baseline,
+      lastSyncedAt: '2024-01-02T00:00:00.000Z',
+    }
+
+    await expect(store.saveSettings(42, {
+      ...expected,
+      baselineByRepositoryId: { 'repo-1': '2024-02-01T00:00:00.000Z' },
+    }, {
+      ...expected,
+      baselineByRepositoryId: { 'repo-1': '2023-12-01T00:00:00.000Z' },
+    })).resolves.toBe(false)
+    expect(query.is).toHaveBeenCalledWith('disconnected_at', null)
+    expect(query.eq).toHaveBeenCalledWith('baseline_by_repository_id_json', JSON.stringify({
+      'repo-1': '2023-12-01T00:00:00.000Z',
+    }))
+
+    maybeSingle
+      .mockResolvedValueOnce({ data: null, error: null })
+      .mockResolvedValueOnce({ data: { ...currentRow, disconnected_at: '2024-03-01T00:00:00.000Z' }, error: null })
+    const disconnectedExpected = { ...expected, lastSyncedAt: null }
+    await expect(store.saveSettings(42, disconnectedExpected, disconnectedExpected)).resolves.toBe(false)
+    expect(query.is).toHaveBeenCalledWith('last_synced_at', null)
   })
 
   it('rejects settings for a missing account and surfaces update errors', async () => {
@@ -147,7 +210,8 @@ describe('SupabaseGithubAccountStore', () => {
     const missingQuery = {
       update: vi.fn().mockReturnThis(),
       eq: vi.fn().mockReturnThis(),
-      select: vi.fn().mockReturnValue({ maybeSingle: missingMaybeSingle }),
+      is: vi.fn().mockReturnThis(),
+      select: vi.fn().mockReturnThis(),
       maybeSingle: missingMaybeSingle,
     }
     mockedGetClient.mockReturnValue({ from: vi.fn().mockReturnValue(missingQuery) } as never)
@@ -165,11 +229,16 @@ describe('SupabaseGithubAccountStore', () => {
 
     const update = vi.fn().mockReturnThis()
     const eq = vi.fn().mockReturnThis()
-    const select = vi.fn().mockReturnValue({
-      maybeSingle: vi.fn().mockResolvedValue({ data: null, error: { message: 'offline' } }),
-    })
+    const errorMaybeSingle = vi.fn().mockResolvedValue({ data: null, error: { message: 'offline' } })
+    const errorQuery = {
+      update,
+      eq,
+      is: vi.fn().mockReturnThis(),
+      select: vi.fn().mockReturnThis(),
+      maybeSingle: errorMaybeSingle,
+    }
     mockedGetClient.mockReturnValue({
-      from: vi.fn().mockReturnValue({ update, eq, select }),
+      from: vi.fn().mockReturnValue(errorQuery),
     } as never)
     await expect(new SupabaseGithubAccountStore().saveSettings(42, settings)).rejects.toThrow(
       'Supabase github_accounts.saveSettings failed: offline',

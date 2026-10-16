@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { asCompanionId, asEventId, type EventLedger, type NormalizedEvent } from './events'
 import { PROTOTYPE_COMPANION_CATALOG } from './companion-catalog'
 import { createEncounterState } from './encounters'
-import { createProductState, applyProductEvents, switchActiveCompanion } from './product-state'
+import {
+  captureProductEventsForActiveCompanion,
+  createProductState,
+  applyProductEvents,
+  switchActiveCompanion,
+} from './product-state'
 import { createGuestProfile } from './guest-profile'
 
 const now = '2026-08-28T10:00:00.000Z'
@@ -52,8 +57,39 @@ describe('product state', () => {
     )
 
     expect(next.activeCompanion?.xp).toBe(100)
-    expect(next.activeCompanion?.progression?.step.id).toBe('evolved')
+    // Product families share the locked 1,500 XP evolution threshold; 100 XP
+    // remains in the base step instead of using Pikachu's old prototype curve.
+    expect(next.activeCompanion?.progression?.step.id).toBe('base')
     expect(next.ledger.events).toHaveLength(4)
+  })
+
+  it('binds fresh local events to the active companion but preserves replay ownership', () => {
+    const withDitto = {
+      ...initialState(),
+      profile: {
+        ...initialState().profile,
+        collection: [
+          ...initialState().profile.collection,
+          { referenceId: 'ditto-history', companionId: 'ditto-like', acquiredAt: now, acquisition: 'history' as const },
+        ],
+      },
+    }
+    const state = switchActiveCompanion(withDitto, 'ditto-like', PROTOTYPE_COMPANION_CATALOG, now)
+    const local = event('captured-for-active', 'pikachu-family')
+    const captured = captureProductEventsForActiveCompanion(state, [local])
+    expect(captured[0]?.companionId).toBe('ditto-like')
+
+    const first = applyProductEvents(state, [local], PROTOTYPE_COMPANION_CATALOG, { encounterProgress: 0 })
+    expect(first.companions.find((item) => item.companionId === 'ditto-like')?.xp).toBe(25)
+    expect(first.companions.find((item) => item.companionId === 'pikachu-family')?.xp).toBe(0)
+
+    const replay = applyProductEvents(
+      first,
+      [{ ...local, companionId: asCompanionId('pikachu-family') }],
+      PROTOTYPE_COMPANION_CATALOG,
+      { encounterProgress: 0 },
+    )
+    expect(replay.ledger.events[0]?.companionId).toBe('ditto-like')
   })
 
   it('does not count replayed events or reroll the encounter', () => {
@@ -222,6 +258,44 @@ describe('product state', () => {
     expect(localReplay.ledger.events[0]).toEqual(upgraded.ledger.events[0])
     expect(localReplay.activeCompanion?.xp).toBe(upgraded.activeCompanion?.xp)
     expect(localReplay.encounters).toEqual(upgraded.encounters)
+  })
+
+  it('adds persisted legacy credits without turning them into events', () => {
+    const state = createProductState(
+      {
+        ...initialState().profile,
+        legacyCredits: [{
+          creditId: 'migration:test:grass-family',
+          migrationVersion: 'test:v1',
+          companionId: 'pikachu-family',
+          totalXp: 1550,
+          sourceFingerprint: 'legacy:test',
+        }],
+      },
+      { events: [event('event-1')] },
+      createEncounterState(),
+      PROTOTYPE_COMPANION_CATALOG,
+    )
+
+    expect(state.companions.find((item) => item.companionId === 'pikachu-family')?.xp).toBe(1575)
+    expect(state.ledger.events).toHaveLength(1)
+    expect(state.encounters).toEqual(createEncounterState())
+  })
+
+  it('keeps malformed aggregate overflow out of the derived XP projection', () => {
+    const state = createProductState(
+      {
+        ...initialState().profile,
+        legacyCredits: [
+          { creditId: 'huge-a', migrationVersion: 'test:v1', companionId: 'pikachu-family', totalXp: Number.MAX_VALUE, sourceFingerprint: 'a' },
+          { creditId: 'huge-b', migrationVersion: 'test:v1', companionId: 'pikachu-family', totalXp: Number.MAX_VALUE, sourceFingerprint: 'b' },
+        ],
+      },
+      { events: [] },
+      createEncounterState(),
+      PROTOTYPE_COMPANION_CATALOG,
+    )
+    expect(Number.isFinite(state.activeCompanion?.xp)).toBe(true)
   })
 
   it('keeps XP with the original companion after switching', () => {

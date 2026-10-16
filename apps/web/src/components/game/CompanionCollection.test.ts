@@ -1,0 +1,52 @@
+import React from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { describe, expect, it } from 'vitest'
+import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
+import { createGuestProfile, type GuestProfile } from '@/lib/game/guest-profile'
+import { createProductState } from '@/lib/game/product-state'
+import { CompanionCollection } from './CompanionCollection'
+
+const NOW = '2026-01-01T00:00:00.000Z'
+
+function twoCompanionState() {
+  const profile = createGuestProfile({
+    guestId: 'guest-test',
+    starterCompanionId: 'grass-family',
+    catalog: PROTOTYPE_COMPANION_CATALOG,
+    now: NOW,
+  })
+  const withSecond: GuestProfile = {
+    ...profile,
+    collection: [
+      ...profile.collection,
+      {
+        referenceId: 'guest-test:second',
+        companionId: 'pikachu-family',
+        acquiredAt: NOW,
+        acquisition: 'encounter',
+      },
+    ],
+  }
+  return createProductState(withSecond, { events: [] }, undefined, PROTOTYPE_COMPANION_CATALOG)
+}
+
+describe('CompanionCollection', () => {
+  it('renders every owned companion sprite without a filled slot behind it', () => {
+    const markup = renderToStaticMarkup(
+      React.createElement(CompanionCollection, {
+        initialState: twoCompanionState(),
+        signedIn: false,
+      }),
+    )
+
+    // Every roster sprite sits bare on the page; a filled slot read as a
+    // visible box around the companion.
+    const slots = markup.match(/<div data-companion-slot[^>]*>/g) ?? []
+    expect(slots).toHaveLength(2)
+    for (const slot of slots) expect(slot).not.toContain('background')
+
+    expect(markup).toContain('data-companion-id="grass-family"')
+    expect(markup).toContain('data-companion-id="pikachu-family"')
+    expect(markup).toContain('Activate')
+  })
+})

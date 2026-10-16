@@ -11,7 +11,8 @@ import type { GardenFile, GardenSource } from './types'
  */
 class FakeGardenSource implements GardenSource {
   readonly name = 'fake-garden'
-  private files = new Map<string, string>()
+  readonly sourceId = 'fake-garden-source'
+  protected files = new Map<string, string>()
 
   constructor(initial: Record<string, string> = {}) {
     for (const [name, content] of Object.entries(initial)) {
@@ -222,5 +223,51 @@ describe('renameNoteEverywhere', () => {
     expect(summary.updatedFiles).toEqual([])
     const unrelated = await source.read('unrelated.md')
     expect(unrelated).toContain('[[Something Else]]')
+  })
+
+  it('rolls back inbound-link writes when a later write fails', async () => {
+    class FailingSource extends FakeGardenSource {
+      private failed = false
+
+      async write(name: string, content: string): Promise<void> {
+        if (name === 'second.md' && !this.failed) {
+          this.failed = true
+          throw new Error('disk full')
+        }
+        return super.write(name, content)
+      }
+    }
+
+    const initial = {
+      'old.md': note('Old', 'body'),
+      'first.md': note('First', '[[Old]]'),
+      'second.md': note('Second', '[[Old]]'),
+    }
+    const source = new FailingSource(initial)
+
+    await expect(renameNoteEverywhere(source, 'old.md', 'New')).rejects.toThrow('disk full')
+    expect(await source.list()).toEqual(
+      Object.entries(initial).map(([name, content]) => ({ name, content })),
+    )
+  })
+
+  it('rolls back the destination when the final renamed-note write fails', async () => {
+    class FailingSource extends FakeGardenSource {
+      private failed = false
+
+      async write(name: string, content: string): Promise<void> {
+        if (name === 'new.md' && !this.failed) {
+          this.failed = true
+          throw new Error('destination unavailable')
+        }
+        return super.write(name, content)
+      }
+    }
+
+    const source = new FailingSource({ 'old.md': note('Old', 'body') })
+
+    await expect(renameNoteEverywhere(source, 'old.md', 'New')).rejects.toThrow('destination unavailable')
+    expect(await source.read('old.md')).toBe(note('Old', 'body'))
+    expect(await source.read('new.md')).toBeNull()
   })
 })

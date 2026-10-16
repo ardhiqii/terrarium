@@ -40,12 +40,13 @@ function ownerNoteDays(): string[] {
  * differently from everyone else's. One assembly path, parameterized on stats.
  */
 export function getCreatureState(
-  github: GithubStats | null = null
+  github?: GithubStats | null
 ): CreatureState {
-  // Callers without their own GithubStats (or passing `null` explicitly, as the
-  // home page does) fall back to whatever `github.ts` last cached to disk.
-  // `readGithubCache` never throws and returns null when no cache exists.
-  const resolvedGithub = github ?? readGithubCache()
+  // Omission is the legacy owner/archive request and may read the on-disk
+  // cache. An explicit null is an authority boundary: public/guest surfaces
+  // must be able to render garden evidence without inheriting the site's cached
+  // GitHub account.
+  const resolvedGithub = arguments.length === 0 ? readGithubCache() : (github ?? null)
 
   return composeCreatureState(getGardenStats(), resolvedGithub, {
     includeItems: true,

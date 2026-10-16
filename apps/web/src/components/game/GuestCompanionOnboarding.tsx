@@ -1,8 +1,9 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   createGuestProfile,
+  getActiveCompanionSelection,
   loadGuestProfile,
   saveGuestProfile,
   type GuestCompanionAcquisition,
@@ -11,26 +12,19 @@ import {
 } from '@/lib/game/guest-profile'
 import {
   PROTOTYPE_COMPANION_CATALOG,
+  selectStarterCompanion,
+  resolveCompanionProgression,
   type CompanionDefinition,
 } from '@/lib/game/companion-catalog'
+import type { ProductState } from '@/lib/game/product-state'
 
 const catalog = PROTOTYPE_COMPANION_CATALOG
-const starter = catalog.list()[0]
-// The first-run choice personalizes the immediate starter reference. It does
-// not award a second collection item; duplicates come from later encounters.
-const ONBOARDING_REFERENCE_SUFFIX = ':starter'
 const PROFILE_EVENT = 'terrarium:guest-profile-updated'
 
-type SelectionKind = GuestCompanionAcquisition
-type ReadyState = {
-  kind: 'ready'
-  profile: GuestProfile
-  companion: CompanionDefinition
-  selection: SelectionKind
-}
+type SelectionKind = GuestCompanionAcquisition | 'account'
 type OnboardingState =
   | { kind: 'loading' }
-  | ReadyState
+  | { kind: 'ready'; profile: GuestProfile; companion: CompanionDefinition; xp: number; selection: SelectionKind }
   | { kind: 'error'; message: string }
 
 function browserStorage(): GuestProfileStorage {
@@ -52,78 +46,80 @@ function newGuestId(): string {
   return `guest-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 }
 
-function onboardingReferenceId(profile: GuestProfile): string {
-  return `${profile.guestId}${ONBOARDING_REFERENCE_SUFFIX}`
-}
-
-function existingSelection(profile: GuestProfile):
-  | { acquisition: SelectionKind; companionId: string }
-  | null {
-  const reference = profile.collection.find(
-    (item) => item.referenceId === onboardingReferenceId(profile),
-  )
-  return reference
-    ? { acquisition: reference.acquisition, companionId: reference.companionId }
-    : null
-}
-
-/** Persist one stable onboarding reference so repeated clicks stay idempotent. */
+/**
+ * Compatibility helper for old callers. New users do not call this: the
+ * profile is created once with an injected random starter in the domain layer.
+ */
 export function persistOnboardingSelection(
   profile: GuestProfile,
-  acquisition: SelectionKind,
+  acquisition: GuestCompanionAcquisition,
   companionId: string,
   timestamp: string,
 ): GuestProfile {
-  const referenceId = onboardingReferenceId(profile)
-  const selectionReference = {
-    referenceId,
-    companionId,
-    acquiredAt: timestamp,
-    acquisition,
-  } as const
-  const hasSelectionReference = profile.collection.some(
-    (item) => item.referenceId === referenceId,
-  )
-  const collection =
-    acquisition === 'starter'
-      ? profile.collection
-      : hasSelectionReference
-        ? profile.collection.map((item) =>
-            item.referenceId === referenceId ? selectionReference : item,
-          )
-        : [...profile.collection, selectionReference]
-
+  const referenceId = `${profile.guestId}:starter`
+  const hasReference = profile.collection.some((item) => item.referenceId === referenceId)
+  const collection = acquisition === 'starter'
+    ? profile.collection
+    : hasReference
+      ? profile.collection.map((item) => item.referenceId === referenceId
+        ? { ...item, companionId, acquiredAt: timestamp, acquisition }
+        : item)
+      : [...profile.collection, {
+          referenceId,
+          companionId,
+          acquiredAt: timestamp,
+          acquisition,
+        }]
   return {
     ...profile,
     activeCompanionId: companionId,
+    activeSelection: {
+      companionId,
+      provenance: 'user',
+      selectedAt: timestamp,
+    },
     updatedAt: timestamp,
     collection,
   }
 }
 
 function selectionLabel(selection: SelectionKind): string {
-  if (selection === 'history') return 'work history'
-  if (selection === 'encounter') return 'a surprise draw'
-  return 'the starter'
+  if (selection === 'history') return 'a migrated work history'
+  if (selection === 'encounter') return 'a discovered encounter'
+  if (selection === 'account') return 'your account selection'
+  return 'a random base-stage starter'
 }
 
-function chooseSurprise(): CompanionDefinition {
-  const entries = catalog.list()
-  return entries[Math.floor(Math.random() * entries.length)] ?? starter
+function selectionDescription(profile: GuestProfile, selection: SelectionKind): string {
+  if (selection === 'history') {
+    const migratedXp = (profile.legacyCredits ?? [])
+      .reduce((total, credit) => total + credit.totalXp, 0)
+    return `Your existing work history is preserved at ${migratedXp.toLocaleString()} XP.`
+  }
+  if (selection === 'account') return 'This account companion is shared with Home and Companions.'
+  return 'Progress starts at 0 XP. Your notes and repository history stay where they are.'
 }
 
-function chooseHistory(): CompanionDefinition {
-  return catalog.list().find((entry) => entry.id !== starter.id) ?? starter
+function selectionKind(profile: GuestProfile): SelectionKind {
+  const selection = getActiveCompanionSelection(profile)
+  if (selection.provenance === 'migration') return 'history'
+  if (selection.provenance === 'user') return 'account'
+  return 'starter'
 }
 
-function initialReadyState(profile: GuestProfile): ReadyState {
-  const savedSelection = existingSelection(profile)
-  const companion = catalog.get(savedSelection?.companionId ?? profile.activeCompanionId) ?? starter
+function initialReadyState(
+  profile: GuestProfile,
+  xp = (profile.legacyCredits ?? [])
+    .filter((credit) => credit.companionId === profile.activeCompanionId)
+    .reduce((total, credit) => total + credit.totalXp, 0),
+): Extract<OnboardingState, { kind: 'ready' }> {
+  const companion = catalog.get(profile.activeCompanionId) ?? selectStarterCompanion(catalog, () => 0)
   return {
     kind: 'ready',
     profile,
     companion,
-    selection: savedSelection?.acquisition ?? 'starter',
+    xp,
+    selection: selectionKind(profile),
   }
 }
 
@@ -141,25 +137,46 @@ function markWarningShown(profile: GuestProfile, timestamp: string): GuestProfil
   }
 }
 
-export function GuestCompanionOnboarding() {
+export interface GuestCompanionOnboardingProps {
+  initialState?: ProductState | null
+  accountScoped?: boolean
+}
+
+export function GuestCompanionOnboarding({
+  initialState = null,
+  accountScoped = false,
+}: GuestCompanionOnboardingProps) {
   const [state, setState] = useState<OnboardingState>({ kind: 'loading' })
 
   useEffect(() => {
+    if (accountScoped) {
+      if (initialState) {
+        // Account state is server-authoritative; do not create or overwrite a
+        // guest profile while the write surface hydrates.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setState(initialReadyState(initialState.profile, initialState.activeCompanion?.xp ?? 0))
+      } else {
+        setState({
+          kind: 'error',
+          message: 'Account companion state is not synced yet. Open GitHub sync before using account XP here.',
+        })
+      }
+      return
+    }
     try {
       const storage = browserStorage()
       const timestamp = new Date().toISOString()
       const stored = loadGuestProfile(storage)
       const profile = stored ?? createGuestProfile({
         guestId: newGuestId(),
-        starterCompanionId: starter.id,
+        catalog,
+        random: Math.random,
         now: timestamp,
       })
       const profileWithWarning = markWarningShown(profile, timestamp)
       saveGuestProfile(storage, profileWithWarning)
       announceProfileUpdate()
-      // Browser storage is an external system; this initializes the client
-      // view after hydration and intentionally updates local React state.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
+      // Browser storage is an external system; initialize after hydration.
       setState(initialReadyState(profileWithWarning))
     } catch {
       setState({
@@ -167,30 +184,10 @@ export function GuestCompanionOnboarding() {
         message: 'This browser did not allow local guest storage. You can retry or continue below.',
       })
     }
-  }, [])
+  }, [accountScoped, initialState])
 
-  const persistSelection = useCallback(
-    (acquisition: SelectionKind, companion: CompanionDefinition) => {
-      if (state.kind !== 'ready') return
-      try {
-        const updatedProfile = persistOnboardingSelection(
-          state.profile,
-          acquisition,
-          companion.id,
-          new Date().toISOString(),
-        )
-        saveGuestProfile(browserStorage(), updatedProfile)
-        announceProfileUpdate()
-        setState({ kind: 'ready', profile: updatedProfile, companion, selection: acquisition })
-      } catch {
-        // Keep the current UI state if the browser rejects a write.
-      }
-    },
-    [state],
-  )
-
-  const dismissWarning = useCallback(() => {
-    if (state.kind !== 'ready') return
+  const dismissWarning = () => {
+    if (accountScoped || state.kind !== 'ready') return
     try {
       const timestamp = new Date().toISOString()
       const profile = {
@@ -209,7 +206,7 @@ export function GuestCompanionOnboarding() {
     } catch {
       // Keep the warning visible if the browser rejects a write.
     }
-  }, [state])
+  }
 
   if (state.kind === 'loading') {
     return (
@@ -229,18 +226,20 @@ export function GuestCompanionOnboarding() {
     )
   }
 
-  const isWarningVisible = state.profile.recoverabilityWarning.status === 'shown'
+  const isWarningVisible = !accountScoped && state.profile.recoverabilityWarning.status === 'shown'
 
   return (
     <section className="border-y py-8" style={{ borderColor: 'var(--rule)' }}>
       <div className="flex flex-col gap-5">
         <div>
           <p className="font-data text-xs uppercase tracking-widest mb-2" style={{ color: 'var(--ink-muted)' }}>
-            Your companion
+            {accountScoped ? 'Account companion' : 'Your companion'}
           </p>
-          <h2 className="font-ui text-2xl font-semibold tracking-tight">{state.companion.name}</h2>
+          <h2 className="font-ui text-2xl font-semibold tracking-tight">
+            {resolveCompanionProgression(state.companion, state.xp).form.name}
+          </h2>
           <p className="font-prose text-sm mt-2" style={{ color: 'var(--ink-muted)' }}>
-            {selectionLabel(state.selection)} · Progress starts now. Your notes and repository history stay where they are.
+            {selectionLabel(state.selection)} · {selectionDescription(state.profile, state.selection)}
           </p>
         </div>
 
@@ -260,35 +259,11 @@ export function GuestCompanionOnboarding() {
           </div>
         )}
 
-        <div>
-          <p className="font-ui text-sm font-medium mb-3">Choose how to personalize it</p>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => persistSelection('history', chooseHistory())}
-              className="font-ui text-xs px-3 py-2 border transition-opacity hover:opacity-80"
-              style={{ borderColor: 'var(--ink)', color: 'var(--ink)' }}
-            >
-              Let my work decide
-            </button>
-            <button
-              type="button"
-              onClick={() => persistSelection('encounter', chooseSurprise())}
-              className="font-ui text-xs px-3 py-2 border transition-opacity hover:opacity-80"
-              style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}
-            >
-              Surprise me
-            </button>
-            <button
-              type="button"
-              onClick={() => persistSelection('starter', starter)}
-              className="font-ui text-xs px-3 py-2 border transition-opacity hover:opacity-80"
-              style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}
-            >
-              Connect later
-            </button>
-          </div>
-        </div>
+        <p className="font-ui text-sm" style={{ color: 'var(--ink-muted)' }}>
+          {accountScoped
+            ? 'This account projection is shared with Home and Companions. Activate another owned companion from the Companions page.'
+            : 'A base-stage companion was selected for this browser and will stay with you until you activate another owned companion from the Companions page.'}
+        </p>
       </div>
     </section>
   )

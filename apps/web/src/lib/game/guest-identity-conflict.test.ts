@@ -292,7 +292,7 @@ describe('describeGuestIdentitySide', () => {
 describe('guestIdentityActionSummary', () => {
   it('reports each successful action with what the cloud now holds', () => {
     expect(guestIdentityActionSummary('keep-both', { result: 'succeeded' })).toBe(
-      "Cloud backup settled · this browser's progress and the account's copy are now one, under the account's guest identity.",
+      "Cloud backup settled · receipt-backed progress is now under the account's guest identity. Local note history and unverified encounter rewards remain device-local.",
     )
     expect(guestIdentityActionSummary('use-browser', { result: 'succeeded' })).toBe(
       "Cloud copy replaced · the account's cloud copy now holds this browser's progress.",

@@ -12,8 +12,9 @@
 import { NextRequest } from 'next/server'
 import { asCompanionId } from '@/lib/game/events'
 import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
-import { normalizeGitHubEvents, type GitHubEventNormalizationInput } from '@/lib/game/github-events'
-import { fetchGitHubEvents, type GitHubEventsProgress, type GithubRepoRef } from '@/lib/game/github-events-fetch'
+import { normalizeGitHubEvents } from '@/lib/game/github-events'
+import { fetchGitHubEvents, type GithubEventsContinuation, type GitHubEventsProgress, type GithubRepoRef } from '@/lib/game/github-events-fetch'
+import { fetchGithubRepositoriesById, type GithubRepository } from '@/lib/sync/github-repositories'
 import { checkRateLimit } from '@/lib/game/api-cache'
 import { getGithubAccountStore, type GithubAccountSettings } from '@/lib/sync/github-account-store'
 import { getGithubRepositoriesCached } from '@/lib/sync/github-repository-cache'
@@ -23,6 +24,11 @@ import { requestAccountMatchesSession } from '@/lib/sync/request-account-guard'
 import { trustStoredProductSnapshot } from '@/lib/sync/trusted-product-snapshot'
 import { productSnapshotEvent } from '@/lib/sync/product-snapshot'
 import { issueGithubSyncCheckpoint } from '@/lib/sync/github-sync-checkpoint'
+import {
+  githubSyncContinuationMatchesBaseline,
+  issueGithubSyncContinuation,
+  verifyGithubSyncContinuation,
+} from '@/lib/sync/github-sync-continuation'
 import { issueVerifiedEventProof, verifiedEventProofPayloadDigest } from '@/lib/sync/verified-event-proof'
 import {
   repositoryIsTracked,
@@ -46,13 +52,22 @@ const SYNC_PAYLOAD_LIMIT_BYTES = 16 * 1024
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store, private',
+    },
   })
 }
 
 function parseCompanionId(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 200
     ? value.trim()
+    : null
+}
+
+function parseContinuation(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 && value.length <= 64 * 1024
+    ? value
     : null
 }
 
@@ -96,31 +111,57 @@ export async function POST(request: NextRequest): Promise<Response> {
   if (!PROTOTYPE_COMPANION_CATALOG.get(activeCompanionId)) {
     return json(400, { error: 'activeCompanionId is not a recognized companion.' })
   }
+  const continuationToken = parseContinuation((payload as Record<string, unknown>).continuation)
+  if ('continuation' in (payload as Record<string, unknown>) &&
+    (payload as Record<string, unknown>).continuation !== null &&
+    continuationToken === null) {
+    return json(400, { error: 'continuation must be a bounded signed token.' })
+  }
 
   try {
     const store = getGithubAccountStore()
     const token = await store.getToken(session.githubId)
     if (!token) return json(401, { error: 'GitHub access is unavailable. Reconnect GitHub.' })
     const settings = await store.getSettings(session.githubId)
+    const continuation = continuationToken
+      ? verifyGithubSyncContinuation(continuationToken, session.githubId)
+      : null
+    if (continuationToken && !continuation) {
+      return json(400, { error: 'continuation is invalid or expired.' })
+    }
+    if (continuation && !githubSyncContinuationMatchesBaseline(continuation, settings.baselineByRepositoryId)) {
+      return json(409, { error: 'GitHub activity changed while the bounded read was being continued. Sync again.' })
+    }
+
     // A stable GitHub event belongs to the companion that first accepted it.
     // Read the account condition before minting receipts so a later provider
     // replay after an active-companion switch cannot move already-awarded XP.
     // A concurrent first upload can still win the race; the product merge then
     // applies the same stable-ID rule when that response is uploaded.
     const existingGithubCompanionByEventId = new Map<string, string>()
+    let productAccountSnapshotPresent = false
+    let requestedCompanionOwned = true
+    let requestedCompanionIsActive = true
     try {
       const productRecord = await getProductStore().getRecord(session.githubId, session.handle)
       const trustedSnapshot = productRecord
         ? trustStoredProductSnapshot(productRecord.snapshot, session.githubId)
         : null
+      productAccountSnapshotPresent = trustedSnapshot !== null
+      requestedCompanionOwned = !trustedSnapshot || new Set(
+        trustedSnapshot.collection.map((reference) => reference.companionId),
+      ).has(activeCompanionId)
+      requestedCompanionIsActive = !trustedSnapshot || trustedSnapshot.activeCompanionId === activeCompanionId
       for (const event of trustedSnapshot?.events ?? []) {
         if (event.source === 'github' && event.provenance === 'verified') {
           existingGithubCompanionByEventId.set(event.eventId, event.companionId)
         }
       }
     } catch {
-      // Product sync remains available if the optional existing-condition read
-      // is unavailable; the first successful upload establishes ownership.
+      // Ownership cannot be established safely when the trusted account row is
+      // unavailable or corrupt. Do not mint receipts against an unverified
+      // active companion.
+      return json(503, { error: 'storage_unavailable' })
     }
     // The listing comes from the per-account TTL cache. Back-to-back syncs and
     // the picker share it, so a sync right after opening `/github` costs no
@@ -137,7 +178,24 @@ export async function POST(request: NextRequest): Promise<Response> {
       return json(502, { error: 'GitHub could not be reached. Try again shortly.' })
     }
 
-    const repositories = repositoryResult.repositories
+    let repositories: readonly GithubRepository[] = repositoryResult.repositories
+    if (repositoryResult.truncated === true) {
+      const knownIds = new Set(repositories.map((repository) => repository.id))
+      const missingTrackedIds = settings.trackedRepositoryIds.filter((id) => !knownIds.has(id))
+      if (missingTrackedIds.length > 0) {
+        const hydrated = await fetchGithubRepositoriesById({ token, repositoryIds: missingTrackedIds })
+        if (hydrated.status === 'unauthorized') {
+          return json(401, { error: 'GitHub access was revoked or expired. Reconnect GitHub.' })
+        }
+        if (hydrated.status === 'rate-limited') {
+          return json(429, { error: 'GitHub rate limit reached. Try again once the limit resets.' })
+        }
+        if (hydrated.status === 'unavailable') {
+          return json(502, { error: 'GitHub could not verify all tracked repositories. Try again shortly.' })
+        }
+        repositories = [...repositories, ...hydrated.repositories]
+      }
+    }
     // Repositories without a baseline come first. A new repository cannot award
     // anything until its baseline is recorded, so the bounded window drops an
     // already-tracked repository rather than stranding one that is still
@@ -178,6 +236,9 @@ export async function POST(request: NextRequest): Promise<Response> {
     let events: ReturnType<typeof normalizeGitHubEvents> = []
     let fetchStatus: 'ok' | 'partial' | 'unavailable' = eligible.length === 0 ? 'ok' : 'unavailable'
     let truncated = false
+    let nextContinuation: GithubEventsContinuation | undefined
+    let continuationReady = false
+    let ownershipBlocked = false
     // Aborted when the consumer stops reading, so the GitHub requests actually
     // stop rather than continuing with nobody waiting for the result.
     const abort = new AbortController()
@@ -190,7 +251,20 @@ export async function POST(request: NextRequest): Promise<Response> {
       onProgress?: (progress: GitHubEventsProgress) => void,
     ): Promise<void> => {
       if (eligible.length === 0) return
-      const refs: GithubRepoRef[] = eligible.map((repository) => ({
+      // A repository without a baseline needs no historical read: its first
+      // successful listing establishes the checkpoint and must not get stuck
+      // behind an old 30-commit/release/issue page ceiling.
+      const activityEligible = eligible.filter((repository) => Boolean(baselineByRepositoryId[repository.id]))
+      for (const repository of eligible) {
+        if (baselineByRepositoryId[repository.id]) continue
+        baselineByRepositoryId[repository.id] = now
+        newBaselineRepositoryIds.push(repository.id)
+      }
+      if (activityEligible.length === 0) {
+        fetchStatus = 'ok'
+        return
+      }
+      const refs: GithubRepoRef[] = activityEligible.map((repository) => ({
         id: repository.id,
         fullName: repository.fullName,
       }))
@@ -200,27 +274,49 @@ export async function POST(request: NextRequest): Promise<Response> {
         repos: refs,
         token,
         signal: abort.signal,
+        baselineByRepositoryId,
+        ...(continuation ? { continuation: continuation.cursors } : {}),
         ...(onProgress ? { onProgress } : {}),
       })
       fetchStatus = fetched.status
       truncated = fetched.truncated === true
+      nextContinuation = fetched.continuation
+      continuationReady = fetched.status === 'ok' && fetched.truncated === true && fetched.continuation !== undefined
+      // A bounded read cannot safely advance an existing checkpoint: activity
+      // between the checkpoint and the oldest fetched page could otherwise age
+      // out forever. Keep the fetch adapter's useful `ok + truncated` detail,
+      // but make the sync itself retryable and issue no baseline/checkpoint.
+      if (truncated && fetchStatus === 'ok') fetchStatus = 'partial'
       if (fetched.status !== 'unavailable' && fetched.input.sourceId) {
-        // A truncated read is still a successful read: every list is walked
-        // newest-first, so the material it could not reach is older than the
-        // baseline `now` we record below and can never be awarded anyway.
-        // Only a genuine failure withholds the baseline.
-        if (fetched.status === 'ok') {
-          for (const repository of eligible) {
-            if (baselineByRepositoryId[repository.id]) continue
-            baselineByRepositoryId[repository.id] = now
-            newBaselineRepositoryIds.push(repository.id)
-          }
-        }
+        // Existing baselines are applied before normalization. If the bounded
+        // adapter reports truncation, the caller below fails closed and this
+        // in-memory baseline map is never persisted.
         const eligibleInput = filterInputAfterBaselines(fetched.input, baselineByRepositoryId)
         events = normalizeGitHubEvents({
           ...eligibleInput,
           companionId: activeCompanionId,
         })
+        if (productAccountSnapshotPresent && (!requestedCompanionOwned || !requestedCompanionIsActive)) {
+          // A browser can replay a stable event after a local companion switch,
+          // but a batch with even one new event would otherwise mint a receipt
+          // and checkpoint for an unowned active companion. Block the whole
+          // batch rather than issuing a mixed set of trusted and untrusted
+          // receipts. Existing verified replays remain a compatibility path.
+          const hasOwnedReplay = events.some((event) => (
+            existingGithubCompanionByEventId.has(productSnapshotEvent(event).eventId)
+          ))
+          const hasNewEvent = events.some((event) => (
+            !existingGithubCompanionByEventId.has(productSnapshotEvent(event).eventId)
+          ))
+          ownershipBlocked = events.length === 0 || !hasOwnedReplay || hasNewEvent
+        }
+      }
+      if (!truncated && fetched.status === 'ok') {
+        // A complete read closes the selected repository window. Advancing all
+        // selected baselines (not only first-use baselines) is what rotates an
+        // account fairly: the next sync can select the oldest untouched
+        // repository instead of retrying the same first window forever.
+        for (const repository of activityEligible) baselineByRepositoryId[repository.id] = now
       }
     }
 
@@ -229,7 +325,7 @@ export async function POST(request: NextRequest): Promise<Response> {
      * If signing fails, the caller throws and the old baseline is left untouched
      * so the activity can be retried instead of being silently consumed.
      */
-    const buildBody = (): Record<string, unknown> => {
+    const buildBody = (partial = false): Record<string, unknown> => {
       const verifiedEventProofs: Record<string, string> = {}
       /**
        * Mint-side payload digests, reported beside the receipts so a receipt
@@ -256,16 +352,25 @@ export async function POST(request: NextRequest): Promise<Response> {
         baselineByRepositoryId,
         lastSyncedAt: fetchStatus === 'ok' ? now : settings.lastSyncedAt,
       }
-      const checkpoint = issueGithubSyncCheckpoint({
-        githubId: session.githubId,
-        previousBaselineByRepositoryId: settings.baselineByRepositoryId,
-        nextBaselineByRepositoryId: nextSettings.baselineByRepositoryId,
-        nextLastSyncedAt: nextSettings.lastSyncedAt,
-        eventIds: snapshotEvents.map((event) => event.eventId),
-      })
+      const checkpoint = partial
+        ? null
+        : issueGithubSyncCheckpoint({
+            githubId: session.githubId,
+            previousBaselineByRepositoryId: settings.baselineByRepositoryId,
+            nextBaselineByRepositoryId: nextSettings.baselineByRepositoryId,
+            nextLastSyncedAt: nextSettings.lastSyncedAt,
+            eventIds: snapshotEvents.map((event) => event.eventId),
+          })
+      const continuationToken = partial && nextContinuation
+        ? issueGithubSyncContinuation({
+            githubId: session.githubId,
+            baselineByRepositoryId: settings.baselineByRepositoryId,
+            cursors: nextContinuation,
+          })
+        : null
 
       return {
-        kind: fetchStatus === 'partial'
+        kind: partial
           ? 'partial'
           : events.length === 0 && newBaselineRepositoryIds.length > 0
             ? 'baseline'
@@ -287,12 +392,16 @@ export async function POST(request: NextRequest): Promise<Response> {
         verifiedEventProofs,
         verifiedEventProofDigests,
         checkpoint,
+        ...(continuationToken ? { continuation: continuationToken } : {}),
       }
     }
 
     // Nothing to read: answer directly, with no stream to maintain.
     if (eligible.length === 0) {
       await readActivity()
+      if (productAccountSnapshotPresent && (!requestedCompanionOwned || !requestedCompanionIsActive)) {
+        return json(400, { error: 'activeCompanionId must be owned by the product account and match its active selection.' })
+      }
       return json(200, buildBody())
     }
 
@@ -340,6 +449,22 @@ export async function POST(request: NextRequest): Promise<Response> {
             // a completed sync, and no baseline may be implied from it.
             if (abort.signal.aborted) {
               write({ type: 'error', status: 499, error: 'Sync cancelled.' })
+              return
+            }
+            if (ownershipBlocked) {
+              write({ type: 'error', status: 400, error: 'activeCompanionId must be owned by the product account and match its active selection.' })
+              return
+            }
+            if (fetchStatus === 'partial') {
+              if (continuationReady) {
+                write({ type: 'result', payload: buildBody(true) })
+              } else {
+                write({
+                  type: 'error',
+                  status: 409,
+                  error: 'GitHub activity window is incomplete. No baseline or checkpoint was recorded; sync again or retry shortly.',
+                })
+              }
               return
             }
             if (fetchStatus === 'unavailable') {

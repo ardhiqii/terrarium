@@ -81,8 +81,8 @@ describe('getCreatureState agreement with composeCreatureState', () => {
     expect(fromState.github).toEqual(mockCachedGithub)
   })
 
-  it('works with a null cache and null github, producing a valid (if minimal) creature state without throwing', () => {
-    mockCachedGithub = null
+  it('treats explicit null as an authority boundary instead of inheriting the cached owner account', () => {
+    mockCachedGithub = github({ totalCommits: 999 })
     expect(() => getCreatureState(null)).not.toThrow()
     const state = getCreatureState(null)
     expect(state.github).toBeNull()

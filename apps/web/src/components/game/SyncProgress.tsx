@@ -3,7 +3,7 @@
 /**
  * Progress for a running GitHub sync.
  *
- * A sync reads up to 25 repositories back to back, which can take long enough
+ * A sync reads a bounded repository window back to back, which can take long enough
  * that a bare "Syncing…" label is indistinguishable from a frozen page. This
  * reports the two things that are actually known while the read is in flight:
  * which repository is being read out of how many, and how many HTTP requests

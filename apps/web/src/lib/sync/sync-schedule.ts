@@ -5,9 +5,9 @@
  * 5-minute, 15-minute (the default), and 30-minute choices. A schedule is only
  * affordable if it respects GitHub's hourly request ceiling for the account:
  * one sync reads a window of {@link MAX_SYNC_REPOSITORIES} repositories and
- * costs roughly {@link REQUESTS_PER_REPOSITORY_ESTIMATE} requests per
- * repository, so an account at the window spends only a few hundred requests
- * per sync. Every 15 minutes fits inside the hourly budget; every 5 minutes
+ * costs up to {@link REQUESTS_PER_REPOSITORY_ESTIMATE} requests per
+ * repository in the bounded worst case, so the scheduler never assumes that a
+ * short-history observation will cover a large issue/commit/check-run window. Every 15 minutes fits inside the hourly budget; every 5 minutes
  * does not for a large tracked set. The planner therefore spends only up to
  * {@link SYNC_REQUEST_BUDGET_PER_HOUR} of the ceiling and pauses the schedule
  * (with an explanation, not silence) until the rolling hour window clears.
@@ -49,21 +49,35 @@ export const GITHUB_HOURLY_REQUEST_CEILING = 5_000
  */
 export const SYNC_REQUEST_BUDGET_PER_HOUR = 4_000
 
-/** Measured cost of reading one repository (activity lists plus commit details). */
-export const REQUESTS_PER_REPOSITORY_ESTIMATE = 18
+/**
+ * Conservative planning floor for one repository. The bound covers three pages
+ * each of PRs, releases, issues, and issue timelines, six commit-list pages,
+ * bounded commit details, and the bounded merged-PR check-run lookups. The
+ * actual request count is still recorded from streamed progress after every
+ * sync, so a provider change cannot hide behind this estimate.
+ */
+export const REQUESTS_PER_REPOSITORY_ESTIMATE = 510
 
 /**
  * Worst-case events a single repository can contribute to one sync.
  *
  * Derived from the fetcher's own read bounds (github-events-fetch.ts), not
  * measured from a single account:
- *   - 30 commits (MAX_COMMITS_PER_REPO) -> <=30 active-day + <=30 work-session
+ *   - 180 commits (MAX_COMMITS_PER_REPO) -> <=180 work-session events
  *   - 3 pages x 30 merged pull requests = 90
- *   - one page x 30 releases = 30
- *   - one page x 30 closed linked issues = 30
+ *   - 3 pages x 30 releases = 90
+ *   - 3 pages x 30 closed linked issues = 90
  *   - one successful-CI event per merged pull request = 90
+ *   - at most one active-day event for each of those 540 activity facts = 540
+ *
+ * Timeline detail requests do not create additional events; their own
+ * three-page bound is reflected in the request-budget estimate below. The
+ * active-day term deliberately includes PR, release, issue, CI, and commit
+ * activity.
+ * Activity pages are bounded independently, so this must use the largest
+ * possible page count rather than the usual short-history case.
  */
-export const MAX_EVENTS_PER_REPOSITORY = 300
+export const MAX_EVENTS_PER_REPOSITORY = 1_080
 
 /**
  * Events one sync may hand to the deferred-baseline checkpoint.
@@ -80,9 +94,9 @@ export const MAX_EVENTS_PER_SYNC = 5_000
  * Bounded from both sides so the numbers can never drift apart: the hourly
  * request budget on one side, and the checkpoint's event capacity divided by
  * the worst-case per-repository event count on the other. Repositories that
- * still need a baseline are read first, so a tracked set larger than the window
- * is still covered completely, window by window, without stranding a
- * repository forever.
+ * still need a baseline are read first, and the oldest successful baselines
+ * rotate to the front, so a tracked set larger than the window is still
+ * covered completely, window by window, without stranding a repository forever.
  */
 export const MAX_SYNC_REPOSITORIES = Math.min(
   Math.floor(SYNC_REQUEST_BUDGET_PER_HOUR / REQUESTS_PER_REPOSITORY_ESTIMATE),
@@ -207,7 +221,7 @@ export function estimateSyncRequests(
   lastObservedRequests: number | null,
 ): number {
   const tracked = Number.isFinite(trackedRepositoryCount)
-    ? Math.max(0, Math.floor(trackedRepositoryCount))
+    ? Math.min(MAX_SYNC_REPOSITORIES, Math.max(0, Math.floor(trackedRepositoryCount)))
     : 0
   const observed = lastObservedRequests !== null && Number.isFinite(lastObservedRequests) && lastObservedRequests >= 0
     ? Math.round(lastObservedRequests)

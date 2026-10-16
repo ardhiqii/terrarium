@@ -85,6 +85,10 @@ function recordingClient(responseRow: unknown = accountRow): {
     if (typeof column === 'string') columns.add(column)
     return chain
   }
+  chain.is = (column: unknown) => {
+    if (typeof column === 'string') columns.add(column)
+    return chain
+  }
   chain.update = (payload: unknown) => {
     recordPayload(payload)
     return chain
@@ -100,7 +104,7 @@ function recordingClient(responseRow: unknown = accountRow): {
   chain.delete = () => chain
   chain.maybeSingle = async () => ({ data: responseRow, error: null })
   return {
-    client: { from: (_table: string) => chain },
+    client: { from: (tableName: string) => { void tableName; return chain } },
     columns,
     payloadKeys,
   }

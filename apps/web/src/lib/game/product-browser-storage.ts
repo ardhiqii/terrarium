@@ -37,8 +37,11 @@ import {
 
 const LEDGER_KEY = 'terrarium:guest-event-ledger'
 const ENCOUNTER_KEY = 'terrarium:guest-encounters'
+const MARKDOWN_KNOWN_PATHS_KEY = 'terrarium:markdown-known-paths'
 const REVEALED_DRAWS_KEY = 'terrarium:guest-revealed-draws'
 const VERIFIED_EVENT_PROOFS_KEY = 'terrarium:github-event-proofs'
+const DURABLE_EVENT_IDS_KEY = 'terrarium:github-durable-event-ids'
+const MAX_DURABLE_EVENT_IDS = 10_000
 /**
  * Automatic-sync cadence, stored per browser profile (and per account
  * namespace). A schedule only runs while the website is open, so it is browser
@@ -57,7 +60,7 @@ const PRODUCT_EVENT_ID = PRODUCT_EVENT_ID_PATTERN
 // session fallback, never a reason to clear or overwrite the durable archive.
 const memoryFallback = new Map<string, string>()
 
-export interface BrowserProductStorage extends GuestProfileStorage {}
+export type BrowserProductStorage = GuestProfileStorage
 
 /**
  * A failed product upload is durable browser state, not a reason to rescan and
@@ -69,6 +72,8 @@ export interface BrowserProductStorage extends GuestProfileStorage {}
 export interface StoredGithubSyncRecovery {
   readonly snapshot: ProductSnapshot
   readonly checkpoint: string | null
+  /** Signed bounded-read cursor; baseline remains uncommitted until it clears. */
+  readonly continuation?: string | null
   readonly failures: readonly StoredReceiptFailure[]
   readonly blockedEventIds: readonly string[]
   readonly attemptedAt: string
@@ -147,6 +152,51 @@ export function saveBrowserLedger(storage: BrowserProductStorage, ledger: EventL
   storage.setItem(namespacedKey(LEDGER_KEY, namespace), JSON.stringify(ledger))
 }
 
+const MAX_MARKDOWN_KNOWN_PATHS = 20_000
+const MAX_MARKDOWN_PATH_LENGTH = 4_096
+
+function markdownKnownPathsKey(sourceId: string, namespace?: string): string {
+  return namespacedKey(`${MARKDOWN_KNOWN_PATHS_KEY}:${sourceId}`, namespace)
+}
+
+/**
+ * Local-only tombstones for mounted Markdown paths. These are deliberately
+ * kept outside GuestProfile/ProductSnapshot: paths are private source details,
+ * and the account sync boundary must never receive them.
+ */
+export function loadMarkdownKnownPaths(
+  storage: BrowserProductStorage,
+  sourceId: string,
+  namespace?: string,
+): readonly string[] | null {
+  try {
+    const raw = storage.getItem(markdownKnownPathsKey(sourceId, namespace))
+    if (raw === null) return null
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return null
+    const paths = parsed.filter((path): path is string => (
+      typeof path === 'string' && path.length > 0 && path.length <= MAX_MARKDOWN_PATH_LENGTH
+    ))
+    return [...new Set(paths)].slice(0, MAX_MARKDOWN_KNOWN_PATHS)
+  } catch {
+    return null
+  }
+}
+
+export function rememberMarkdownPaths(
+  storage: BrowserProductStorage,
+  sourceId: string,
+  paths: readonly string[],
+  namespace?: string,
+): readonly string[] {
+  const previous = loadMarkdownKnownPaths(storage, sourceId, namespace) ?? []
+  const merged = [...new Set([...previous, ...paths].filter((path) => (
+    typeof path === 'string' && path.length > 0 && path.length <= MAX_MARKDOWN_PATH_LENGTH
+  )))].slice(0, MAX_MARKDOWN_KNOWN_PATHS)
+  storage.setItem(markdownKnownPathsKey(sourceId, namespace), JSON.stringify(merged))
+  return merged
+}
+
 /**
  * Receipts must survive a failed cloud upload. GitHub's baseline advances in
  * its own request, so the next retry may not return the same events again.
@@ -187,6 +237,35 @@ export function saveVerifiedEventProofs(
   storage.setItem(namespacedKey(VERIFIED_EVENT_PROOFS_KEY, namespace), JSON.stringify(clean))
 }
 
+/** Event IDs returned by a successful account upload; proofs alone are not durability. */
+export function loadDurableEventIds(
+  storage: BrowserProductStorage,
+  namespace?: string,
+): readonly string[] {
+  try {
+    const parsed: unknown = JSON.parse(storage.getItem(namespacedKey(DURABLE_EVENT_IDS_KEY, namespace)) ?? '[]')
+    if (!Array.isArray(parsed)) return []
+    return [...new Set(parsed.filter((eventId): eventId is string => PRODUCT_EVENT_ID.test(eventId)))].slice(-MAX_DURABLE_EVENT_IDS)
+  } catch {
+    return []
+  }
+}
+
+export function mergeDurableEventIds(
+  storage: BrowserProductStorage,
+  eventIds: readonly string[],
+  namespace?: string,
+): void {
+  const merged = [...new Set([
+    ...loadDurableEventIds(storage, namespace),
+    ...eventIds.filter((eventId) => PRODUCT_EVENT_ID.test(eventId)),
+  ])]
+  storage.setItem(
+    namespacedKey(DURABLE_EVENT_IDS_KEY, namespace),
+    JSON.stringify(merged.slice(-MAX_DURABLE_EVENT_IDS)),
+  )
+}
+
 /** Merge a repair's replacements into the namespace without erasing other
  * receipts that are still needed by the cumulative browser ledger. */
 export function mergeVerifiedEventProofs(
@@ -206,28 +285,33 @@ export function saveGithubSyncRecovery(
   storage: BrowserProductStorage,
   recovery: StoredGithubSyncRecovery,
   namespace?: string,
-): void {
+): boolean {
   try {
     const serializedSnapshot = serializeProductSnapshot(recovery.snapshot)
     const failures = cleanRecoveryFailures(recovery.failures).slice(0, MAX_RECEIPT_REPAIR_EVENT_IDS)
     const blockedEventIds = [...new Set(recovery.blockedEventIds.filter((eventId) => PRODUCT_EVENT_ID.test(eventId)))]
       .slice(0, MAX_RECEIPT_REPAIR_EVENT_IDS)
     const attemptedAt = new Date(recovery.attemptedAt)
-    if (!Number.isFinite(attemptedAt.getTime())) return
-    if (recovery.checkpoint !== null && (typeof recovery.checkpoint !== 'string' || recovery.checkpoint.length === 0)) return
+    if (!Number.isFinite(attemptedAt.getTime())) return false
+    if (recovery.checkpoint !== null && (typeof recovery.checkpoint !== 'string' || recovery.checkpoint.length === 0)) return false
+    if (recovery.continuation !== undefined && recovery.continuation !== null &&
+      (typeof recovery.continuation !== 'string' || recovery.continuation.length === 0 || recovery.continuation.length > 64 * 1024)) return false
     storage.setItem(
       namespacedKey(SYNC_RECOVERY_KEY, namespace),
       JSON.stringify({
         snapshot: JSON.parse(serializedSnapshot),
         checkpoint: recovery.checkpoint,
+        continuation: recovery.continuation ?? null,
         failures,
         blockedEventIds,
         attemptedAt: attemptedAt.toISOString(),
       }),
     )
+    return true
   } catch {
     // Recovery is best effort. The primary local ledger is written separately
     // and is never cleared when a browser quota refuses this diagnostic record.
+    return false
   }
 }
 
@@ -249,6 +333,11 @@ export function loadGithubSyncRecovery(
       : typeof record.checkpoint === 'string' && record.checkpoint.length > 0
         ? record.checkpoint
         : null
+    const continuation = record.continuation === null || record.continuation === undefined
+      ? null
+      : typeof record.continuation === 'string' && record.continuation.length > 0 && record.continuation.length <= 64 * 1024
+        ? record.continuation
+        : null
     if (typeof record.attemptedAt !== 'string' || Number.isNaN(Date.parse(record.attemptedAt))) return null
     const failures = cleanRecoveryFailures(record.failures)
     const blockedEventIds = Array.isArray(record.blockedEventIds)
@@ -259,6 +348,7 @@ export function loadGithubSyncRecovery(
     return {
       snapshot,
       checkpoint,
+      ...(continuation ? { continuation } : {}),
       failures,
       blockedEventIds,
       attemptedAt: new Date(record.attemptedAt).toISOString(),
@@ -293,6 +383,12 @@ export function loadBrowserEncounters(storage: BrowserProductStorage, namespace?
       !value.essenceByFamily ||
       typeof value.essenceByFamily !== 'object'
     ) return createEncounterState()
+    if (value.progressByTriggerId !== undefined && (
+      !value.progressByTriggerId ||
+      typeof value.progressByTriggerId !== 'object' ||
+      Array.isArray(value.progressByTriggerId) ||
+      Object.values(value.progressByTriggerId).some((progress) => typeof progress !== 'number' || !Number.isFinite(progress) || progress < 0)
+    )) return createEncounterState()
     return value as EncounterState
   } catch {
     return createEncounterState()

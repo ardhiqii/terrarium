@@ -3,9 +3,9 @@
  * user is not re-prompted with the folder picker on every visit.
  *
  * `FileSystemDirectoryHandle` is structured-cloneable in Chromium, so it can
- * be stored directly as an IndexedDB value; no serialization needed. This
- * file never touches file contents, only the handle object itself -- see
- * `fsa-source.ts` for the actual reads.
+ * be stored inside a small IndexedDB record with its opaque source ID; no
+ * serialization needed. This file never touches file contents, only the
+ * handle object itself -- see `fsa-source.ts` for the actual reads.
  *
  * Every function here is best-effort and never throws: a user with
  * IndexedDB disabled (private browsing in some browsers) should fall back to
@@ -19,10 +19,18 @@
  * are each about that: a rejection is recoverable, a hang is not.
  */
 
+import { createGardenSourceId } from './types'
+
 const DB_NAME = 'terrarium-garden-fs'
 const DB_VERSION = 1
 const STORE_NAME = 'handles'
 const HANDLE_KEY = 'directory'
+
+/** The value stored for a connected garden. */
+export interface StoredGardenHandle {
+  readonly handle: FileSystemDirectoryHandle
+  readonly sourceId: string
+}
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -81,12 +89,22 @@ async function withStore<T>(
   }
 }
 
-/** Persists the handle. Best-effort: a failure here just means the next
- * visit re-prompts, never a thrown error surfacing to the caller. */
-export async function saveHandle(handle: FileSystemDirectoryHandle): Promise<void> {
+/** Persists the handle and its source identity. Best-effort: a failure here
+ * just means the next visit re-prompts, never a thrown error surfacing to the
+ * caller. The optional ID keeps direct callers of the old one-argument API
+ * working while ensuring every newly stored value has an identity. */
+export async function saveHandle(
+  handle: FileSystemDirectoryHandle,
+  sourceId = createGardenSourceId()
+): Promise<void> {
+  const normalizedSourceId = sourceId.trim()
+  const stableSourceId =
+    normalizedSourceId && normalizedSourceId !== handle.name
+      ? normalizedSourceId
+      : createGardenSourceId()
   try {
     await withStore<void>('readwrite', (store, resolve, reject) => {
-      const req = store.put(handle, HANDLE_KEY)
+      const req = store.put({ handle, sourceId: stableSourceId }, HANDLE_KEY)
       req.onsuccess = () => resolve()
       req.onerror = () => reject(req.error)
     })
@@ -95,22 +113,83 @@ export async function saveHandle(handle: FileSystemDirectoryHandle): Promise<voi
   }
 }
 
-/** Reads back the persisted handle, or null when none was ever saved (or
- * storage is unavailable). Never throws, and always settles. */
-export async function loadHandle(): Promise<FileSystemDirectoryHandle | null> {
+function isDirectoryHandle(value: unknown): value is FileSystemDirectoryHandle {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { name?: unknown }).name === 'string'
+  )
+}
+
+function isStoredGardenHandle(value: unknown): value is StoredGardenHandle {
+  if (typeof value !== 'object' || value === null) return false
+  const candidate = value as { handle?: unknown; sourceId?: unknown }
+  return (
+    isDirectoryHandle(candidate.handle) &&
+    typeof candidate.sourceId === 'string' &&
+    candidate.sourceId.trim().length > 0 &&
+    candidate.sourceId.trim() !== candidate.handle.name
+  )
+}
+
+/**
+ * Reads back the persisted handle and source identity. Older releases stored
+ * the raw directory handle at this key, so that shape is accepted and
+ * upgraded in place with a newly generated opaque ID.
+ */
+export async function loadStoredHandle(): Promise<StoredGardenHandle | null> {
   try {
-    return await withStore<FileSystemDirectoryHandle | null>(
+    const value = await withStore<unknown | null>(
       'readonly',
       (store, resolve, reject) => {
         const req = store.get(HANDLE_KEY)
-        req.onsuccess = () =>
-          resolve((req.result as FileSystemDirectoryHandle | undefined) ?? null)
+        req.onsuccess = () => resolve(req.result ?? null)
         req.onerror = () => reject(req.error)
       }
     )
+
+    if (isStoredGardenHandle(value)) return value
+
+    // A partially written/new-format record can still be repaired as long as
+    // its handle survived. This also keeps an invalid/blank ID from turning a
+    // previously connected garden into a permanently unavailable one.
+    if (typeof value === 'object' && value !== null && 'handle' in value) {
+      const candidate = value as { handle?: unknown; sourceId?: unknown }
+      if (isDirectoryHandle(candidate.handle)) {
+        const candidateSourceId =
+          typeof candidate.sourceId === 'string' ? candidate.sourceId.trim() : ''
+        const migrated = {
+          handle: candidate.handle,
+          sourceId:
+            candidateSourceId && candidateSourceId !== candidate.handle.name
+              ? candidateSourceId
+              : createGardenSourceId(),
+        }
+        await saveHandle(migrated.handle, migrated.sourceId)
+        return migrated
+      }
+    }
+
+    // Backwards compatibility for the old raw-handle value. Persist the
+    // migrated record so subsequent restores keep the same source identity.
+    if (isDirectoryHandle(value)) {
+      const migrated = { handle: value, sourceId: createGardenSourceId() }
+      await saveHandle(migrated.handle, migrated.sourceId)
+      return migrated
+    }
+
+    return null
   } catch {
     return null
   }
+}
+
+/** Reads back the persisted handle, or null when none was ever saved (or
+ * storage is unavailable). Kept as the original handle-only API for callers
+ * that do not need source identity. */
+export async function loadHandle(): Promise<FileSystemDirectoryHandle | null> {
+  const stored = await loadStoredHandle()
+  return stored?.handle ?? null
 }
 
 /** Forgets the stored handle. Does not touch any file on disk. Never throws. */

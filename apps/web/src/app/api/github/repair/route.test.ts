@@ -173,6 +173,7 @@ describe('POST /api/github/repair', () => {
       'x-terrarium-github-id': '9001',
     }))
     expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toBe('no-store, private')
     expect((await response.json()).repaired).toHaveLength(1)
 
     const legacy = await POST(request(body))
@@ -181,6 +182,19 @@ describe('POST /api/github/repair', () => {
 
   it('does not bind an ownerless checkpoint event to the active companion', async () => {
     const response = await POST(request(repairBody([candidateEventId()])))
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body.repaired).toEqual([])
+    expect(body.blocked[0]).toMatchObject({ reason: 'event-owner-unavailable' })
+  })
+
+  it('does not use a malformed preserved receipt as ownerless fallback evidence', async () => {
+    const eventId = candidateEventId()
+    const response = await POST(request({
+      ...repairBody([eventId]),
+      proofs: { [eventId]: 'not-a-valid-receipt' },
+    }))
     const body = await response.json()
 
     expect(response.status).toBe(200)
@@ -282,7 +296,7 @@ describe('POST /api/github/repair', () => {
     expect(mocks.fetchEvents).not.toHaveBeenCalled()
   })
 
-  it('keeps repair reads inside the same bounded 16-repository window', async () => {
+  it('keeps repair reads inside the same bounded repository window', async () => {
     const repositories = Array.from({ length: MAX_SYNC_REPOSITORIES + 4 }, (_, index) => ({
       ...repository,
       id: String(100 + index),

@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   saveSettings: vi.fn(),
   clearCredential: vi.fn(),
   fetchRepositories: vi.fn(),
+  fetchRepositoriesById: vi.fn(),
   productStoreRemove: vi.fn(),
 }))
 
@@ -40,6 +41,7 @@ vi.mock('@/lib/sync/github-account-store', () => ({
 
 vi.mock('@/lib/sync/github-repositories', () => ({
   fetchGithubRepositories: mocks.fetchRepositories,
+  fetchGithubRepositoriesById: mocks.fetchRepositoriesById,
 }))
 
 // Disconnect must never reach the destructive product-snapshot control; that
@@ -94,6 +96,7 @@ describe('PUT /api/github/repositories', () => {
     })
     mocks.clearCredential.mockReset().mockResolvedValue(undefined)
     mocks.fetchRepositories.mockReset().mockResolvedValue({ status: 'ok', truncated: false, repositories: [] })
+    mocks.fetchRepositoriesById.mockReset().mockResolvedValue({ status: 'ok', repositories: [] })
     mocks.productStoreRemove.mockReset().mockResolvedValue(undefined)
   })
 
@@ -138,7 +141,27 @@ describe('PUT /api/github/repositories', () => {
     const response = await GET(getRequest())
 
     expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toBe('no-store, private')
     expect((await response.json()).trackedRepositoryCount).toBe(1)
+  })
+
+  it('returns a retryable conflict when settings changed during the GitHub read', async () => {
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: [repository] })
+    mocks.saveSettings.mockResolvedValue(false)
+
+    const response = await PUT(request({
+      trackedRepositoryIds: ['101'],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+    }))
+
+    expect(response.status).toBe(409)
+    expect(response.headers.get('cache-control')).toBe('no-store, private')
+    expect(await response.json()).toEqual({
+      error: 'Repository settings changed or GitHub was disconnected. Refresh and try again.',
+    })
+    expect(mocks.saveSettings).toHaveBeenCalledWith(9001, expect.anything(), mocks.settings)
   })
 
   it('accepts a matching account header and a missing header for settings writes', async () => {

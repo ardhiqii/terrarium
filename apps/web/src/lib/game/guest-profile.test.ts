@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { PROTOTYPE_COMPANION_CATALOG } from './companion-catalog'
 import {
   GUEST_PROFILE_SCHEMA_VERSION,
   GUEST_PROFILE_STORAGE_KEY,
@@ -88,6 +89,23 @@ describe('guest profile', () => {
     expect(created.recoverabilityWarning.status).toBe('unseen')
   })
 
+  it('selects and persists an injected random base-stage starter', () => {
+    const selected = createGuestProfile({
+      guestId: 'guest-random',
+      catalog: PROTOTYPE_COMPANION_CATALOG,
+      random: () => 0.999,
+      now,
+    })
+    expect(selected.activeCompanionId).toBe('grass-family')
+    expect(selected.activeSelection).toMatchObject({
+      companionId: 'grass-family',
+      provenance: 'starter',
+    })
+    const restored = deserializeGuestProfile(serializeGuestProfile(selected))!
+    expect(restored.activeCompanionId).toBe('grass-family')
+    expect(restored.collection).toEqual(selected.collection)
+  })
+
   it('round-trips source baselines, active companion, collection, and warning state', () => {
     const original = profile()
     const restored = deserializeGuestProfile(serializeGuestProfile(original))
@@ -152,6 +170,13 @@ describe('guest profile', () => {
         })
       )
     ).toBeNull()
+  })
+
+  it('rejects an active companion that is not owned by the profile', () => {
+    expect(() => serializeGuestProfile({
+      ...profile(),
+      activeCompanionId: 'not-owned',
+    })).toThrow(/owned/)
   })
 
   it('rejects duplicate source and collection reference IDs when writing', () => {

@@ -131,6 +131,7 @@ Body measure caps at `65ch`. Never load fonts via a CSS `@import` of Google Font
 
 - **One radius system:** everything is `radius 0` except the specimen frame, which uses a 1px `--rule` border and no radius either. Sharp is the archive language. Interactive pills are the sole exception at full radius, and only in the creature HUD.
 - **No cards by default.** Group with `border-t`, `divide-y`, and negative space. A card appears only for the specimen plate, where elevation communicates "this is a mounted object."
+- **Sprites sit bare on the surface.** No filled slot, plate, or tint sits behind a companion sprite; its alignment box stays transparent and the pixel art (with the one-pixel halo on provider assets) reads directly against the page.
 - **Shadows** tinted to background hue, never pure black.
 
 ### 2.4 Pixel art rendering
@@ -175,9 +176,9 @@ the entire collection. There are no paid rolls in the prototype.
 
 XP is event-based and explainable. The initial playtest rates are:
 
-> These are the target rates for the new event-ledger model. The checked-in
-> runtime still contains the legacy aggregate snapshot engine until the
-> migration in `PLAN.md` is complete.
+> These are the event-ledger rates used by the integrated product companion
+> runtime. Legacy garden counters remain an evidence/migration input only; they
+> do not render as a competing active companion or account XP surface.
 
 | Event | XP |
 |---|---:|

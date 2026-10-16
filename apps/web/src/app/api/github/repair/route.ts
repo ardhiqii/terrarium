@@ -57,7 +57,10 @@ type RepairRequest = {
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store, private',
+    },
   })
 }
 
@@ -109,6 +112,38 @@ function parseRepairRequest(value: unknown): RepairRequest | null {
 
 function blocked(eventIds: readonly string[], reason: string): Array<{ eventId: string; reason: string }> {
   return eventIds.map((eventId) => ({ eventId, reason }))
+}
+
+/**
+ * Receipts issued before the product snapshot normalizer hashed cap keys and
+ * metadata can still be valid ownership evidence. Accept only a payload shape
+ * that is derived from the freshly reread provider event; never treat an
+ * arbitrary non-empty client string as an owner hint.
+ */
+function legacyReceiptPayload(event: ReturnType<typeof productSnapshotEvent>, normalized: ReturnType<typeof normalizeGitHubEvents>[number]) {
+  return {
+    ...event,
+    ...(normalized.cap
+      ? { cap: { key: normalized.cap.key, limit: normalized.cap.limit } }
+      : {}),
+    metadata: undefined,
+  }
+}
+
+function proofMatchesOwner(
+  event: ReturnType<typeof normalizeGitHubEvents>[number],
+  owner: string,
+  proof: string | undefined,
+  githubId: number,
+): boolean {
+  if (!proof) return false
+  const ownedEvent = productSnapshotEvent({ ...event, companionId: asCompanionId(owner) })
+  if (verifyVerifiedEventProof(ownedEvent, githubId, proof)) return true
+  return verifyVerifiedEventProof(
+    legacyReceiptPayload(ownedEvent, event),
+    githubId,
+    proof,
+  )
 }
 
 export async function POST(request: NextRequest): Promise<Response> {
@@ -207,14 +242,22 @@ export async function POST(request: NextRequest): Promise<Response> {
     try {
       const record = await getProductStore().getRecord(session.githubId, session.handle)
       const trusted = record ? trustStoredProductSnapshot(record.snapshot, session.githubId) : null
+      if (trusted) {
+        const ownedCompanionIds = new Set(trusted.collection.map((reference) => reference.companionId))
+        if (!ownedCompanionIds.has(parsed.activeCompanionId)) {
+          return json(400, { error: 'activeCompanionId must be owned by the product account.' })
+        }
+      }
       for (const event of trusted?.events ?? []) {
         if (event.source === 'github' && event.provenance === 'verified') {
           existingGithubCompanionByEventId.set(event.eventId, event.companionId)
         }
       }
     } catch {
-      // A missing cloud row is expected during the incident recovery. Do not
-      // turn an optional owner lookup into a receipt minting outage.
+      // A missing row is safe to treat as an unbound account, but a failed or
+      // corrupt read is not evidence of absent ownership. Fail closed before
+      // minting a replacement receipt.
+      return json(503, { error: 'storage_unavailable' })
     }
 
     if (window.eligible.length === 0) {
@@ -275,9 +318,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         const storedOwner = existingGithubCompanionByEventId.get(candidate.eventId)
         let owner = storedOwner ?? parsed.activeCompanionId
         let ownedEvent = productSnapshotEvent({ ...event, companionId: asCompanionId(owner) })
-        let proofAuthorizes = Boolean(
-          existingProof && verifyVerifiedEventProof(ownedEvent, session.githubId, existingProof),
-        )
+        let proofAuthorizes = proofMatchesOwner(event, owner, existingProof, session.githubId)
         // If the cloud row is blank during recovery, the preserved server
         // receipt is the only trusted record of the original companion owner.
         // Try the catalog identities rather than silently rebinding an old
@@ -288,7 +329,7 @@ export async function POST(request: NextRequest): Promise<Response> {
               ...event,
               companionId: asCompanionId(definition.id),
             })
-            if (verifyVerifiedEventProof(candidateOwnedEvent, session.githubId, existingProof)) {
+            if (proofMatchesOwner(event, definition.id, existingProof, session.githubId)) {
               owner = definition.id
               ownedEvent = candidateOwnedEvent
               proofAuthorizes = true
@@ -308,7 +349,10 @@ export async function POST(request: NextRequest): Promise<Response> {
         // the recovery has. The client must compare the returned owner-bound
         // payload with its preserved local event before upload. A checkpoint
         // with no receipt or cloud owner remains blocked.
-        if (checkpointAuthorizes && !storedOwner && !proofAuthorizes && !existingProof) {
+        if (checkpointAuthorizes && !storedOwner && !proofAuthorizes) {
+          // A checkpoint authenticates provider activity, not companion
+          // ownership. A malformed preserved proof must never act as an
+          // ownerless fallback that rebinds the event to the active companion.
           ownerUnavailableIds.add(candidate.eventId)
           continue
         }

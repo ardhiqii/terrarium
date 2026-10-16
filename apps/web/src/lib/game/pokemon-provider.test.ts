@@ -6,6 +6,7 @@ import {
   extractPokeApiEvolutionChainId,
   extractPokeApiFormIdentity,
   extractPokeApiSpriteUrls,
+  isPokeApiReferenceIdentityMatch,
   resolvePokeApiReference,
   type PokeApiResolution,
 } from './pokemon-provider'
@@ -102,6 +103,39 @@ describe('PokeAPI provider bridge', () => {
       evolutionChainId: 10,
     })
     expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('rejects provider data whose numeric form identity is stale', async () => {
+    const routes = pikachuRoutes()
+    const pokemon = routes[pokemonUrl] as Record<string, unknown>
+    const fetch = mockFetch({
+      ...routes,
+      [pokemonUrl]: { ...pokemon, id: 26 },
+    })
+
+    await expect(
+      resolvePokeApiReference(
+        { providerId: 'pokeapi', entityId: 'pikachu', formId: '25' },
+        { fetch },
+      ),
+    ).resolves.toBeNull()
+  })
+
+  it('rejects a cache/provider identity when the returned species name is wrong', () => {
+    const metadata = {
+      pokemonName: 'raichu',
+      pokemonId: 25,
+      speciesName: 'pikachu',
+      form: { id: '25', name: 'pikachu', isDefault: true },
+      evolutionChainId: 10,
+    }
+
+    expect(
+      isPokeApiReferenceIdentityMatch(
+        { providerId: 'pokeapi', entityId: 'pikachu', formId: '25' },
+        metadata,
+      ),
+    ).toBe(false)
   })
 
   it('resolves Ditto using its static sprite when no animation exists', async () => {

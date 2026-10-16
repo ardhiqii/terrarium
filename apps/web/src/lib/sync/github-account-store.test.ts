@@ -108,6 +108,63 @@ describe('GithubAccountSqliteStore', () => {
     })
   })
 
+  it('rejects a stale settings write without replacing a newer baseline', async () => {
+    vi.stubEnv('SESSION_SECRET', 'e3'.repeat(16))
+    const store = new GithubAccountSqliteStore(':memory:')
+    await store.putCredential(identity, 'token', ['repo'])
+    const initial = {
+      trackedRepositoryIds: ['101'],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+      baselineByRepositoryId: { '101': '2026-09-12T00:00:00.000Z' },
+      lastSyncedAt: '2026-09-12T01:00:00.000Z',
+    }
+    expect(await store.saveSettings(42, initial)).toBe(true)
+
+    const newer = {
+      ...initial,
+      baselineByRepositoryId: { '101': '2026-09-13T00:00:00.000Z' },
+      lastSyncedAt: '2026-09-13T01:00:00.000Z',
+    }
+    expect(await store.saveSettings(42, newer, initial)).toBe(true)
+
+    const stale = {
+      ...initial,
+      trackedRepositoryIds: [],
+      baselineByRepositoryId: { '101': '2026-09-14T00:00:00.000Z' },
+    }
+    expect(await store.saveSettings(42, stale, initial)).toBe(false)
+    await expect(store.getSettings(42)).resolves.toEqual(newer)
+  })
+
+  it('rejects settings writes after disconnect without restoring baselines', async () => {
+    vi.stubEnv('SESSION_SECRET', 'e4'.repeat(16))
+    const store = new GithubAccountSqliteStore(':memory:')
+    await store.putCredential(identity, 'token', ['repo'])
+    const settings = {
+      trackedRepositoryIds: ['101'],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+      baselineByRepositoryId: { '101': '2026-09-12T00:00:00.000Z' },
+      lastSyncedAt: '2026-09-12T01:00:00.000Z',
+    }
+    await store.saveSettings(42, settings)
+    await store.clearCredential(42)
+
+    expect(await store.saveSettings(42, {
+      ...settings,
+      baselineByRepositoryId: { '101': '2026-09-14T00:00:00.000Z' },
+    }, settings)).toBe(false)
+    expect(await store.saveSettings(42, settings)).toBe(false)
+    await expect(store.getSettings(42)).resolves.toMatchObject({
+      trackedRepositoryIds: ['101'],
+      baselineByRepositoryId: {},
+      lastSyncedAt: null,
+    })
+  })
+
   it('records the last successful checkpoint when the baseline map is unchanged and never moves it backwards', async () => {
     vi.stubEnv('SESSION_SECRET', 'e2'.repeat(16))
     const store = new GithubAccountSqliteStore(':memory:')
