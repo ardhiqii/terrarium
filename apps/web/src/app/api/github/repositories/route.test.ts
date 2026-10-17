@@ -178,7 +178,12 @@ describe('PUT /api/github/repositories', () => {
     expect(missing.status).toBe(200)
   })
 
-  it('drops revoked tracked IDs without blocking an existing exclusion update', async () => {
+  it('keeps a tracked ID the listing does not show and still applies an exclusion update', async () => {
+    // REGRESSION: a short or glitchy listing used to drop the ID silently,
+    // which released a repository the user explicitly chose (reported as
+    // "select all gets unselected by itself"). The choice is preserved;
+    // `repositoryIsTracked` already stops an unlisted repository from
+    // contributing, so a retained ID awards nothing on its own.
     const response = await PUT(request({
       trackedRepositoryIds: ['101'],
       excludedRepositoryIds: ['102'],
@@ -187,7 +192,7 @@ describe('PUT /api/github/repositories', () => {
     }))
 
     expect(response.status).toBe(200)
-    expect(mocks.settings.trackedRepositoryIds).toEqual([])
+    expect(mocks.settings.trackedRepositoryIds).toEqual(['101'])
     expect(mocks.settings.excludedRepositoryIds).toEqual(['102'])
   })
 
@@ -358,6 +363,55 @@ describe('PUT /api/github/repositories', () => {
 
     expect(response.status).toBe(200)
     expect(mocks.settings.trackedRepositoryIds).toEqual(['101', '501'])
+  })
+
+  it('keeps a tracked repository that became archived instead of unselecting it', async () => {
+    // REGRESSION: an explicit choice used to be dropped on the next save when
+    // the repository was archived. Contribution is already gated by
+    // `repositoryIsTracked`, so the stored ID is kept and un-archiving later
+    // resumes the user's choice instead of requiring re-selection.
+    mocks.fetchRepositories.mockResolvedValue({
+      status: 'ok',
+      truncated: false,
+      repositories: [{ ...repository, archived: true }],
+    })
+
+    const response = await PUT(request({
+      trackedRepositoryIds: ['101'],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+    }))
+
+    expect(response.status).toBe(200)
+    expect(mocks.settings.trackedRepositoryIds).toEqual(['101'])
+  })
+
+  it('still rejects a newly selected repository that is archived or unreadable', async () => {
+    mocks.fetchRepositories.mockResolvedValue({
+      status: 'ok',
+      truncated: false,
+      repositories: [
+        { ...repository, id: '999', archived: true },
+        { ...repository, id: '998', canRead: false },
+      ],
+    })
+
+    const archived = await PUT(request({
+      trackedRepositoryIds: ['999'],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+    }))
+    expect(archived.status).toBe(400)
+
+    const unreadable = await PUT(request({
+      trackedRepositoryIds: ['998'],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+    }))
+    expect(unreadable.status).toBe(400)
   })
 })
 

@@ -124,7 +124,12 @@ import {
   type SyncRequestUsageEntry,
   type SyncScheduleInterval,
 } from '@/lib/sync/sync-schedule'
-import { filterGithubRepositories, type RepositoryScope } from '@/lib/sync/github-repository-browser'
+import {
+  filterGithubRepositories,
+  mergeSelectableTrackedIds,
+  selectableRepositoryIds,
+  type RepositoryScope,
+} from '@/lib/sync/github-repository-browser'
 import type { GithubRepository } from '@/lib/sync/github-repositories'
 import { CompanionSwitcher } from './CompanionSwitcher'
 import { SyncProgress } from './SyncProgress'
@@ -2987,7 +2992,15 @@ export function GitHubSourcePanel() {
             </div>
 
             <div className="mt-5 flex flex-wrap gap-3">
-              <button type="button" disabled={sourceControlsDisabled} onClick={() => { setDraftTrackedIds(repositories.filter((repo) => repo.canRead && !repo.archived).map((repo) => repo.id)); setDraftExcludedIds([]) }} className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50" style={{ borderColor: 'var(--rule)' }}>
+              <button type="button" disabled={sourceControlsDisabled} onClick={() => {
+                // Select-all is additive: a repository this listing cannot show
+                // keeps the tracked ID it already had, so a short or stale read
+                // cannot silently release it. Exclusions are only cleared for
+                // rows that are on screen and selectable right now.
+                setDraftTrackedIds((current) => mergeSelectableTrackedIds(current, repositories))
+                const selectable = new Set(selectableRepositoryIds(repositories))
+                setDraftExcludedIds((current) => current.filter((id) => !selectable.has(id)))
+              }} className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50" style={{ borderColor: 'var(--rule)' }}>
                 Select all available
               </button>
               <button type="button" disabled={sourceControlsDisabled} onClick={() => { setDraftTrackedIds([]); setDraftExcludedIds(repositories.filter((repo) => !repo.archived && repo.canRead && (repo.ownerType === 'User' ? draftAutoPersonal : draftOrganizations.includes(repo.ownerLogin.toLowerCase()))).map((repo) => repo.id)) }} className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50" style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}>

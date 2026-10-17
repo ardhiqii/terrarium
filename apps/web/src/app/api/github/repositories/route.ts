@@ -252,18 +252,20 @@ export async function PUT(request: NextRequest): Promise<Response> {
     if (unknownNewTrackedIds.length > 0 || unknownNewExcludedIds.length > 0) {
       return json(400, { error: 'A selected repository is unavailable for activity tracking. Refresh the list and try again.' })
     }
-    // A repository can disappear from GitHub after permission revocation or
-    // deletion. Drop stale tracked IDs so they stop contributing immediately,
-    // while retaining an existing exclusion in case access returns later. A
-    // listing that could not be refreshed completely (stale or truncated) is
-    // not proof of deletion: the user's explicit choice is preserved instead
-    // of being silently unselected by a failed read.
-    const completeListing = !available.stale && !available.truncated
-    const trackedRepositoryIds = settingsPayload.trackedRepositoryIds.filter((id) => {
-      const repository = byId.get(id)
-      if (repository === undefined) return !completeListing
-      return !repository.archived && repository.canRead
-    })
+    // A tracked ID is the user's explicit choice, so it is never released
+    // here -- not when the current listing cannot show the repository (a short
+    // page walk, an organization grant mid-refresh, a repository the walk
+    // missed) and not when the repository is archived or unreadable right
+    // now. GitHub answers 404 for temporary access loss (an expired
+    // organization grant, SSO re-approval pending) as well as for deletion,
+    // so "missing from a listing" is not proof the source is gone, and the
+    // picker cannot offer the repository back while it is off screen. Tracking
+    // stays honest without the drop: `repositoryIsTracked` ignores archived,
+    // unreadable, and unlisted repositories, so a retained ID never awards
+    // activity by itself. Existing exclusions already follow this keep rule
+    // below, and a new ID is still rejected above, so the listing remains the
+    // authority for new selections.
+    const trackedRepositoryIds = [...settingsPayload.trackedRepositoryIds]
     const excludedRepositoryIds = settingsPayload.excludedRepositoryIds.filter((id) => {
       return byId.has(id) || existingExcludedIds.has(id)
     })

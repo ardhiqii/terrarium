@@ -204,8 +204,9 @@ generated-only, unchanged, repeated, or duplicate activity adds no XP.
   guard rather than a shared cache. Entries are swept on write and capped at
   `GITHUB_REPOSITORY_CACHE_MAX_ENTRIES` accounts.
 - Accounts with more than 500 repositories get a truncated listing. The
-  `/user/repos` walk stops at five pages; the flag stops pruning and unselection
-  from it. Explicitly tracked IDs past page 5 are now hydrated through the
+  `/user/repos` walk stops at five pages; the flag stops pruning from it, and a
+  tracked ID is never unselected automatically from any listing (see
+  DECISIONS). Explicitly tracked IDs past page 5 are hydrated through the
   stable `/repositories/{id}` endpoint, while automatic inclusion remains
   bounded to the visible pages; full cursor-based discovery is still open.
 
