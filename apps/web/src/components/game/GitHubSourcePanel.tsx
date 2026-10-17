@@ -74,6 +74,7 @@ import {
 import {
   canStartReceiptRepair,
   projectPartialProductSnapshot,
+  receiptRecoveryPresentation,
 } from '@/lib/game/github-repair-projection'
 import {
   clearGithubRepositoryCache,
@@ -311,6 +312,12 @@ function relativeAgeLabel(ageMs: number): string {
   if (minutes < 60) return `${minutes} min ago`
   const hours = Math.floor(minutes / 60)
   return `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`
+}
+
+function lastBackupLabel(lastSyncedAt: string | null): string {
+  const parsed = lastSyncedAt ? Date.parse(lastSyncedAt) : Number.NaN
+  if (!Number.isFinite(parsed)) return 'Not backed up yet'
+  return `Last backup ${relativeAgeLabel(Date.now() - parsed)}`
 }
 
 /**
@@ -1609,7 +1616,7 @@ export function GitHubSourcePanel() {
           // page-1 sync is safe and will re-read stable event IDs idempotently.
           clearGithubSyncRecovery(browserProductStorage(), namespace)
           setRecoveryState(null)
-          setMessage('The GitHub catch-up cursor expired or the account changed. Start a fresh sync.')
+          setMessage('The GitHub catch-up expired or the account changed. Start a fresh sync.')
           return
         }
         throw error
@@ -1630,7 +1637,7 @@ export function GitHubSourcePanel() {
           /continuation is invalid or expired|activity changed while the bounded read was being continued/iu.test(failure)) {
           clearGithubSyncRecovery(browserProductStorage(), namespace)
           setRecoveryState(null)
-          setMessage('The GitHub catch-up cursor expired or the account changed. Start a fresh sync.')
+          setMessage('The GitHub catch-up expired or the account changed. Start a fresh sync.')
         } else {
           setMessage(failure)
         }
@@ -1699,7 +1706,7 @@ export function GitHubSourcePanel() {
         if (!partialUpload.ok) {
           const partialFailures = parseReceiptFailures(partialUpload.body)
           setMessage(partialFailures.length > 0
-            ? `${partialFailures.length} verified receipt${partialFailures.length === 1 ? '' : 's'} blocked the partial backup. Repair and retry below.`
+            ? `${partialFailures.length} activity proof${partialFailures.length === 1 ? '' : 's'} could not be verified and blocked the partial backup. Repair and retry below.`
             : `Activity was read, but the continuation backup was not committed: ${errorMessage(partialUpload.body, 'try again later')}`)
           return
         }
@@ -1782,13 +1789,13 @@ export function GitHubSourcePanel() {
       // The adapter exposes bounded-window detail, while the sync route fails
       // closed before issuing a checkpoint when the window is incomplete.
       const truncatedNote = body.truncated === true
-        ? ' The scan window was incomplete; no baseline or checkpoint advances until the next retry finishes it.'
+        ? ' The scan window was incomplete; the account backup does not advance until the next retry finishes the window.'
         : ''
       const receiptFailures = upload.ok ? [] : parseReceiptFailures(snapshotBody)
       let cloudNote = upload.ok
         ? ' Account backup committed successfully.'
         : receiptFailures.length > 0
-          ? ` ${receiptFailures.length} verified receipt${receiptFailures.length === 1 ? '' : 's'} blocked the account backup. Repair and retry below.`
+          ? ` ${receiptFailures.length} activity proof${receiptFailures.length === 1 ? '' : 's'} could not be verified and blocked the account backup. Repair and retry below.`
           : ` New activity is kept locally, but the account backup was not committed: ${errorMessage(snapshotBody, 'try again later')}`
       // The identity guard is the one refusal that needs a decision rather than
       // a retry: the account already stores a different guest profile, so both
@@ -1909,7 +1916,7 @@ export function GitHubSourcePanel() {
           payloadDigest: null,
         }))
     if (pending.continuation && targets.length === 0) {
-      setLastSyncSummary('This condition has no receipt failures to repair. Run Sync to continue the GitHub activity window.')
+      setLastSyncSummary('This condition has nothing to repair. Run Sync to continue the GitHub activity window.')
       return
     }
     const pendingEvents = new Map(pending.snapshot.events.map((event) => [event.eventId, event]))
@@ -1920,7 +1927,7 @@ export function GitHubSourcePanel() {
       }),
     )
     if (!canStartReceiptRepair(pending.checkpoint, targets.map((target) => target.eventId), new Set(Object.keys(legacyProofs)))) {
-      setLastSyncSummary('Receipt repair needs a fresh signed checkpoint or a preserved server receipt. Run Sync again to retry this local condition.')
+      setLastSyncSummary('Activity proof repair needs a fresh signed backup or a preserved server copy. Run Sync again to retry this local condition.')
       return
     }
 
@@ -1968,7 +1975,7 @@ export function GitHubSourcePanel() {
         if (!response.ok || !parsed) {
           // Keep the exact pending payload and checkpoint. A rate limit or
           // deployment outage is not evidence that the browser record is bad.
-          setLastSyncSummary(`Receipt repair could not run: ${errorMessage(body, 'try again later')}`)
+          setLastSyncSummary(`Activity proof repair could not run: ${errorMessage(body, 'try again later')}`)
           return
         }
         requestsThisSyncRef.current = Math.max(requestsThisSyncRef.current, parsed.requestsDone)
@@ -2067,7 +2074,7 @@ export function GitHubSourcePanel() {
         }
         saveGithubSyncRecovery(storage, failedRecovery, namespace)
         setRecoveryState(failedRecovery)
-        setLastSyncSummary(`Receipt repair ran, but the account backup was not committed: ${errorMessage(upload.body, 'try again later')}`)
+        setLastSyncSummary(`Activity proof repair ran, but the account backup was not committed: ${errorMessage(upload.body, 'try again later')}`)
         return
       }
 
@@ -2076,7 +2083,7 @@ export function GitHubSourcePanel() {
         // The server has the valid projection; retain the full local state and
         // its blocked overlay rather than adopting a response that would hide
         // the unrecoverable browser events or encounters.
-        setLastSyncSummary(`${targets.length - blocked.size} receipt${targets.length - blocked.size === 1 ? '' : 's'} repaired and valid progress backed up. ${blocked.size} event${blocked.size === 1 ? '' : 's'} remain blocked; the last successful checkpoint was not advanced.`)
+        setLastSyncSummary(`${targets.length - blocked.size} activity proof${targets.length - blocked.size === 1 ? '' : 's'} repaired and valid progress backed up. ${blocked.size} event${blocked.size === 1 ? '' : 's'} remain blocked; earlier backups were not advanced.`)
         return
       }
 
@@ -2098,7 +2105,7 @@ export function GitHubSourcePanel() {
         setRecoveryState(continuedRecovery)
         const uploadedPartial = adoptUploadedSnapshot(upload.body, state.profile, namespace, state)
         if (uploadedPartial && isCurrentRepair()) setProductState(uploadedPartial)
-        setLastSyncSummary('Verified receipts repaired. Activity backup is durable; run Sync to continue the GitHub catch-up.')
+        setLastSyncSummary('Activity proofs repaired. The activity backup is durable; run Sync to continue the GitHub catch-up.')
         return
       }
       clearGithubSyncRecovery(storage, namespace)
@@ -2113,9 +2120,9 @@ export function GitHubSourcePanel() {
       }
       const uploaded = adoptUploadedSnapshot(upload.body, state.profile, namespace, state)
       if (uploaded && isCurrentRepair()) setProductState(uploaded)
-      setLastSyncSummary('Verified receipts repaired. Account backup committed successfully; the last successful checkpoint advanced.')
+      setLastSyncSummary('Activity proofs repaired. Account backup committed successfully; the backup advanced.')
     } catch (error) {
-      if (isCurrentRepair()) setLastSyncSummary(error instanceof Error ? error.message : 'Receipt repair could not be completed.')
+      if (isCurrentRepair()) setLastSyncSummary(error instanceof Error ? error.message : 'Activity proof repair could not be completed.')
     } finally {
       if (runId !== syncRunRef.current) return
       setBusy(false)
@@ -2667,6 +2674,8 @@ export function GitHubSourcePanel() {
     }
   }
 
+  const recoveryPresentation = recovery ? receiptRecoveryPresentation(recovery) : null
+
   return (
     <div className="mx-auto max-w-5xl px-4 pb-16 pt-8 sm:px-6">
       <section className="border-y py-8" style={{ borderColor: 'var(--rule)' }}>
@@ -2800,9 +2809,11 @@ export function GitHubSourcePanel() {
               <p className="font-prose mt-1 text-xs" style={{ color: 'var(--ink-muted)' }}>Only selected sources move XP.</p>
             </div>
             <div className="bg-[color:var(--paper)] px-5 py-4">
-              <p className="font-data text-[10px] uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Last checkpoint</p>
-              <p className="font-ui mt-1 text-sm font-medium">{settings.lastSyncedAt ? new Date(settings.lastSyncedAt).toLocaleDateString() : 'Not synced yet'}</p>
-              <p className="font-prose mt-1 text-xs" style={{ color: 'var(--ink-muted)' }}>Sync again when you want fresh receipts.</p>
+              <p className="font-data text-[10px] uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Account backup</p>
+              <p className="font-ui mt-1 text-sm font-medium">{lastBackupLabel(settings.lastSyncedAt)}</p>
+              <p className="font-prose mt-1 text-xs" style={{ color: 'var(--ink-muted)' }}>
+                {recovery ? 'See account backup recovery below.' : 'Automatic sync backs up progress while this page is open.'}
+              </p>
             </div>
           </section>
 
@@ -2811,39 +2822,38 @@ export function GitHubSourcePanel() {
             dead end. Both copies are shown with what they actually hold, and
             every action reports its outcome back in the summary below.
           */}
-          {recovery && (
+          {recovery && recoveryPresentation && (
             <section
-              aria-label="GitHub receipt recovery"
+              aria-label="Account backup recovery"
               className="mt-6 border p-5 sm:p-6"
               style={{ borderColor: 'var(--accent)', background: 'var(--paper-raised)' }}
             >
               <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--accent)' }}>Account backup recovery</p>
               <h2 className="font-ui mt-2 text-2xl font-semibold tracking-tight">
-                {recovery.blockedEventIds.length > 0 ? 'Some verified activity is blocked' : 'Receipt repair is ready'}
+                {recoveryPresentation.heading}
               </h2>
               <p className="font-prose mt-2 max-w-2xl text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-                {recovery.blockedEventIds.length > 0
-                  ? `${recovery.blockedEventIds.length} event${recovery.blockedEventIds.length === 1 ? '' : 's'} remain visible in this browser but could not be confirmed in the bounded GitHub repair window. Valid progress can still be backed up; the last successful checkpoint stays unchanged.`
-                  : `${recovery.failures.length || 'The'} verified receipt${recovery.failures.length === 1 ? '' : 's'} blocked the account backup. Your browser ledger and encounters are intact.`}
+                {recoveryPresentation.detail}
               </p>
               <div className="mt-4 flex flex-wrap items-center gap-3">
                 <button
                   type="button"
-                  onClick={() => void repairAndRetry()}
-                  disabled={busy || disconnecting}
+                  onClick={() => void (recoveryPresentation.action === 'sync' ? syncNow() : repairAndRetry())}
+                  disabled={busy || disconnecting || (recoveryPresentation.action === 'sync' && (sourceControlsDisabled || !productState))}
                   aria-busy={busy}
                   className="ui-row font-ui border px-4 py-2 text-sm disabled:cursor-wait disabled:opacity-50"
                   style={{ borderColor: 'var(--accent)' }}
                 >
-                  {busy ? 'Repairing…' : 'Repair receipts and retry'}
+                  {busy
+                    ? (recoveryPresentation.action === 'sync' ? 'Syncing…' : 'Repairing…')
+                    : recoveryPresentation.actionLabel}
                 </button>
                 <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>
                   Attempted {new Date(recovery.attemptedAt).toLocaleString()}
                 </span>
               </div>
               <p className="font-prose mt-3 text-xs leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-                Last successful checkpoint: {settings.lastSyncedAt ? new Date(settings.lastSyncedAt).toLocaleString() : 'not recorded'}.
-                {recovery.checkpoint ? ' The preserved signed checkpoint will be committed only after the repaired snapshot is stored.' : ' A fresh normal sync may be needed to issue a new checkpoint.'}
+                Last successful backup: {settings.lastSyncedAt ? new Date(settings.lastSyncedAt).toLocaleString() : 'not recorded'}. {recoveryPresentation.checkpointHint}
               </p>
             </section>
           )}

@@ -121,3 +121,77 @@ export function projectPartialProductSnapshot(
     },
   }
 }
+
+export type ReceiptRecoveryMode = 'blocked' | 'repair' | 'catch-up' | 'retry'
+
+export interface ReceiptRecoveryPresentation {
+  readonly mode: ReceiptRecoveryMode
+  readonly heading: string
+  readonly detail: string
+  readonly actionLabel: string
+  /** `catch-up` continues with the normal sync action; every other mode retries the repair upload. */
+  readonly action: 'sync' | 'repair'
+  readonly checkpointHint: string
+}
+
+/**
+ * The durable recovery record covers several distinct conditions, and the
+ * panel previously rendered all of them as "receipt repair". A bounded
+ * catch-up in progress has no blocked receipts at all, and the lone repair
+ * button was inert for it (it only reported "no receipt failures to repair"
+ * in the summary far below), so the state read as a dead end. Name the actual
+ * condition so the copy and the action match it.
+ */
+export function receiptRecoveryPresentation(record: {
+  readonly failures: readonly unknown[]
+  readonly blockedEventIds: readonly string[]
+  readonly continuation?: string | null
+  readonly checkpoint?: string | null
+}): ReceiptRecoveryPresentation {
+  const preservedHint = 'The held backup is committed only after the repaired activity is stored.'
+  const freshHint = 'A fresh sync may be needed to create a new backup.'
+
+  // Order matters: the blocked overlay is the most explicit condition, and a
+  // pending receipt failure keeps the repair action even while a catch-up
+  // cursor is preserved (that failed-repair record keeps both).
+  if (record.blockedEventIds.length > 0) {
+    const count = record.blockedEventIds.length
+    return {
+      mode: 'blocked',
+      heading: 'Some verified activity is blocked',
+      detail: `${count} event${count === 1 ? '' : 's'} remain visible in this browser but could not be confirmed in the bounded GitHub repair window. Valid progress can still be backed up; earlier backups stay unchanged.`,
+      actionLabel: 'Repair activity proof and retry',
+      action: 'repair',
+      checkpointHint: record.checkpoint ? preservedHint : freshHint,
+    }
+  }
+  if (record.failures.length > 0) {
+    const count = record.failures.length
+    return {
+      mode: 'repair',
+      heading: 'Activity proof repair is ready',
+      detail: `${count} activity proof${count === 1 ? '' : 's'} could not be verified and blocked the account backup. Your browser ledger and encounters are intact.`,
+      actionLabel: 'Repair activity proof and retry',
+      action: 'repair',
+      checkpointHint: record.checkpoint ? preservedHint : freshHint,
+    }
+  }
+  if (record.continuation) {
+    return {
+      mode: 'catch-up',
+      heading: 'GitHub catch-up in progress',
+      detail: 'The GitHub activity window is being read in parts across syncs; nothing is blocked. Your browser ledger and encounters are intact. Continue the sync to finish the read — the backup is committed only when the catch-up completes.',
+      actionLabel: 'Continue sync',
+      action: 'sync',
+      checkpointHint: 'Sync again to continue this window; the backup follows when it completes.',
+    }
+  }
+  return {
+    mode: 'retry',
+    heading: 'Account backup retry is ready',
+    detail: 'The last account backup was not committed. Your browser ledger and encounters are intact; retrying re-uploads the preserved snapshot.',
+    actionLabel: 'Retry account backup',
+    action: 'repair',
+    checkpointHint: record.checkpoint ? preservedHint : freshHint,
+  }
+}
