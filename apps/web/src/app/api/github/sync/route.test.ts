@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
-import { MAX_CHECKPOINT_EVENT_IDS, verifyGithubSyncCheckpoint } from '@/lib/sync/github-sync-checkpoint'
+import { MAX_CHECKPOINT_BASELINE_ENTRIES, MAX_CHECKPOINT_EVENT_IDS, verifyGithubSyncCheckpoint } from '@/lib/sync/github-sync-checkpoint'
 import { verifyGithubSyncContinuation } from '@/lib/sync/github-sync-continuation'
 import { MAX_SYNC_REPOSITORIES } from '@/lib/sync/sync-schedule'
 import { normalizeGitHubEvents } from '@/lib/game/github-events'
@@ -434,6 +434,187 @@ describe('POST /api/github/sync', () => {
     const token = verifyGithubSyncContinuation(body.continuation as string, 9001)
     expect(token?.cursors).toEqual({ '101': { page: 2 } })
     expect(mocks.settings.baselineByRepositoryId).toEqual({ '101': '2026-09-01T00:00:00.000Z' })
+  })
+
+  it('reports no baseline registrations on a partial result because nothing was committed', async () => {
+    // Red-team: the baseline map only reaches the account through the
+    // checkpoint that follows a complete read. A partial result carries
+    // `checkpoint: null` and saves no settings, so the registration made in
+    // memory at the top of the read is not real. Reporting it let the panel
+    // claim "N repositories registered" about a write that never happened; the
+    // resume registers the same repositories again, and only that sync's
+    // checkpoint makes them real.
+    const known = { ...repository, id: '101', fullName: 'octo/garden' }
+    const fresh = { ...repository, id: '202', name: 'new-garden', fullName: 'octo/new-garden' }
+    mocks.settings = {
+      trackedRepositoryIds: ['101', '202'],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+      baselineByRepositoryId: { '101': '2026-09-01T00:00:00.000Z' },
+      lastSyncedAt: null,
+    }
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: [known, fresh] })
+    mocks.fetchEvents.mockResolvedValue({
+      login: 'octo',
+      status: 'partial',
+      truncated: true,
+      continuation: { '101': { page: 2 } },
+      input: { sourceId: '9001', companionId: 'octo', commits: [] },
+    })
+
+    const body = await readSyncBody(await POST(request()))
+
+    expect(body.kind).toBe('partial')
+    expect(body.checkpoint).toBeNull()
+    expect(typeof body.continuation).toBe('string')
+    // The read window held only the baselined repository, and the fresh one
+    // was registered in memory only: nothing may be reported as committed.
+    expect(body.repositoryCount).toBe(1)
+    expect(mocks.settings.baselineByRepositoryId).toEqual({ '101': '2026-09-01T00:00:00.000Z' })
+    expect(body.newBaselineRepositoryIds).toEqual([])
+  })
+
+  it.fails('commits the registration time of the attempt that first saw a new repository', async () => {
+    // Red-team: a partial attempt registers a first-use repository in memory at
+    // T1 but commits nothing. The resume registers it again at T2 and commits
+    // T2 as its baseline, so activity in that repository between T1 and T2 is
+    // never read by any sync and can never award XP. The continuation carries
+    // cursors, not the first-registration timestamps, so the hole survives a
+    // reload. Desired behavior: the committed baseline is the moment the
+    // account first saw the repository, not the moment a retry happened to
+    // succeed.
+    vi.useFakeTimers()
+    try {
+      const T1 = '2026-10-01T00:00:00.000Z'
+      const T2 = '2026-10-01T12:00:00.000Z'
+      const known = { ...repository, id: '101', fullName: 'octo/garden' }
+      const fresh = { ...repository, id: '202', name: 'new-garden', fullName: 'octo/new-garden' }
+      mocks.settings = {
+        trackedRepositoryIds: ['101', '202'],
+        excludedRepositoryIds: [],
+        autoIncludePersonal: false,
+        autoIncludeOrganizations: [],
+        baselineByRepositoryId: { '101': '2026-09-01T00:00:00.000Z' },
+        lastSyncedAt: null,
+      }
+      mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: [known, fresh] })
+      mocks.fetchEvents.mockResolvedValueOnce({
+        login: 'octo',
+        status: 'partial',
+        truncated: true,
+        continuation: { '101': { page: 2 } },
+        input: { sourceId: '9001', companionId: 'octo', commits: [] },
+      })
+      vi.setSystemTime(new Date(T1))
+      const first = await readSyncBody(await POST(request()))
+
+      vi.setSystemTime(new Date(T2))
+      mocks.fetchEvents.mockResolvedValueOnce({
+        login: 'octo',
+        status: 'ok',
+        truncated: false,
+        input: { sourceId: '9001', companionId: 'octo', commits: [] },
+      })
+      const second = await readSyncBody(await POST(request({}, 'pikachu-family', first.continuation as string)))
+      const checkpoint = verifyGithubSyncCheckpoint(second.checkpoint as string, 9001)
+
+      expect(checkpoint?.nextBaselineByRepositoryId['202']).toBe(T1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.fails('registers a repository beyond the checkpoint baseline capacity on a later sync', async () => {
+    // Red-team: the checkpoint's baseline map is capped at
+    // MAX_CHECKPOINT_BASELINE_ENTRIES, and the sync budget is the remaining
+    // capacity. Once the map holds the cap, a surplus repository can never be
+    // registered, so it is never read and can never award activity -- while
+    // `skippedRepositoryCount` makes the panel promise "will be covered by
+    // later syncs". Desired behavior: the surplus is eventually registered, or
+    // the response/UI says plainly that it cannot be covered.
+    const many = Array.from({ length: MAX_CHECKPOINT_BASELINE_ENTRIES + 1 }, (_, index) => ({
+      ...repository,
+      id: String(5000 + index),
+      name: `cap-${index}`,
+      fullName: `octo/cap-${index}`,
+    }))
+    const surplusId = many[many.length - 1]!.id
+    mocks.settings = {
+      trackedRepositoryIds: many.map((entry) => entry.id),
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+      baselineByRepositoryId: Object.fromEntries(
+        many.slice(0, MAX_CHECKPOINT_BASELINE_ENTRIES).map((entry) => [entry.id, '2026-01-01T00:00:00.000Z']),
+      ),
+      lastSyncedAt: null,
+    }
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: many })
+    mocks.fetchEvents.mockResolvedValue({
+      login: 'octo',
+      status: 'ok',
+      truncated: false,
+      input: { sourceId: '9001', companionId: 'octo' },
+    })
+
+    const seen = new Set<string>()
+    for (let round = 0; round < 2; round += 1) {
+      const body = await readSyncBody(await POST(request()))
+      for (const id of body.newBaselineRepositoryIds as string[]) seen.add(id)
+      const checkpoint = verifyGithubSyncCheckpoint(body.checkpoint as string, 9001)
+      mocks.settings.baselineByRepositoryId = { ...(checkpoint?.nextBaselineByRepositoryId ?? {}) }
+    }
+
+    expect(seen.has(surplusId)).toBe(true)
+  })
+
+  it.fails('resumes a four-repository read whose deferred check backlog overflows the continuation budget', async () => {
+    // Red-team: a repository with more merged pull requests than
+    // MAX_CHECK_RUN_COMMITS (15) carries the remainder in `pendingCheckShas`
+    // across resume rounds. Four repositories with a full pull-request history
+    // (2 SHAs per PR, 165 deferred each) encode a continuation far past
+    // MAX_CONTINUATION_TOKEN_LENGTH (12 KiB, chosen to fit the 16 KiB sync
+    // body; measured: 1 repository fits at 10.7 KiB, 4 throw).
+    // `issueGithubSyncContinuation` throws inside `buildBody(true)`, the stream
+    // answers `{ type: 'error', status: 500 }`, and no progress is possible:
+    // every retry re-reads the same backlog and dies in the same place, because
+    // the failing page-ceiling retry path is the only advertised recovery.
+    // Desired behavior: a resume that fits the transport budget, e.g. by
+    // trimming the least valuable cursors and re-reading those repositories.
+    const repos = Array.from({ length: MAX_SYNC_REPOSITORIES }, (_, index) => ({
+      ...repository,
+      id: String(6100 + index),
+      name: `busy-${index}`,
+      fullName: `octo/busy-${index}`,
+    }))
+    mocks.settings = {
+      trackedRepositoryIds: repos.map((entry) => entry.id),
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+      baselineByRepositoryId: Object.fromEntries(repos.map((entry) => [entry.id, '2026-01-01T00:00:00.000Z'])),
+      lastSyncedAt: null,
+    }
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: repos })
+    const cursors = Object.fromEntries(repos.map((entry, repoIndex) => [entry.id, {
+      pullRequestsPage: 4,
+      pendingCheckShas: Array.from({ length: 165 }, (_, shaIndex) => (
+        String(repoIndex * 1000 + shaIndex).padStart(40, '0')
+      )),
+    }]))
+    mocks.fetchEvents.mockResolvedValue({
+      login: 'octo',
+      status: 'partial',
+      truncated: true,
+      continuation: cursors,
+      input: { sourceId: '9001', companionId: 'octo' },
+    })
+
+    const body = await readSyncBody(await POST(request()))
+
+    expect(body.kind).toBe('partial')
+    expect(typeof body.continuation).toBe('string')
   })
 
   it('does not advance the baseline when receipt issuance fails', async () => {

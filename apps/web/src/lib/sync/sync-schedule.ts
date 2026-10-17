@@ -94,9 +94,12 @@ export const MAX_EVENTS_PER_SYNC = 5_000
  * Bounded from both sides so the numbers can never drift apart: the hourly
  * request budget on one side, and the checkpoint's event capacity divided by
  * the worst-case per-repository event count on the other. Repositories that
- * still need a baseline are read first, and the oldest successful baselines
- * rotate to the front, so a tracked set larger than the window is still
- * covered completely, window by window, without stranding a repository forever.
+ * still need a first baseline no longer occupy this window: `/api/github/sync`
+ * records them in the same checkpoint without a read, up to the checkpoint's
+ * own baseline capacity. The oldest successful baselines rotate to the front,
+ * so a tracked set larger than the window is still covered window by window.
+ * An eligible set larger than that baseline capacity is the exception: the
+ * surplus cannot be registered until capacity frees up.
  */
 export const MAX_SYNC_REPOSITORIES = Math.min(
   Math.floor(SYNC_REQUEST_BUDGET_PER_HOUR / REQUESTS_PER_REPOSITORY_ESTIMATE),

@@ -27,11 +27,18 @@ export interface GithubRepositoryWindow {
 }
 
 /**
- * Select the same bounded window as `/api/github/sync`. Repositories without a
- * baseline go first because they cannot award history until their first read is
- * committed; after that, the oldest successful baselines rotate forward so a
- * large account is not pinned to the first page forever. The repair path uses
- * this ordering too, so a recovery request never becomes an unbounded scan.
+ * Select the bounded read window used by the receipt-repair path.
+ *
+ * Repair reads without baselines or a continuation, so it keeps the original
+ * ordering: repositories without a baseline go first because their first read
+ * records the baseline, then the oldest successful baselines rotate forward so
+ * a large account is not pinned to the first page forever. A recovery request
+ * never becomes an unbounded scan.
+ *
+ * `/api/github/sync` no longer shares this policy: it registers every
+ * repository awaiting a first baseline in one checkpoint without a read
+ * ({@link selectGithubSyncRepositories}) and rotates the read window across the
+ * oldest recorded baselines.
  */
 export function selectGithubRepositoryWindow(
   repositories: readonly GithubRepository[],

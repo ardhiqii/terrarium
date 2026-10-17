@@ -265,6 +265,14 @@ still re-fetches the pages a pending issue-timeline or check-run cursor pins
 several continuation rounds before it completes; XP is awarded only for events
 that were not already in the ledger. A cheaper resume -- persisted
 per-repository source cursors or a cached cross-reference map -- is open work.
+Three further limits are encoded as expected-fail specs in the sync route
+tests: a fresh repository first seen by a partial attempt is re-registered on
+resume, so activity between the two attempts is never read (the continuation
+must carry first-seen timestamps); an eligible set larger than the checkpoint's
+500 baseline entries strands the surplus while the summary promises later
+coverage (needs a capacity policy or honest wording); and a legal-but-large
+continuation (four busy repositories) exceeds the 12 KiB token budget, so the
+retry dead-ends at 500 (needs cursor trimming or a server-side store).
 Automatic repository pagination beyond the collection cap, and broader
 hosted-path/profile migration work, remain open.
 

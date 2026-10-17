@@ -398,7 +398,14 @@ export async function POST(request: NextRequest): Promise<Response> {
         repositoryCount: eligible.length,
         eligibleRepositoryCount: eligibleCandidates.length,
         skippedRepositoryCount,
-        newBaselineRepositoryIds,
+        /**
+         * Only a committed checkpoint records a baseline. A partial result
+         * carries no checkpoint, keeps the saved settings untouched, and will
+         * register the same first-use repositories again on the resume, so
+         * reporting them here made the panel say "N repositories registered"
+         * about a write that never happened.
+         */
+        newBaselineRepositoryIds: partial ? [] : newBaselineRepositoryIds,
         lastSyncedAt: now,
         syncStatus: fetchStatus,
         /**
