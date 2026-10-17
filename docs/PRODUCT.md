@@ -103,9 +103,11 @@ that has never run waits one full interval after the page opens rather than
 syncing on load; **Sync GitHub now** is always available. Each sync reads a
 window of repositories derived from GitHub's hourly request budget *and* from
 the deferred checkpoint's event capacity (4 repositories at the current
-worst-case bounds), so the scheduler does not assume a cheap short-history read, and repositories that
-still need a baseline are read first so a larger tracked set is covered window
-by window. A cycle that would overdraw the account's hourly GitHub request
+worst-case bounds), so the scheduler does not assume a cheap short-history read.
+Repositories still awaiting their first baseline are registered in the same
+sync without occupying that window -- a first-use baseline costs no read -- so a
+fresh account is registered in one sync and later syncs rotate through the
+oldest baselines. A cycle that would overdraw the account's hourly GitHub request
 budget is skipped and *says so*, then resumes automatically when the rolling
 hour window clears. Terrarium budgets the requests it actually spent, and folds
 in what another open tab recorded rather than overwriting it. A bounded
@@ -582,7 +584,8 @@ but it must not decide whether XP is deserved.
 
 Encounters are the main source of dopamine after the first companion.
 
-1. Activity fills a hidden **encounter progress** meter.
+1. Activity fills a hidden **encounter progress** meter, surfaced as a small
+   captioned bar whose one-line explanation keeps it separate from XP.
 2. When a threshold is reached, the app performs one deterministic random draw.
 3. The result is persisted before it is shown, so refreshes cannot reroll it.
 4. The draw is weighted by simple evidence from the recent work: languages,
