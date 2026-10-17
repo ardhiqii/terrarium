@@ -21,7 +21,7 @@ export const MAX_CHECKPOINT_EVENT_IDS = MAX_EVENTS_PER_SYNC
  * listing walks up to five pages of one hundred, so a whole approved account
  * fits inside this.
  */
-const MAX_CHECKPOINT_BASELINE_ENTRIES = 500
+export const MAX_CHECKPOINT_BASELINE_ENTRIES = 500
 /**
  * Upper bound on a signed checkpoint token.
  *
