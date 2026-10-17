@@ -163,10 +163,11 @@ without turning the collection into a dashboard.
 
 ### 3.2 Encounters
 
-Encounters are earned from a separate, quiet progress meter. Activity fills it;
-reaching a threshold produces one persisted random result. The result is weighted
-by simple work evidence such as languages, file types, note tags, links, and
-activity shape. It is not selected by an AI judge.
+Encounters are earned from a hidden progress track. Activity fills it; reaching
+a threshold produces one persisted random result. Nothing displays the fill — no
+bar, number, or countdown — because a discovery is meant to be a surprise. The
+result is weighted by simple work evidence such as languages, file types, note
+tags, links, and activity shape. It is not selected by an AI judge.
 
 Duplicates are valid collection results. They become family-specific Essence,
 which gives duplicates a useful destination without requiring a user to complete

@@ -13,6 +13,7 @@ import { productEventId } from '../sync/product-event-id'
 import {
   canStartReceiptRepair,
   projectPartialProductSnapshot,
+  receiptRecoveryPresentation,
 } from './github-repair-projection'
 
 const now = '2026-09-24T10:00:00.000Z'
@@ -132,5 +133,74 @@ describe('partial GitHub receipt-repair projection', () => {
   it('returns the original snapshot when there is no blocked event', () => {
     const snapshot = snapshotWithRewards()
     expect(projectPartialProductSnapshot(snapshot, new Set())).toBe(snapshot)
+  })
+})
+
+describe('receipt recovery presentation', () => {
+  it('names a bounded catch-up as catch-up, not a receipt problem', () => {
+    const presentation = receiptRecoveryPresentation({
+      failures: [],
+      blockedEventIds: [],
+      continuation: 'signed-cursor',
+      checkpoint: null,
+    })
+
+    expect(presentation.mode).toBe('catch-up')
+    expect(presentation.heading).toBe('GitHub catch-up in progress')
+    expect(presentation.action).toBe('sync')
+    expect(presentation.actionLabel).toBe('Continue sync')
+    expect(presentation.detail).toContain('nothing is blocked')
+  })
+
+  it('keeps the repair copy when activity proof actually blocked the backup', () => {
+    const presentation = receiptRecoveryPresentation({
+      failures: [{ eventId: 'event-12345678-abcdef12', reason: 'receipt-rejected', payloadDigest: null }],
+      blockedEventIds: [],
+      continuation: null,
+      checkpoint: 'signed-checkpoint',
+    })
+
+    expect(presentation.mode).toBe('repair')
+    expect(presentation.heading).toBe('Activity proof repair is ready')
+    expect(presentation.action).toBe('repair')
+    expect(presentation.detail).toContain('1 activity proof could not be verified')
+  })
+
+  it('keeps repair reachable when a pending cursor failed its own upload', () => {
+    const presentation = receiptRecoveryPresentation({
+      failures: [{ eventId: 'event-12345678-abcdef12', reason: 'receipt-rejected', payloadDigest: null }],
+      blockedEventIds: [],
+      continuation: 'signed-cursor',
+      checkpoint: 'signed-checkpoint',
+    })
+
+    expect(presentation.mode).toBe('repair')
+    expect(presentation.action).toBe('repair')
+  })
+
+  it('prefers the blocked overlay over the catch-up copy', () => {
+    const presentation = receiptRecoveryPresentation({
+      failures: [],
+      blockedEventIds: ['event-12345678-abcdef12', 'event-87654321-fedcba98'],
+      continuation: 'signed-cursor',
+      checkpoint: null,
+    })
+
+    expect(presentation.mode).toBe('blocked')
+    expect(presentation.action).toBe('repair')
+    expect(presentation.detail).toContain('2 events')
+  })
+
+  it('offers a retry when nothing was blocked and no cursor is pending', () => {
+    const presentation = receiptRecoveryPresentation({
+      failures: [],
+      blockedEventIds: [],
+      continuation: null,
+      checkpoint: null,
+    })
+
+    expect(presentation.mode).toBe('retry')
+    expect(presentation.action).toBe('repair')
+    expect(presentation.actionLabel).toBe('Retry account backup')
   })
 })

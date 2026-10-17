@@ -284,13 +284,20 @@ Sync never prunes a baseline from a listing it could not refresh. A stale
 listing could be missing a repository that is only temporarily unreadable, and
 a truncated listing is missing every repository past its page ceiling; treating
 either as deletion would drop a baseline and let the disconnected window be
-backfilled as new work. Pruning runs only from a complete listing, and saving
-settings applies the same rule: a tracked repository absent from a stale or
-truncated listing is preserved instead of silently unselected. The sync still
-reads activity from the list it has, because a temporarily unreadable
-repository contributes no activity anyway. If an explicitly tracked ID falls
-outside the bounded listing, the server verifies it by stable ID before
-selecting it; automatic inclusion remains bounded to discovered pages.
+backfilled as new work. Pruning runs only from a complete listing. Saving
+settings goes further and never releases a tracked ID automatically, from any
+listing: GitHub answers `404` for temporary access loss (an expired
+organization grant, SSO re-approval pending) as well as for deletion, and the
+picker cannot offer a repository back while it is off screen, so a drop
+silently unselected a source the user chose — reported as "select all gets
+unselected by itself after a sync". A repository the listing does not contain,
+or one that is archived or unreadable, contributes no activity anyway because
+`repositoryIsTracked` gates it. The picker's **Select all available** is
+additive for the same reason: it merges the visible repositories into the
+stored selection instead of replacing it, so a short listing read cannot
+release everything it did not show. If an explicitly tracked ID falls outside
+the bounded listing, the server verifies it by stable ID before selecting it;
+automatic inclusion remains bounded to discovered pages.
 
 The browser copy carries its GitHub account ID. A copy stored for another
 account is discarded rather than painted, the copy is cleared when a session
@@ -380,7 +387,9 @@ sync path.
 
 One companion would become repetitive, so the collection loop matters:
 
-1. Qualifying activity fills a hidden encounter meter.
+1. Qualifying activity fills a hidden encounter meter. Hidden is literal: no
+   bar, number, or countdown is ever displayed, so a discovery stays a
+   surprise. The collection explains the mechanic without showing the fill.
 2. Reaching a threshold creates one encounter.
 3. The result is a persisted random draw, weighted by evidence such as recent
    languages, file types, note tags, links, and activity shape.
@@ -503,6 +512,25 @@ point. A blocked repair can upload a valid projection without a checkpoint while
 retaining the full local ledger and encounter state for a later retry. If hosted
 storage is unavailable, the API returns an explicit retryable condition rather
 than presenting an empty account or overwriting local recovery data.
+
+## Cloud progress uses save-file language
+
+The browser store is the local save; the account snapshot is the cloud backup.
+User-facing copy follows that mapping instead of internal sync vocabulary:
+"checkpoint" and "receipt" are never shown, and blocked verified activity is
+explained as **activity proof** that could not be verified. The recovery record
+is presented as an interrupted backup with one honest action, not as a debugging
+surface.
+
+The GitHub panel keeps an always-visible status row — Connection, Tracking,
+Account backup — where the backup card shows how long ago the account store last
+accepted a write and states plainly that automatic sync runs only while the page
+is open (there is no server cron). When a write needs attention, the card points
+to the recovery note, and the note distinguishes four honest conditions with the
+action that resolves each one: blocked activity (repair and retry), repairable
+activity proof (repair and retry), a bounded GitHub catch-up (continue sync),
+and an uncommitted backup (retry). A condition cannot be dismissed into a silent
+failure; the recovery record survives exactly because its write was interrupted.
 
 ## Hosted sync storage
 

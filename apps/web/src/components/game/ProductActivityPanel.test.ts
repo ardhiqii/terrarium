@@ -3,20 +3,24 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
+import { createEncounterState, type EncounterState } from '@/lib/game/encounters'
 import { createGuestProfile } from '@/lib/game/guest-profile'
 import { createProductState } from '@/lib/game/product-state'
 import { ProductActivityPanel } from './ProductActivityPanel'
 
 const NOW = '2026-01-01T00:00:00.000Z'
 
-function guestState(starterCompanionId: string) {
+function guestState(
+  starterCompanionId: string,
+  encounters: EncounterState = createEncounterState(),
+) {
   const profile = createGuestProfile({
     guestId: 'guest-test',
     starterCompanionId,
     catalog: PROTOTYPE_COMPANION_CATALOG,
     now: NOW,
   })
-  return createProductState(profile, { events: [] }, undefined, PROTOTYPE_COMPANION_CATALOG)
+  return createProductState(profile, { events: [] }, encounters, PROTOTYPE_COMPANION_CATALOG)
 }
 
 describe('ProductActivityPanel', () => {
@@ -41,21 +45,38 @@ describe('ProductActivityPanel', () => {
     expect(markup).toContain('data-companion-id="grass-family"')
   })
 
-  it('captions the encounter meter so it is not read as a second XP bar', () => {
+  it('never renders the encounter meter, even when the meter is charged', () => {
+    // A charged meter used to render as a second bar with the caption
+    // "55 / 100" and the promise "at 100 a new companion is discovered"
+    // (see the removed block in the parent commit). Assert with a non-zero
+    // meter so the test cannot pass merely because a zeroed meter renders
+    // nothing: the mechanic still runs on this state, only the presentation
+    // is gone, and XP must stay the one bar on the panel.
+    const state = guestState('pikachu-family', {
+      ...createEncounterState(),
+      meter: 55,
+      totalProgress: 55,
+    })
     const markup = renderToStaticMarkup(
       React.createElement(ProductActivityPanel, {
-        state: guestState('pikachu-family'),
+        state,
         sourceLabel: 'Active companion',
       }),
     )
 
-    // REGRESSION (UX): the meter sat under the evolution bar with no wording,
-    // and read as an unexplained second progress bar. The caption names the
-    // separate track: discovering new companions, with duplicates becoming
-    // family Essence rather than XP.
-    expect(markup).toContain('Encounter progress')
-    expect(markup).toContain('at 100 a new companion is discovered')
-    expect(markup).toContain('Duplicates award family Essence instead of XP')
+    expect(state.encounters.meter).toBe(55)
+
+    // Exactly one bar, and it is the XP bar. A reintroduced encounter bar
+    // fails here even if it is unlabelled; the former labels and captions
+    // fail the text assertions below.
+    expect(markup.match(/role="progressbar"/g)).toHaveLength(1)
+    expect(markup).toContain('aria-label="Progress to next form"')
+    expect(markup).not.toContain('aria-label="Encounter')
+    expect(markup).not.toContain('55 / 100')
+    expect(markup).not.toContain('55')
+    expect(markup).not.toContain('Encounter')
+    expect(markup).not.toContain('Fills with new activity')
+    expect(markup).not.toContain('a new companion is discovered')
   })
 
   it('keeps the slot free of CSS fills as well', () => {

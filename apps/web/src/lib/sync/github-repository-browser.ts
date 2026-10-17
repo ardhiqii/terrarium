@@ -17,3 +17,28 @@ export function filterGithubRepositories(
     return matchesQuery && matchesScope
   })
 }
+
+/** Repository IDs this listing can offer for tracking right now. */
+export function selectableRepositoryIds(
+  repositories: readonly GithubRepository[],
+): string[] {
+  return repositories
+    .filter((repository) => repository.canRead && !repository.archived)
+    .map((repository) => repository.id)
+}
+
+/**
+ * Add every currently selectable repository to an existing tracked selection
+ * instead of replacing it.
+ *
+ * Select-all must never release a tracked repository this listing cannot show
+ * at the moment -- a short provider page, an organization grant mid-refresh,
+ * or a browser copy that lost rows. The stored ID survives, and the selection
+ * heals itself when the listing returns in full.
+ */
+export function mergeSelectableTrackedIds(
+  current: readonly string[],
+  repositories: readonly GithubRepository[],
+): string[] {
+  return [...new Set([...current, ...selectableRepositoryIds(repositories)])]
+}

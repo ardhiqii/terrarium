@@ -1,6 +1,5 @@
 'use client'
 
-import { DEFAULT_ENCOUNTER_CONFIG } from '@/lib/game/encounters'
 import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
 import { resolveCompanionAsset } from '@/lib/game/companion-asset-resolver'
 import type { ProductState } from '@/lib/game/product-state'
@@ -39,8 +38,6 @@ export function ProductActivityPanel({
   const activeCompanion = state.activeCompanion
   const progression = activeCompanion?.progression ?? null
   const xpProgress = percentage(progression?.progress ?? 0)
-  const encounterThreshold = DEFAULT_ENCOUNTER_CONFIG.threshold
-  const encounterProgress = percentage(state.encounters.meter / encounterThreshold)
   const normalizedSourceLabel = sourceLabel?.trim() || undefined
   const hasLocalActivity = state.ledger.events.some((event) => event.provenance === 'local')
   const hasVerifiedActivity = state.ledger.events.some(
@@ -67,33 +64,28 @@ export function ProductActivityPanel({
         border: '1px solid var(--rule)',
       }}
     >
-      <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
-        <div className="flex items-center gap-4">
-          {/* Alignment slot only: deliberately no fill, so the sprite reads
-              bare against whatever surface renders this panel (DESIGN.md 2.3). */}
-          {asset && (
-            <div data-companion-slot className="flex h-20 w-20 shrink-0 items-center justify-center">
-              <CompanionSprite descriptor={asset} scale={2} alt={`${companionName} companion`} />
-            </div>
-          )}
-          <div>
-            <p
-              className="font-data text-xs uppercase tracking-widest"
-              style={{ color: 'var(--ink-muted)', letterSpacing: '0.15em' }}
-            >
-              {normalizedSourceLabel ?? 'Product activity'}
-            </p>
-            <h2
-              id="product-activity-title"
-              className="font-ui mt-1 text-2xl font-semibold tracking-tighter leading-[1.05]"
-            >
-              {companionName}
-            </h2>
+      <div className="flex items-center gap-4">
+        {/* Alignment slot only: deliberately no fill, so the sprite reads
+            bare against whatever surface renders this panel (DESIGN.md 2.3). */}
+        {asset && (
+          <div data-companion-slot className="flex h-20 w-20 shrink-0 items-center justify-center">
+            <CompanionSprite descriptor={asset} scale={2} alt={`${companionName} companion`} />
           </div>
+        )}
+        <div>
+          <p
+            className="font-data text-xs uppercase tracking-widest"
+            style={{ color: 'var(--ink-muted)', letterSpacing: '0.15em' }}
+          >
+            {normalizedSourceLabel ?? 'Product activity'}
+          </p>
+          <h2
+            id="product-activity-title"
+            className="font-ui mt-1 text-2xl font-semibold tracking-tighter leading-[1.05]"
+          >
+            {companionName}
+          </h2>
         </div>
-        <p className="font-data text-xs sm:text-right" style={{ color: 'var(--ink-muted)' }}>
-          Active companion
-        </p>
       </div>
 
       <dl className="mt-6 grid gap-4 sm:grid-cols-3">
@@ -144,39 +136,9 @@ export function ProductActivityPanel({
         >
           <div className="h-full" style={{ width: `${xpProgress}%`, background: 'var(--accent)' }} />
         </div>
-        <p className="font-data mt-1.5 text-right text-xs" style={{ color: 'var(--ink-muted)' }}>
-          {xpProgress}%
-        </p>
       </div>
 
-      <div className="mt-5 border-t pt-4" style={{ borderColor: 'var(--rule)' }}>
-        <div className="font-data flex items-baseline justify-between gap-3 text-xs">
-          <span style={{ color: 'var(--ink-muted)' }}>Encounter progress</span>
-          <span style={{ color: 'var(--ink-muted)' }}>
-            {state.encounters.meter} / {encounterThreshold}
-          </span>
-        </div>
-        <div
-          className="mt-2 h-1.5 w-full"
-          style={{ background: 'var(--rule)' }}
-          role="progressbar"
-          aria-label="Encounter progress"
-          aria-valuenow={encounterProgress}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuetext={`${encounterProgress}%`}
-        >
-          <div
-            className="h-full"
-            style={{ width: `${encounterProgress}%`, background: 'var(--accent)' }}
-          />
-        </div>
-        <p className="font-prose mt-1.5 text-xs leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-          Fills with new activity; at 100 a new companion is discovered. Duplicates award family Essence instead of XP.
-        </p>
-      </div>
-
-      <p className="font-prose mt-5 text-xs leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
+      <p className="font-prose mt-6 border-t pt-4 text-xs leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
         {evidenceWording(normalizedSourceLabel, hasLocalActivity, hasVerifiedActivity)}
       </p>
     </section>
