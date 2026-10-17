@@ -172,6 +172,13 @@ count eligible activity since the last checkpoint, but daily and session caps
 use the activity date, not the sync date. Catch-up is summarized as one return
 update rather than replaying every reaction. Activity before approval or the
 initial baseline never awards retroactive XP; unavailable history is not guessed.
+An account's first contact registers every eligible repository in one sync. A
+first-use baseline needs no historical read, so it is not bounded by the
+four-repository read window; one signed checkpoint records all of them, up to the
+checkpoint's own baseline capacity. This replaced the earlier walk of four
+repositories per sync, which made a fresh account spend a dozen or more silent
+syncs before any activity could be read or awarded -- and made a working sync
+look broken while it did so.
 
 A truncated bounded read is an incomplete read, not a successful checkpoint.
 Every activity list is walked newest-first, but an existing checkpoint may sit
@@ -180,7 +187,12 @@ out of the account. The adapter reports `truncated`, while the sync route fails
 closed as a retryable `partial` result and issues no baseline or signed
 checkpoint. The user can retry or narrow the tracked sources. A genuinely failed
 request keeps the same no-advance behavior: activity that may be newer than the
-checkpoint must be retried instead of being skipped permanently.
+checkpoint must be retried instead of being skipped permanently. A page that
+could not be read is itself truncation, not completion: the cursor stays on the
+page that failed, so the retry resumes there instead of re-reading every earlier
+page, and a scan is never reported complete over a page it did not read.
+Failed-page retries resume through the same signed continuation a page-ceiling
+truncation uses, and no baseline or checkpoint advances for either.
 
 GitHub's `403` is reported as a rate limit, not as revoked access. GitHub
 returns `403` both for a real permission problem and for an exhausted rate
@@ -453,9 +465,11 @@ performs; there is no separate "scan first" step for GitHub. A cadence that has
 never recorded an attempt waits one full interval after the page opens instead
 of firing an unsolicited sync on load. A cycle reads a window of repositories
 derived from both sides of the same limit -- GitHub's hourly request budget and
-the deferred checkpoint's event capacity -- and the planner budgets the
-requests each cycle actually reported, pausing a cycle that would push the
-rolling hour past 4,000 of GitHub's 5,000 requests and telling the user why
+the deferred checkpoint's event capacity; repositories still awaiting their
+first baseline are registered by the same checkpoint without occupying that
+window -- and the planner budgets the requests each cycle actually reported,
+pausing a cycle that would push the rolling hour past 4,000 of GitHub's 5,000
+requests and telling the user why
 instead of failing or silently skipping. Each open tab folds its recorded spend
 into the shared browser record, so two tabs do not erase each other. The local
 note cloud-write schedule (scan first, skip the write when no relevant derived

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
-import { MAX_CHECKPOINT_EVENT_IDS, verifyGithubSyncCheckpoint } from '@/lib/sync/github-sync-checkpoint'
+import { MAX_CHECKPOINT_BASELINE_ENTRIES, MAX_CHECKPOINT_EVENT_IDS, verifyGithubSyncCheckpoint } from '@/lib/sync/github-sync-checkpoint'
 import { verifyGithubSyncContinuation } from '@/lib/sync/github-sync-continuation'
 import { MAX_SYNC_REPOSITORIES } from '@/lib/sync/sync-schedule'
 import { normalizeGitHubEvents } from '@/lib/game/github-events'
@@ -95,6 +95,9 @@ async function readSyncEvents(response: Response): Promise<Array<Record<string, 
 /** Extracts the final result payload from a streamed sync response. */
 async function readSyncBody(response: Response): Promise<Record<string, unknown>> {
   const events = await readSyncEvents(response)
+  // A sync that only registers first-use baselines reads nothing, so it has no
+  // stream to maintain and answers with an ordinary JSON body.
+  if (events.length === 1 && events[0]?.type === undefined) return events[0]
   const result = events.find((event) => event.type === 'result')
   if (!result) {
     const failure = events.find((event) => event.type === 'error')
@@ -411,6 +414,209 @@ describe('POST /api/github/sync', () => {
     expect(mocks.settings.baselineByRepositoryId).toEqual({ '101': '2026-09-01T00:00:00.000Z' })
   })
 
+  it('resumes a read whose pages failed instead of ending the whole sync', async () => {
+    // A page that could not be read is truncation, not completion: the fetcher
+    // keeps its cursor on the page that failed, so the retry resumes there
+    // instead of failing the whole sync and re-reading everything from scratch.
+    mocks.settings.baselineByRepositoryId = { '101': '2026-09-01T00:00:00.000Z' }
+    mocks.fetchEvents.mockResolvedValue({
+      login: 'octo',
+      status: 'partial',
+      truncated: true,
+      continuation: { '101': { page: 2 } },
+      input: { sourceId: '9001', companionId: 'octo', commits: [] },
+    })
+
+    const body = await readSyncBody(await POST(request()))
+
+    expect(body.kind).toBe('partial')
+    expect(body.checkpoint).toBeNull()
+    const token = verifyGithubSyncContinuation(body.continuation as string, 9001)
+    expect(token?.cursors).toEqual({ '101': { page: 2 } })
+    expect(mocks.settings.baselineByRepositoryId).toEqual({ '101': '2026-09-01T00:00:00.000Z' })
+  })
+
+  it('reports no baseline registrations on a partial result because nothing was committed', async () => {
+    // Red-team: the baseline map only reaches the account through the
+    // checkpoint that follows a complete read. A partial result carries
+    // `checkpoint: null` and saves no settings, so the registration made in
+    // memory at the top of the read is not real. Reporting it let the panel
+    // claim "N repositories registered" about a write that never happened; the
+    // resume registers the same repositories again, and only that sync's
+    // checkpoint makes them real.
+    const known = { ...repository, id: '101', fullName: 'octo/garden' }
+    const fresh = { ...repository, id: '202', name: 'new-garden', fullName: 'octo/new-garden' }
+    mocks.settings = {
+      trackedRepositoryIds: ['101', '202'],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+      baselineByRepositoryId: { '101': '2026-09-01T00:00:00.000Z' },
+      lastSyncedAt: null,
+    }
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: [known, fresh] })
+    mocks.fetchEvents.mockResolvedValue({
+      login: 'octo',
+      status: 'partial',
+      truncated: true,
+      continuation: { '101': { page: 2 } },
+      input: { sourceId: '9001', companionId: 'octo', commits: [] },
+    })
+
+    const body = await readSyncBody(await POST(request()))
+
+    expect(body.kind).toBe('partial')
+    expect(body.checkpoint).toBeNull()
+    expect(typeof body.continuation).toBe('string')
+    // The read window held only the baselined repository, and the fresh one
+    // was registered in memory only: nothing may be reported as committed.
+    expect(body.repositoryCount).toBe(1)
+    expect(mocks.settings.baselineByRepositoryId).toEqual({ '101': '2026-09-01T00:00:00.000Z' })
+    expect(body.newBaselineRepositoryIds).toEqual([])
+  })
+
+  it.fails('commits the registration time of the attempt that first saw a new repository', async () => {
+    // Red-team: a partial attempt registers a first-use repository in memory at
+    // T1 but commits nothing. The resume registers it again at T2 and commits
+    // T2 as its baseline, so activity in that repository between T1 and T2 is
+    // never read by any sync and can never award XP. The continuation carries
+    // cursors, not the first-registration timestamps, so the hole survives a
+    // reload. Desired behavior: the committed baseline is the moment the
+    // account first saw the repository, not the moment a retry happened to
+    // succeed.
+    vi.useFakeTimers()
+    try {
+      const T1 = '2026-10-01T00:00:00.000Z'
+      const T2 = '2026-10-01T12:00:00.000Z'
+      const known = { ...repository, id: '101', fullName: 'octo/garden' }
+      const fresh = { ...repository, id: '202', name: 'new-garden', fullName: 'octo/new-garden' }
+      mocks.settings = {
+        trackedRepositoryIds: ['101', '202'],
+        excludedRepositoryIds: [],
+        autoIncludePersonal: false,
+        autoIncludeOrganizations: [],
+        baselineByRepositoryId: { '101': '2026-09-01T00:00:00.000Z' },
+        lastSyncedAt: null,
+      }
+      mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: [known, fresh] })
+      mocks.fetchEvents.mockResolvedValueOnce({
+        login: 'octo',
+        status: 'partial',
+        truncated: true,
+        continuation: { '101': { page: 2 } },
+        input: { sourceId: '9001', companionId: 'octo', commits: [] },
+      })
+      vi.setSystemTime(new Date(T1))
+      const first = await readSyncBody(await POST(request()))
+
+      vi.setSystemTime(new Date(T2))
+      mocks.fetchEvents.mockResolvedValueOnce({
+        login: 'octo',
+        status: 'ok',
+        truncated: false,
+        input: { sourceId: '9001', companionId: 'octo', commits: [] },
+      })
+      const second = await readSyncBody(await POST(request({}, 'pikachu-family', first.continuation as string)))
+      const checkpoint = verifyGithubSyncCheckpoint(second.checkpoint as string, 9001)
+
+      expect(checkpoint?.nextBaselineByRepositoryId['202']).toBe(T1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.fails('registers a repository beyond the checkpoint baseline capacity on a later sync', async () => {
+    // Red-team: the checkpoint's baseline map is capped at
+    // MAX_CHECKPOINT_BASELINE_ENTRIES, and the sync budget is the remaining
+    // capacity. Once the map holds the cap, a surplus repository can never be
+    // registered, so it is never read and can never award activity -- while
+    // `skippedRepositoryCount` makes the panel promise "will be covered by
+    // later syncs". Desired behavior: the surplus is eventually registered, or
+    // the response/UI says plainly that it cannot be covered.
+    const many = Array.from({ length: MAX_CHECKPOINT_BASELINE_ENTRIES + 1 }, (_, index) => ({
+      ...repository,
+      id: String(5000 + index),
+      name: `cap-${index}`,
+      fullName: `octo/cap-${index}`,
+    }))
+    const surplusId = many[many.length - 1]!.id
+    mocks.settings = {
+      trackedRepositoryIds: many.map((entry) => entry.id),
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+      baselineByRepositoryId: Object.fromEntries(
+        many.slice(0, MAX_CHECKPOINT_BASELINE_ENTRIES).map((entry) => [entry.id, '2026-01-01T00:00:00.000Z']),
+      ),
+      lastSyncedAt: null,
+    }
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: many })
+    mocks.fetchEvents.mockResolvedValue({
+      login: 'octo',
+      status: 'ok',
+      truncated: false,
+      input: { sourceId: '9001', companionId: 'octo' },
+    })
+
+    const seen = new Set<string>()
+    for (let round = 0; round < 2; round += 1) {
+      const body = await readSyncBody(await POST(request()))
+      for (const id of body.newBaselineRepositoryIds as string[]) seen.add(id)
+      const checkpoint = verifyGithubSyncCheckpoint(body.checkpoint as string, 9001)
+      mocks.settings.baselineByRepositoryId = { ...(checkpoint?.nextBaselineByRepositoryId ?? {}) }
+    }
+
+    expect(seen.has(surplusId)).toBe(true)
+  })
+
+  it.fails('resumes a four-repository read whose deferred check backlog overflows the continuation budget', async () => {
+    // Red-team: a repository with more merged pull requests than
+    // MAX_CHECK_RUN_COMMITS (15) carries the remainder in `pendingCheckShas`
+    // across resume rounds. Four repositories with a full pull-request history
+    // (2 SHAs per PR, 165 deferred each) encode a continuation far past
+    // MAX_CONTINUATION_TOKEN_LENGTH (12 KiB, chosen to fit the 16 KiB sync
+    // body; measured: 1 repository fits at 10.7 KiB, 4 throw).
+    // `issueGithubSyncContinuation` throws inside `buildBody(true)`, the stream
+    // answers `{ type: 'error', status: 500 }`, and no progress is possible:
+    // every retry re-reads the same backlog and dies in the same place, because
+    // the failing page-ceiling retry path is the only advertised recovery.
+    // Desired behavior: a resume that fits the transport budget, e.g. by
+    // trimming the least valuable cursors and re-reading those repositories.
+    const repos = Array.from({ length: MAX_SYNC_REPOSITORIES }, (_, index) => ({
+      ...repository,
+      id: String(6100 + index),
+      name: `busy-${index}`,
+      fullName: `octo/busy-${index}`,
+    }))
+    mocks.settings = {
+      trackedRepositoryIds: repos.map((entry) => entry.id),
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: [],
+      baselineByRepositoryId: Object.fromEntries(repos.map((entry) => [entry.id, '2026-01-01T00:00:00.000Z'])),
+      lastSyncedAt: null,
+    }
+    mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: repos })
+    const cursors = Object.fromEntries(repos.map((entry, repoIndex) => [entry.id, {
+      pullRequestsPage: 4,
+      pendingCheckShas: Array.from({ length: 165 }, (_, shaIndex) => (
+        String(repoIndex * 1000 + shaIndex).padStart(40, '0')
+      )),
+    }]))
+    mocks.fetchEvents.mockResolvedValue({
+      login: 'octo',
+      status: 'partial',
+      truncated: true,
+      continuation: cursors,
+      input: { sourceId: '9001', companionId: 'octo' },
+    })
+
+    const body = await readSyncBody(await POST(request()))
+
+    expect(body.kind).toBe('partial')
+    expect(typeof body.continuation).toBe('string')
+  })
+
   it('does not advance the baseline when receipt issuance fails', async () => {
     mocks.settings.baselineByRepositoryId = { '101': '2026-01-01T00:00:00.000Z' }
     vi.stubEnv('SESSION_SECRET', '')
@@ -430,7 +636,10 @@ describe('POST /api/github/sync', () => {
 
   it('streams repository progress before the result', async () => {
     // A long sync with no output is indistinguishable from a frozen one, which
-    // is exactly how the user experienced it.
+    // is exactly how the user experienced it. A stream exists for a read
+    // window: repositories waiting for their first baseline are registered
+    // without a read and answer directly.
+    mocks.settings.baselineByRepositoryId = { '101': '2026-01-01T00:00:00.000Z' }
     const response = await POST(request())
     const events = await readSyncEvents(response)
 
@@ -490,13 +699,13 @@ describe('POST /api/github/sync', () => {
     expect((await second.json()).repositoryCount).toBe(0)
   })
 
-  it('reads the derived window and baselines every repository without stranding one', async () => {
+  it('registers every repository without a baseline in one sync instead of stranding any', async () => {
     // REGRESSION: a hard ceiling of 25 repositories stranded 19 of a
     // 44-repository account -- those repositories could never be baselined, so
-    // none of their activity could ever award XP. The window is now derived
-    // (hourly request budget and checkpoint event capacity), which makes it
-    // smaller, but its ordering reads repositories without a baseline first,
-    // so every repository is covered within a few syncs. Nothing is stranded.
+    // none of their activity could ever award XP. The derived window then
+    // walked them four per sync, which still meant eleven silent syncs before a
+    // single read could award anything. A first-use baseline costs no GitHub
+    // read, so one checkpoint registers the whole account now.
     const many = Array.from({ length: 44 }, (_, index) => ({
       ...repository,
       id: String(2000 + index),
@@ -513,23 +722,18 @@ describe('POST /api/github/sync', () => {
     }
     mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: many })
 
-    const baselined = new Set<string>()
-    for (let round = 0; round < 12 && baselined.size < many.length; round += 1) {
-      const events = await readSyncEvents(await POST(request()))
-      const body = events.find((event) => event.type === 'result')?.payload as Record<string, unknown>
+    const response = await POST(request())
+    const body = await response.json()
 
-      expect(events[0]).toMatchObject({ type: 'start', repositoryCount: MAX_SYNC_REPOSITORIES })
-      expect(body.repositoryCount).toBe(MAX_SYNC_REPOSITORIES)
-      expect(body.skippedRepositoryCount).toBe(many.length - MAX_SYNC_REPOSITORIES)
-      const checkpoint = verifyGithubSyncCheckpoint(body.checkpoint as string, 9001)
-      expect(checkpoint).not.toBeNull()
-      for (const id of Object.keys(checkpoint?.nextBaselineByRepositoryId ?? {})) baselined.add(id)
-      // Stand in for the client's product upload, which is what actually
-      // commits the deferred baseline before the next sync runs.
-      mocks.settings.baselineByRepositoryId = { ...(checkpoint?.nextBaselineByRepositoryId ?? {}) }
-    }
-
-    expect(baselined.size).toBe(many.length)
+    expect(response.status).toBe(200)
+    expect(body.kind).toBe('baseline')
+    expect((body.newBaselineRepositoryIds as string[]).length).toBe(many.length)
+    expect(body.repositoryCount).toBe(0)
+    expect(body.skippedRepositoryCount).toBe(0)
+    expect(mocks.fetchEvents).not.toHaveBeenCalled()
+    const checkpoint = verifyGithubSyncCheckpoint(body.checkpoint as string, 9001)
+    expect(checkpoint).not.toBeNull()
+    expect(Object.keys(checkpoint?.nextBaselineByRepositoryId ?? {})).toHaveLength(many.length)
   })
 
   it('rotates completed baseline windows instead of retrying the same repositories', async () => {
@@ -641,10 +845,11 @@ describe('POST /api/github/sync', () => {
     expect(checkpoint?.eventIds.length).toBeLessThanOrEqual(MAX_CHECKPOINT_EVENT_IDS)
   })
 
-  it('reads repositories that still need a baseline before already-baselined ones', async () => {
-    // A repository without a baseline can never award anything, so if the read
-    // window ever truncates, the material it drops must be an already-tracked
-    // repository rather than one still waiting for its baseline.
+  it('keeps a repository waiting for its baseline out of the read window without stranding it', async () => {
+    // A repository without a baseline can never award anything, and it used to
+    // occupy one of the four read slots until its baseline was committed. It is
+    // now registered in the same sync, while the read window only ever holds
+    // repositories that can award.
     const known = { ...repository, id: '101', name: 'garden', fullName: 'octo/garden' }
     const fresh = { ...repository, id: '202', name: 'new-garden', fullName: 'octo/new-garden' }
     mocks.settings = {
@@ -658,10 +863,20 @@ describe('POST /api/github/sync', () => {
     mocks.fetchRepositories.mockResolvedValue({ status: 'ok', truncated: false, repositories: [known, fresh] })
 
     const events = await readSyncEvents(await POST(request()))
+    const body = events.find((event) => event.type === 'result')?.payload as Record<string, unknown>
 
     expect(events[0]).toMatchObject({
       type: 'start',
-      repositoryNames: ['octo/new-garden', 'octo/garden'],
+      repositoryCount: 1,
+      repositoryNames: ['octo/garden'],
+    })
+    expect(mocks.fetchEvents.mock.calls[0]?.[0].repos.map((entry: { id: string }) => entry.id))
+      .toEqual(['101'])
+    expect(body.newBaselineRepositoryIds).toEqual(['202'])
+    const checkpoint = verifyGithubSyncCheckpoint(body.checkpoint as string, 9001)
+    expect(checkpoint?.nextBaselineByRepositoryId).toEqual({
+      '101': expect.any(String),
+      '202': expect.any(String),
     })
   })
 

@@ -104,9 +104,11 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
 - Every tracked repository is reachable. The old ceiling of 25 repositories left
   19 of a 44-repository account permanently unbaselined, so none of their
   activity could ever award XP; the window is now derived from GitHub's hourly
-  request budget and the checkpoint's event capacity, and repositories that
-  still need a baseline are read first, so the whole set is covered a window at
-  a time.
+  request budget and the checkpoint's event capacity. Repositories still
+  awaiting their first baseline are registered by the same checkpoint without
+  occupying that window -- a first-use baseline costs no read -- so a fresh
+  account is registered in one sync instead of a dozen silent ones, and every
+  later sync rotates the read window through the oldest recorded baselines.
 - A large account's sync can commit its baseline again. The signed checkpoint
   rejected more than 500 event IDs at *issuance*, which failed the whole sync
   in-band, and it was delivered in a request header that tens of kilobytes
@@ -115,6 +117,15 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
   window's own worst case (derived, so the route cannot build a list its own
   validator rejects) and it travels with the snapshot in the request body, still
   HMAC-signed, account-bound, and checked against the stored baseline.
+- A page that could not be read is truncation, not completion. Every bounded
+  activity list (pull requests, releases, issues, commit pages, issue
+  timelines, and check-run pages) keeps its retry cursor on the page that
+  failed and reports `truncated`; the sync route answers with a resumable
+  `partial` result and the signed continuation instead of a dead-end error, so
+  a transient failure resumes at the failed page and never advances a baseline.
+  A live end-to-end run against a real 73-repository account walked the whole
+  tracked set to a complete baseline map and credited +45 XP from a real
+  post-baseline push and pull-request merge.
 - The `/github` panel offers the documented automatic-sync cadence (manual,
   5, 15, and 30 minutes; 15 is the default) while the page is open, and budgets
   the GitHub requests each cycle actually reported so a cadence that would
@@ -248,8 +259,22 @@ late in the local evening can land on the previous day for a user east of UTC.
 The sync window is also bounded by page ceilings: up to three newest-first
 pages of each activity list and bounded issue-timeline detail pages are read.
 Existing-checkpoint reads report a full ceiling as truncation and fail closed
-rather than claiming a complete catch-up. Automatic repository pagination beyond the
-collection cap, and broader hosted-path/profile migration work, remain open.
+rather than claiming a complete catch-up. Catching up a long-unread window
+still re-fetches the pages a pending issue-timeline or check-run cursor pins
+(the pull-request pages they cross-reference), so a two-month backlog can take
+several continuation rounds before it completes; XP is awarded only for events
+that were not already in the ledger. A cheaper resume -- persisted
+per-repository source cursors or a cached cross-reference map -- is open work.
+Three further limits are encoded as expected-fail specs in the sync route
+tests: a fresh repository first seen by a partial attempt is re-registered on
+resume, so activity between the two attempts is never read (the continuation
+must carry first-seen timestamps); an eligible set larger than the checkpoint's
+500 baseline entries strands the surplus while the summary promises later
+coverage (needs a capacity policy or honest wording); and a legal-but-large
+continuation (four busy repositories) exceeds the 12 KiB token budget, so the
+retry dead-ends at 500 (needs cursor trimming or a server-side store).
+Automatic repository pagination beyond the collection cap, and broader
+hosted-path/profile migration work, remain open.
 
 ### 3. Complete public profile privacy and account lifecycle
 

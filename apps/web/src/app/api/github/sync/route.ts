@@ -5,8 +5,11 @@
  * Repository choices and the OAuth token come from the authenticated server
  * account, never from the request body. The first sync of each repository is
  * a baseline: existing history is visible to GitHub but cannot produce
- * retroactive XP. Later syncs catch up from that checkpoint and the normalizer
- * applies account-wide activity caps by the activity date.
+ * retroactive XP. Every repository still awaiting its baseline is registered
+ * in a single sync — a baseline costs no GitHub read — while a bounded window
+ * rotates through the oldest recorded baselines. Later syncs catch up from
+ * that checkpoint and the normalizer applies account-wide activity caps by the
+ * activity date.
  */
 
 import { NextRequest } from 'next/server'
@@ -23,7 +26,7 @@ import { getProductStore } from '@/lib/sync/product-store'
 import { requestAccountMatchesSession } from '@/lib/sync/request-account-guard'
 import { trustStoredProductSnapshot } from '@/lib/sync/trusted-product-snapshot'
 import { productSnapshotEvent } from '@/lib/sync/product-snapshot'
-import { issueGithubSyncCheckpoint } from '@/lib/sync/github-sync-checkpoint'
+import { issueGithubSyncCheckpoint, MAX_CHECKPOINT_BASELINE_ENTRIES } from '@/lib/sync/github-sync-checkpoint'
 import {
   githubSyncContinuationMatchesBaseline,
   issueGithubSyncContinuation,
@@ -32,7 +35,7 @@ import {
 import { issueVerifiedEventProof, verifiedEventProofPayloadDigest } from '@/lib/sync/verified-event-proof'
 import {
   repositoryIsTracked,
-  selectGithubRepositoryWindow,
+  selectGithubSyncRepositories,
   filterInputAfterBaselines,
 } from '@/lib/sync/github-source-policy'
 
@@ -196,14 +199,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         repositories = [...repositories, ...hydrated.repositories]
       }
     }
-    // Repositories without a baseline come first. A new repository cannot award
-    // anything until its baseline is recorded, so the bounded window drops an
-    // already-tracked repository rather than stranding one that is still
-    // awaiting its baseline.
-    const repositoryWindow = selectGithubRepositoryWindow(repositories, settings)
-    const eligible = repositoryWindow.eligible
     const eligibleCandidates = repositories.filter((repository) => repositoryIsTracked(repository, settings))
-    const skippedRepositoryCount = repositoryWindow.skippedCount
     // Keep explicit choices explicit. Auto-included repositories are selected
     // by policy for this sync, but must not be written into the explicit list;
     // otherwise turning auto-inclusion off would not actually stop tracking.
@@ -231,6 +227,21 @@ export async function POST(request: NextRequest): Promise<Response> {
         }
       }
     }
+    // First-use baselines cost no GitHub read, so they are not squeezed into
+    // the bounded read window: one checkpoint registers every repository still
+    // awaiting a baseline, up to the capacity the checkpoint itself can carry.
+    // Only the remainder is a window of repositories the read rotates through.
+    const baselineBudget = Math.max(
+      0,
+      MAX_CHECKPOINT_BASELINE_ENTRIES - Object.keys(baselineByRepositoryId).length,
+    )
+    const repositoryWindow = selectGithubSyncRepositories(
+      repositories,
+      { ...settings, baselineByRepositoryId },
+      baselineBudget,
+    )
+    const eligible = repositoryWindow.readWindow
+    const skippedRepositoryCount = repositoryWindow.skippedCount
     const newBaselineRepositoryIds: string[] = []
 
     let events: ReturnType<typeof normalizeGitHubEvents> = []
@@ -250,21 +261,22 @@ export async function POST(request: NextRequest): Promise<Response> {
     const readActivity = async (
       onProgress?: (progress: GitHubEventsProgress) => void,
     ): Promise<void> => {
-      if (eligible.length === 0) return
       // A repository without a baseline needs no historical read: its first
-      // successful listing establishes the checkpoint and must not get stuck
-      // behind an old 30-commit/release/issue page ceiling.
-      const activityEligible = eligible.filter((repository) => Boolean(baselineByRepositoryId[repository.id]))
-      for (const repository of eligible) {
-        if (baselineByRepositoryId[repository.id]) continue
+      // successful listing records the baseline and cannot award old history,
+      // so every one of them is registered here instead of waiting for a read
+      // slot — registering four per sync used to leave a fresh account unable
+      // to award anything for a dozen silent syncs. Registration must also not
+      // get stuck behind an old 30-commit/release/issue page ceiling: it is
+      // simply not part of the read window.
+      for (const repository of repositoryWindow.pendingBaseline) {
         baselineByRepositoryId[repository.id] = now
         newBaselineRepositoryIds.push(repository.id)
       }
-      if (activityEligible.length === 0) {
+      if (eligible.length === 0) {
         fetchStatus = 'ok'
         return
       }
-      const refs: GithubRepoRef[] = activityEligible.map((repository) => ({
+      const refs: GithubRepoRef[] = eligible.map((repository) => ({
         id: repository.id,
         fullName: repository.fullName,
       }))
@@ -281,7 +293,14 @@ export async function POST(request: NextRequest): Promise<Response> {
       fetchStatus = fetched.status
       truncated = fetched.truncated === true
       nextContinuation = fetched.continuation
-      continuationReady = fetched.status === 'ok' && fetched.truncated === true && fetched.continuation !== undefined
+      // A bounded read that hit a page ceiling and a read with failed pages
+      // both leave unread activity behind; the continuation carries the exact
+      // page to resume from, including a page that failed. Resuming is safe
+      // because no checkpoint is issued for a partial sync, so the retry can
+      // be offered instead of a dead-end error.
+      continuationReady = fetched.status !== 'unavailable' &&
+        fetched.truncated === true &&
+        fetched.continuation !== undefined
       // A bounded read cannot safely advance an existing checkpoint: activity
       // between the checkpoint and the oldest fetched page could otherwise age
       // out forever. Keep the fetch adapter's useful `ok + truncated` detail,
@@ -316,7 +335,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         // selected baselines (not only first-use baselines) is what rotates an
         // account fairly: the next sync can select the oldest untouched
         // repository instead of retrying the same first window forever.
-        for (const repository of activityEligible) baselineByRepositoryId[repository.id] = now
+        for (const repository of eligible) baselineByRepositoryId[repository.id] = now
       }
     }
 
@@ -372,14 +391,21 @@ export async function POST(request: NextRequest): Promise<Response> {
       return {
         kind: partial
           ? 'partial'
-          : events.length === 0 && newBaselineRepositoryIds.length > 0
+          : eligible.length === 0 && newBaselineRepositoryIds.length > 0
             ? 'baseline'
             : 'synced',
         events: issuedEvents,
         repositoryCount: eligible.length,
         eligibleRepositoryCount: eligibleCandidates.length,
         skippedRepositoryCount,
-        newBaselineRepositoryIds,
+        /**
+         * Only a committed checkpoint records a baseline. A partial result
+         * carries no checkpoint, keeps the saved settings untouched, and will
+         * register the same first-use repositories again on the resume, so
+         * reporting them here made the panel say "N repositories registered"
+         * about a write that never happened.
+         */
+        newBaselineRepositoryIds: partial ? [] : newBaselineRepositoryIds,
         lastSyncedAt: now,
         syncStatus: fetchStatus,
         /**

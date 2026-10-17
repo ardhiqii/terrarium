@@ -132,6 +132,52 @@ describe('fetchGitHubEvents', () => {
     expect(result.input.ciChecks?.[0]).toMatchObject({ id: 'CHECK1', name: 'test' })
   })
 
+  it('keeps its cursor on a timeline page that failed instead of claiming a complete read', async () => {
+    // REGRESSION: a failed timeline page used to report `truncated: false`,
+    // which is indistinguishable from a finished scan -- the retry could only
+    // start over, and nothing recorded that the page was ever missed. A failed
+    // page is truncation: the cursor stays on it so a retry resumes there.
+    const repo = 'widgets'
+    const now = '2026-09-12T12:00:00Z'
+    const routes: Record<string, unknown> = {
+      [`https://api.github.com/repos/${repo}/pulls?state=closed&per_page=30&page=1`]: [
+        {
+          node_id: 'PR_node1',
+          id: 11,
+          number: 7,
+          state: 'closed',
+          user: { login: 'octo' },
+          merged_at: now,
+          merge_commit_sha: 'abc123',
+          head: { sha: 'headsha1' },
+        },
+      ],
+      [`https://api.github.com/repos/${repo}/issues?state=closed&per_page=30&page=1`]: [
+        {
+          node_id: 'ISS_node1',
+          id: 31,
+          number: 10,
+          user: { login: 'octo' },
+          closed_at: now,
+        },
+      ],
+    }
+    const fetchStub = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/timeline?')) return new Response('nope', { status: 500 })
+      return new Response(JSON.stringify(routes[url] ?? []), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const result = await fetchGitHubEvents({ ...opts, fetch: fetchStub })
+
+    expect(result.status).toBe('partial')
+    expect(result.truncated).toBe(true)
+    expect(result.continuation).toMatchObject({ widgets: { issueTimelinePages: { '10': 1 } } })
+  })
+
   it('marks a full bounded issue timeline as incomplete instead of skipping a late cross-reference', async () => {
     const now = '2026-09-12T12:00:00Z'
     const repo = 'widgets'
@@ -362,9 +408,12 @@ describe('fetchGitHubEvents', () => {
     expect(result.input.commits ?? []).toEqual([])
   })
 
-  it('keeps a genuine failure as partial so the baseline is withheld', async () => {
+  it('keeps a genuine failure as partial so the baseline is withheld, with the failure page as the retry cursor', async () => {
     // The counterpart to truncation: a real 500 must still withhold the
     // baseline, otherwise unread activity could be silently skipped forever.
+    // It is also not a completed scan: the cursor stays on the failed pulls
+    // page, so the retry resumes there instead of re-reading everything from
+    // the start.
     const repo = 'widgets'
     const failing = (async (input: RequestInfo | URL) => {
       const url = String(input)
@@ -377,7 +426,8 @@ describe('fetchGitHubEvents', () => {
     const result = await fetchGitHubEvents({ ...opts, repos: [repo], fetch: failing })
 
     expect(result.status).toBe('partial')
-    expect(result.truncated).toBe(false)
+    expect(result.truncated).toBe(true)
+    expect(result.continuation).toMatchObject({ widgets: { pullRequestsPage: 1 } })
   })
 
   it('reads CI checks from merged PR heads instead of walking default-branch commits', async () => {

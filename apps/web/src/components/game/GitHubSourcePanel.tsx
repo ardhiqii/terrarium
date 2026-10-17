@@ -1771,7 +1771,13 @@ export function GitHubSourcePanel() {
       const baselineCount = Array.isArray(body.newBaselineRepositoryIds) ? body.newBaselineRepositoryIds.length : 0
       const skippedCount = typeof body.skippedRepositoryCount === 'number' ? body.skippedRepositoryCount : 0
       const limitNote = skippedCount > 0
-        ? ` ${skippedCount} more will be read by the next sync; repositories without a baseline go first.`
+        ? ` ${skippedCount} more ${skippedCount === 1 ? 'repository' : 'repositories'} will be covered by later syncs.`
+        : ''
+      // First-use baselines are registered without a read, so they can now
+      // arrive in the same sync as a normal read window. Say so explicitly:
+      // "no old history awarded" is the policy, not a silent no-op.
+      const registeredNote = baselineCount > 0
+        ? ` ${baselineCount} ${baselineCount === 1 ? 'repository' : 'repositories'} registered; old history is not awarded.`
         : ''
       // The adapter exposes bounded-window detail, while the sync route fails
       // closed before issuing a checkpoint when the window is incomplete.
@@ -1819,11 +1825,11 @@ export function GitHubSourcePanel() {
       if (!isCurrentRun()) return
       showGuestConflict(nextConflict)
       if (body.kind === 'baseline') {
-        setLastSyncSummary(`Baseline recorded for ${baselineCount} ${baselineCount === 1 ? 'repository' : 'repositories'} · no old history awarded.${limitNote}${truncatedNote}${cloudNote}`)
+        setLastSyncSummary(`Baseline recorded for ${baselineCount} ${baselineCount === 1 ? 'repository' : 'repositories'} · no old history awarded; new activity counts from now on.${limitNote}${truncatedNote}${cloudNote}`)
       } else if (body.kind === 'partial' || body.syncStatus === 'partial') {
-        setLastSyncSummary(`Checked ${count} tracked ${count === 1 ? 'repository' : 'repositories'} · ${eventCount} new verified events. Some activity could not be read completely; try again to catch up.${limitNote}${cloudNote}`)
+        setLastSyncSummary(`Checked ${count} tracked ${count === 1 ? 'repository' : 'repositories'} · ${eventCount} new verified events.${registeredNote} Some activity could not be read completely; try again to catch up.${limitNote}${cloudNote}`)
       } else {
-        setLastSyncSummary(`Checked ${count} tracked ${count === 1 ? 'repository' : 'repositories'} · ${eventCount} new verified events.${truncatedNote}${limitNote}${cloudNote}`)
+        setLastSyncSummary(`Checked ${count} tracked ${count === 1 ? 'repository' : 'repositories'} · ${eventCount} new verified events.${registeredNote}${truncatedNote}${limitNote}${cloudNote}`)
       }
       await loadRepositories()
     } catch (error) {

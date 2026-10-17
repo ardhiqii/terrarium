@@ -41,6 +41,23 @@ describe('ProductActivityPanel', () => {
     expect(markup).toContain('data-companion-id="grass-family"')
   })
 
+  it('captions the encounter meter so it is not read as a second XP bar', () => {
+    const markup = renderToStaticMarkup(
+      React.createElement(ProductActivityPanel, {
+        state: guestState('pikachu-family'),
+        sourceLabel: 'Active companion',
+      }),
+    )
+
+    // REGRESSION (UX): the meter sat under the evolution bar with no wording,
+    // and read as an unexplained second progress bar. The caption names the
+    // separate track: discovering new companions, with duplicates becoming
+    // family Essence rather than XP.
+    expect(markup).toContain('Encounter progress')
+    expect(markup).toContain('at 100 a new companion is discovered')
+    expect(markup).toContain('Duplicates award family Essence instead of XP')
+  })
+
   it('keeps the slot free of CSS fills as well', () => {
     // A stylesheet rule targeting the slot could paint a fill that static
     // markup tests would never see. The slot must not be styled at all.

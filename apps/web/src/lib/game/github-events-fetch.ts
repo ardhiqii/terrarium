@@ -170,7 +170,9 @@ interface FetchHealth {
   /**
    * Bounded-scan truncations, tracked separately from `failedRequests`.
    * A full third page is the ordinary state of any repository with a long
-   * history, so it must not be reported as an error.
+   * history, so it must not be reported as an error. A page that could not be
+   * read also counts here: unread activity is truncation, never completion,
+   * and its retry cursor stays on the page that failed.
    */
   truncatedScans: number
   /** Monotonic HTTP request counter feeding {@link GitHubEventsProgress}. */
@@ -452,7 +454,11 @@ async function fetchMergedPullRequests(
   for (let page = startPage; page < startPage + MAX_PAGES; page++) {
     const url = `${apiBase}/repos/${repoPath(repo)}/pulls?state=closed&per_page=${DEFAULT_PAGE_SIZE}&page=${page}`
     const items = await fetchJsonPage(client, url, headers, health)
-    if (!items) break
+    if (!items) {
+      health.truncatedScans += 1
+      nextPage = page
+      break
+    }
     for (const item of items) {
       if (!attributedToLogin(item, login, 'user')) continue
       const mergedAt = stringField(item, 'merged_at')
@@ -496,7 +502,11 @@ async function fetchReleases(
   for (let page = startPage; page < startPage + MAX_PAGES; page += 1) {
     const url = `${apiBase}/repos/${repoPath(repo)}/releases?per_page=${DEFAULT_PAGE_SIZE}${page === 1 ? '' : `&page=${page}`}`
     const items = await fetchJsonPage(client, url, headers, health)
-    if (!items) break
+    if (!items) {
+      health.truncatedScans += 1
+      nextPage = page
+      break
+    }
     for (const item of items) {
       if (!attributedToLogin(item, login, 'author')) continue
       const publishedAt = stringField(item, 'published_at')
@@ -540,7 +550,11 @@ async function fetchClosedIssues(
   for (let page = startPage; page < startPage + MAX_PAGES; page++) {
     const url = `${apiBase}/repos/${repoPath(repo)}/issues?state=closed&per_page=${DEFAULT_PAGE_SIZE}&page=${page}`
     const items = await fetchJsonPage(client, url, headers, health)
-    if (!items) break
+    if (!items) {
+      health.truncatedScans += 1
+      nextPage = page
+      break
+    }
     for (const item of items) {
       const pullReq = itemRecord(item.pull_request)
       if (pullReq) continue // skip PRs, the issues endpoint lists them too
@@ -625,7 +639,14 @@ async function fetchIssueTimeline(
   for (let page = startPage; page < startPage + MAX_PAGES; page += 1) {
     const url = `${apiBase}/repos/${repoPath(repo)}/issues/${issueNumber}/timeline?per_page=${DEFAULT_PAGE_SIZE}${page === 1 ? '' : `&page=${page}`}`
     const items = await fetchJsonPage(client, url, headers, health)
-    if (!items) return { items: [...ids], truncated: false }
+    if (!items) {
+      // A failed page is unread activity, not a completed scan. Keep the
+      // cursor on this page so a retry re-reads it, and report truncation so
+      // the sync can never claim completeness over what was not read.
+      health.truncatedScans += 1
+      nextPage = page
+      break
+    }
     for (const item of items) {
       const source = itemRecord(item.source)
       const sourceIssue = source ? itemRecord(source.issue) : null
@@ -680,7 +701,12 @@ async function fetchCheckRuns(
     for (let page = startPage; page < startPage + MAX_PAGES; page += 1) {
       const checksUrl = `${apiBase}/repos/${repoPath(repo)}/commits/${encodeURIComponent(commitSha)}/check-runs?per_page=${DEFAULT_PAGE_SIZE}${page === 1 ? '' : `&page=${page}`}`
       const checksPage = await fetchCheckRunsPage(client, checksUrl, headers, health)
-      if (!checksPage) break
+      if (!checksPage) {
+        // A failed check-runs page is unread activity: retry it from the same
+        // page instead of ending the walk as if the commit were complete.
+        nextPage = page
+        break
+      }
       fetchedCheckCount += checksPage.items.length
       reportedCheckCount = checksPage.totalCount ?? reportedCheckCount
       for (const check of checksPage.items) {
@@ -787,7 +813,11 @@ async function fetchUserCommits(
     for (let page = startPage; page < startPage + MAX_PAGES; page += 1) {
       const url = `${apiBase}/repos/${repoPath(repo)}/commits?${attributionField}=${encodeURIComponent(login)}&per_page=${DEFAULT_PAGE_SIZE}&page=${page}${baseline ? `&since=${encodeURIComponent(baseline)}` : ''}`
       const items = await fetchJsonPage(client, url, headers, health)
-      if (!items) break
+      if (!items) {
+        health.truncatedScans += 1
+        nextPageByAttribution[attributionField] = page
+        break
+      }
       for (const item of items) {
         const sha = stringField(item, 'sha')
         const occurredAt = commitListTimestamp(item)

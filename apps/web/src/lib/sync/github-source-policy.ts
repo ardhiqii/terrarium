@@ -27,11 +27,18 @@ export interface GithubRepositoryWindow {
 }
 
 /**
- * Select the same bounded window as `/api/github/sync`. Repositories without a
- * baseline go first because they cannot award history until their first read is
- * committed; after that, the oldest successful baselines rotate forward so a
- * large account is not pinned to the first page forever. The repair path uses
- * this ordering too, so a recovery request never becomes an unbounded scan.
+ * Select the bounded read window used by the receipt-repair path.
+ *
+ * Repair reads without baselines or a continuation, so it keeps the original
+ * ordering: repositories without a baseline go first because their first read
+ * records the baseline, then the oldest successful baselines rotate forward so
+ * a large account is not pinned to the first page forever. A recovery request
+ * never becomes an unbounded scan.
+ *
+ * `/api/github/sync` no longer shares this policy: it registers every
+ * repository awaiting a first baseline in one checkpoint without a read
+ * ({@link selectGithubSyncRepositories}) and rotates the read window across the
+ * oldest recorded baselines.
  */
 export function selectGithubRepositoryWindow(
   repositories: readonly GithubRepository[],
@@ -51,6 +58,60 @@ export function selectGithubRepositoryWindow(
     eligible,
     eligibleCandidateCount: candidates.length,
     skippedCount: Math.max(0, candidates.length - eligible.length),
+  }
+}
+
+export interface GithubSyncRepositorySelection {
+  /** Repositories whose read can award activity: oldest baselines rotate first. */
+  readonly readWindow: readonly GithubRepository[]
+  /** Repositories awaiting their first baseline: recorded without any read. */
+  readonly pendingBaseline: readonly GithubRepository[]
+  readonly eligibleCandidateCount: number
+  /** Repositories the sync after this one still has to cover. */
+  readonly skippedCount: number
+}
+
+/**
+ * Select the window for `/api/github/sync`.
+ *
+ * A repository without a baseline needs no historical read: its first
+ * successful listing records the baseline and cannot award old history. It is
+ * registered in the same sync, in full, instead of occupying one of the four
+ * read slots — an account used to need one silent sync per four repositories
+ * before any activity could be read at all. The read window keeps the bounded
+ * rotation: oldest successful baselines first, so a large account is not
+ * pinned to the same repositories forever.
+ *
+ * `maxBaselineRegistrations` bounds how many first-use baselines one signed
+ * checkpoint may carry; it comes from the checkpoint's baseline-map capacity,
+ * not from the read window's request budget.
+ */
+export function selectGithubSyncRepositories(
+  repositories: readonly GithubRepository[],
+  settings: GithubAccountSettings,
+  maxBaselineRegistrations: number,
+): GithubSyncRepositorySelection {
+  const candidates = repositories.filter((repository) => repositoryIsTracked(repository, settings))
+  const withBaseline: GithubRepository[] = []
+  const withoutBaseline: GithubRepository[] = []
+  for (const repository of candidates) {
+    const baseline = Date.parse(settings.baselineByRepositoryId[repository.id] ?? '')
+    if (Number.isFinite(baseline)) withBaseline.push(repository)
+    else withoutBaseline.push(repository)
+  }
+  withBaseline.sort((left, right) => {
+    const leftBaseline = Date.parse(settings.baselineByRepositoryId[left.id] ?? '')
+    const rightBaseline = Date.parse(settings.baselineByRepositoryId[right.id] ?? '')
+    return leftBaseline - rightBaseline || left.id.localeCompare(right.id)
+  })
+  const budget = Math.max(0, Math.floor(maxBaselineRegistrations))
+  const pendingBaseline = withoutBaseline.slice(0, budget)
+  const readWindow = withBaseline.slice(0, MAX_SYNC_REPOSITORIES)
+  return {
+    readWindow,
+    pendingBaseline,
+    eligibleCandidateCount: candidates.length,
+    skippedCount: Math.max(0, candidates.length - readWindow.length - pendingBaseline.length),
   }
 }
 

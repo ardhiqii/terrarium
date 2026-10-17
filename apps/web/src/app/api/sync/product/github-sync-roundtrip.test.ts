@@ -126,6 +126,9 @@ async function readSyncResult(response: Response): Promise<Record<string, unknow
     .split('\n')
     .filter((line) => line.trim().length > 0)
     .map((line) => JSON.parse(line) as Record<string, unknown>)
+  // A sync that only registers first-use baselines reads nothing, so it has no
+  // stream to maintain and answers with an ordinary JSON body.
+  if (lines.length === 1 && lines[0]?.type === undefined) return lines[0]
   const result = lines.find((line) => line.type === 'result')
   if (!result) {
     const failure = lines.find((line) => line.type === 'error')
@@ -276,13 +279,14 @@ describe('large-account GitHub sync → product checkpoint commit', () => {
     expect(advanced.baselineByRepositoryId[trackedRepository]).not.toBe(BASELINE)
   })
 
-  it('baselines a tracked set larger than one read window, window by window', async () => {
+  it('registers a tracked set larger than one read window in a single sync', async () => {
     // REGRESSION: the original 25-repository ceiling left 19 of a
     // 44-repository account baselined never, so no activity in them could
-    // award XP. The window is now derived (and therefore smaller), but
-    // repositories without a baseline go first and each round's deferred
-    // baseline is committed through the real product route, so the whole
-    // tracked set is covered without stranding one.
+    // award XP. The walk that replaced it was bounded to four repositories per
+    // sync, which still meant eleven silent syncs before a single read could
+    // award anything. A first-use baseline costs no GitHub read, so one sync
+    // registers the whole tracked set and every later sync rotates its read
+    // window through the oldest baselines.
     const accountStore = getGithubAccountStore()
     await accountStore.putCredential({ githubId: GITHUB_ID, handle: 'octo', avatarUrl: null }, 'server-token', ['repo'])
     await accountStore.saveSettings(GITHUB_ID, {
@@ -294,37 +298,34 @@ describe('large-account GitHub sync → product checkpoint commit', () => {
       lastSyncedAt: null,
     })
 
-    const baselined = new Set<string>()
-    for (let round = 0; round < 12 && baselined.size < REPOSITORY_COUNT; round += 1) {
-      const body = await readSyncResult(await syncGithub(syncRequest()))
-      expect(body.repositoryCount).toBe(MAX_SYNC_REPOSITORIES)
-      expect(body.skippedRepositoryCount).toBe(REPOSITORY_COUNT - MAX_SYNC_REPOSITORIES)
-      // No repository that already has a baseline is read while one still
-      // waits: that ordering is what guarantees eventual full coverage.
-      const newlyBaselined = body.newBaselineRepositoryIds as string[]
-      expect(newlyBaselined.every((id) => !baselined.has(id))).toBe(true)
-      for (const id of newlyBaselined) baselined.add(id)
+    const first = await readSyncResult(await syncGithub(syncRequest()))
+    expect(first.kind).toBe('baseline')
+    expect(first.repositoryCount).toBe(0)
+    expect(first.skippedRepositoryCount).toBe(0)
+    expect(new Set(first.newBaselineRepositoryIds as string[]).size).toBe(REPOSITORY_COUNT)
+    expect(mocks.fetchEvents).not.toHaveBeenCalled()
 
-      const profile = createGuestProfile({
-        guestId: 'guest-1',
-        starterCompanionId: 'pikachu-family',
-        now: '2026-08-28T10:00:00.000Z',
-      })
-      const state = applyProductEvents(
-        createProductState(profile, { events: [] }, createEncounterState(), PROTOTYPE_COMPANION_CATALOG),
-        body.events as NormalizedEvent[],
-        PROTOTYPE_COMPANION_CATALOG,
-        { triggerId: `github-sync:${String(body.lastSyncedAt)}:${round}` },
-      )
-      const snapshot = buildProductSnapshot(state, '2026-08-28T10:00:00.000Z', body.verifiedEventProofs as Record<string, string>)
-      const response = await syncProduct(productRequest({ snapshot, checkpoint: body.checkpoint as string }))
-      expect(response.status).toBe(200)
-      for (const id of Object.keys((await accountStore.getSettings(GITHUB_ID)).baselineByRepositoryId)) baselined.add(id)
-    }
-
-    expect(baselined.size).toBe(REPOSITORY_COUNT)
+    // Commit the deferred baselines through the real product route, exactly as
+    // the browser does.
+    const profile = createGuestProfile({
+      guestId: 'guest-1',
+      starterCompanionId: 'pikachu-family',
+      now: '2026-08-28T10:00:00.000Z',
+    })
+    const snapshot = buildProductSnapshot(
+      createProductState(profile, { events: [] }, createEncounterState(), PROTOTYPE_COMPANION_CATALOG),
+      '2026-08-28T10:00:00.000Z',
+    )
+    const commit = await syncProduct(productRequest({ snapshot, checkpoint: first.checkpoint as string }))
+    expect(commit.status).toBe(200)
     expect(Object.keys((await accountStore.getSettings(GITHUB_ID)).baselineByRepositoryId))
       .toHaveLength(REPOSITORY_COUNT)
+
+    // The next sync reads a bounded window of the oldest baselines and leaves
+    // the rest of the rotation for the sync after it.
+    const second = await readSyncResult(await syncGithub(syncRequest()))
+    expect(second.repositoryCount).toBe(MAX_SYNC_REPOSITORIES)
+    expect(second.skippedRepositoryCount).toBe(REPOSITORY_COUNT - MAX_SYNC_REPOSITORIES)
   })
 
   it('still accepts the deprecated header for a small checkpoint', async () => {
