@@ -98,7 +98,7 @@ function CompanionRoster({
           <h2 id="owned-companions-title" className="font-ui mt-1 text-2xl font-semibold tracking-tight">Your companions</h2>
         </div>
         <p className="font-data text-xs" style={{ color: 'var(--ink-muted)' }}>
-          {owned.length} {owned.length === 1 ? 'companion' : 'companions'} · {state.encounters.meter} / 100 encounter progress
+          {owned.length} {owned.length === 1 ? 'companion' : 'companions'}
         </p>
       </div>
 
@@ -152,7 +152,7 @@ function CompanionRoster({
 
       <div className="mt-6 border-t pt-4" style={{ borderColor: 'var(--rule)' }}>
         <p className="font-prose text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-          XP belongs to the active companion. Encounter progress is separate and helps discover additional companions; duplicate encounters award Essence rather than moving XP.
+          XP belongs to the active companion. New activity can also lead to discovering additional companions; duplicates award Essence rather than moving XP.
         </p>
       </div>
     </section>

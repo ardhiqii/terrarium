@@ -41,21 +41,23 @@ describe('ProductActivityPanel', () => {
     expect(markup).toContain('data-companion-id="grass-family"')
   })
 
-  it('captions the encounter meter so it is not read as a second XP bar', () => {
+  it('never renders the encounter meter: a discovery stays a surprise', () => {
+    const state = guestState('pikachu-family')
     const markup = renderToStaticMarkup(
       React.createElement(ProductActivityPanel, {
-        state: guestState('pikachu-family'),
+        state,
         sourceLabel: 'Active companion',
       }),
     )
 
-    // REGRESSION (UX): the meter sat under the evolution bar with no wording,
-    // and read as an unexplained second progress bar. The caption names the
-    // separate track: discovering new companions, with duplicates becoming
-    // family Essence rather than XP.
-    expect(markup).toContain('Encounter progress')
-    expect(markup).toContain('at 100 a new companion is discovered')
-    expect(markup).toContain('Duplicates award family Essence instead of XP')
+    // The encounter track is deliberately invisible: its caption and fill used
+    // to read as a second progress bar, and a percentage turned the next award
+    // into a countdown. The mechanic still runs on this state (the meter is
+    // carried and synced); only the presentation is gone. XP is the one bar.
+    expect(state.encounters.meter).toBe(0)
+    expect(markup).toContain('aria-label="Progress to next form"')
+    expect(markup).not.toContain('Encounter')
+    expect(markup).not.toContain('a new companion is discovered')
   })
 
   it('keeps the slot free of CSS fills as well', () => {
