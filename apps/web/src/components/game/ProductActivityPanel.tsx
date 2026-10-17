@@ -171,6 +171,9 @@ export function ProductActivityPanel({
             style={{ width: `${encounterProgress}%`, background: 'var(--accent)' }}
           />
         </div>
+        <p className="font-prose mt-1.5 text-xs leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
+          Fills with new activity; at 100 a new companion is discovered. Duplicates award family Essence instead of XP.
+        </p>
       </div>
 
       <p className="font-prose mt-5 text-xs leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
