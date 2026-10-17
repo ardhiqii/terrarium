@@ -104,6 +104,14 @@ syncing on load; **Sync GitHub now** is always available. Each sync reads a
 window of repositories derived from GitHub's hourly request budget *and* from
 the deferred checkpoint's event capacity (4 repositories at the current
 worst-case bounds), so the scheduler does not assume a cheap short-history read.
+The `/github` screen keeps a status row visible: **Connection** (which account
+is connected), **Tracking** (approved repositories currently tracked), and
+**Account backup** (how long ago the account store last accepted a write). The
+backup card is deliberately honest — it states that automatic sync runs only
+while the page is open, and points to the recovery note below when a write needs
+attention, instead of implying a background service. User-facing copy says
+*backup*, never *checkpoint* or *receipt*; blocked verified activity is
+explained as **activity proof** that could not be verified.
 Repositories still awaiting their first baseline are registered in the same
 sync without occupying that window -- a first-use baseline costs no read -- so a
 fresh account is registered in one sync and later syncs rotate through the
@@ -209,10 +217,14 @@ runs, so saved settings stay server-authoritative. A failed read is never
 treated as an empty account: nothing is pruned or unselected from it, and a
 sync never drops a repository baseline from a listing it could not refresh.
 A listing that fills GitHub's last permitted page (500 repositories) is stored
-with a `truncated` flag: it is usable, but it is never treated as complete, so
-nothing is pruned or silently unselected from it either. Explicitly tracked IDs missing from that bounded
-listing are verified through GitHub's stable `/repositories/{id}` endpoint;
-automatic inclusion remains limited to the visible listing. The browser copy is
+with a `truncated` flag: it is usable, but it is never treated as complete.
+Explicitly tracked IDs missing from that bounded listing are verified through
+GitHub's stable `/repositories/{id}` endpoint; automatic inclusion remains
+limited to the visible listing. A tracked ID is never dropped automatically:
+GitHub answers `404` for temporary access loss as well as deletion, so a
+missing repository pauses its own contribution (`repositoryIsTracked`) without
+releasing the user's explicit choice, and the picker's **Select all available**
+only ever adds to the stored selection. The browser copy is
 keyed to the active GitHub account; a copy stored for another account is
 discarded instead of painted, and a failed read only keeps showing a list the
 server confirmed belongs to this account.
@@ -491,8 +503,8 @@ history.
 
 ## 5. XP model
 
-XP belongs to the active companion. The system may show a small account-level
-encounter meter internally, but it must not become a second prominent level bar.
+XP belongs to the active companion. The encounter track stays internal: it must
+not become a second level bar, and its fill is not displayed at all.
 
 **Not yet implemented — see [`ROADMAP.md`](ROADMAP.md).** The paragraphs below
 describe the intended contract; the shipped code currently buckets days and
@@ -584,8 +596,9 @@ but it must not decide whether XP is deserved.
 
 Encounters are the main source of dopamine after the first companion.
 
-1. Activity fills a hidden **encounter progress** meter, surfaced as a small
-   captioned bar whose one-line explanation keeps it separate from XP.
+1. Activity fills a hidden **encounter progress** meter. The fill is never
+   displayed — no bar, no numbers, no caption — so the next discovery stays a
+   surprise rather than a countdown.
 2. When a threshold is reached, the app performs one deterministic random draw.
 3. The result is persisted before it is shown, so refreshes cannot reroll it.
 4. The draw is weighted by simple evidence from the recent work: languages,
