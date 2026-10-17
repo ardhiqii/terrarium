@@ -33,7 +33,7 @@ function recentVerifiedEvents(state: ProductState) {
 }
 
 export function GitHubRewardGuide({ state }: { state: ProductState }) {
-  const receipts = recentVerifiedEvents(state)
+  const recentEvents = recentVerifiedEvents(state)
 
   return (
     <section
@@ -54,7 +54,9 @@ export function GitHubRewardGuide({ state }: { state: ProductState }) {
           </p>
         </div>
         <p className="font-data shrink-0 text-xs sm:text-right" style={{ color: 'var(--ink-muted)' }}>
-          {receipts.length ? `${receipts.length} recent receipts` : 'No receipts yet'}
+          {recentEvents.length
+            ? `${recentEvents.length} verified event${recentEvents.length === 1 ? '' : 's'}`
+            : 'No verified activity yet'}
         </p>
       </div>
 
@@ -72,11 +74,11 @@ export function GitHubRewardGuide({ state }: { state: ProductState }) {
 
       <div className="mt-6 border-t pt-4" style={{ borderColor: 'var(--rule)' }}>
         <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>
-          Verified receipts
+          Verified activity
         </p>
-        {receipts.length ? (
+        {recentEvents.length ? (
           <ul className="mt-3 divide-y" style={{ borderColor: 'var(--rule)' }}>
-            {receipts.map((event) => {
+            {recentEvents.map((event) => {
               const awardedXp = xpAwardedForEvent(state.ledger, event.eventId)
               return (
                 <li key={event.eventId} className="flex items-center justify-between gap-4 py-2 text-sm">

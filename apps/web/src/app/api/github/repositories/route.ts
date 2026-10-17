@@ -277,7 +277,17 @@ export async function PUT(request: NextRequest): Promise<Response> {
         .filter((repo) => repo.ownerType === 'Organization')
         .map((repo) => repo.ownerLogin.toLowerCase()),
     )
-    if (settingsPayload.autoIncludeOrganizations.some((login) => !visibleOrganizations.has(login))) {
+    // A stored automatic organization follows the same keep rule as a tracked
+    // ID: an organization grant can be mid-refresh, or its repositories can
+    // fall outside a bounded page walk, and the picker only renders a checkbox
+    // for organizations the listing shows. Rejecting the whole save would leave
+    // the user unable to save any choice until the listing returns. A NEW
+    // organization still requires a visible repository, so this never widens
+    // automatic inclusion to an organization GitHub did not return.
+    const existingOrganizations = new Set(value.settings.autoIncludeOrganizations)
+    if (settingsPayload.autoIncludeOrganizations.some((login) => {
+      return !visibleOrganizations.has(login) && !existingOrganizations.has(login)
+    })) {
       return json(400, { error: 'An automatic organization selection is not available to this account.' })
     }
 

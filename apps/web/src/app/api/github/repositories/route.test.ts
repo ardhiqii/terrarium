@@ -413,6 +413,39 @@ describe('PUT /api/github/repositories', () => {
     }))
     expect(unreadable.status).toBe(400)
   })
+
+  it('keeps a stored automatic organization the listing cannot show and still rejects a new one', async () => {
+    // REGRESSION: the check required every automatic organization to appear in
+    // the current listing. A stored organization whose repositories fell
+    // outside a bounded page walk (or whose access is mid-refresh) has no
+    // checkbox on screen, so the entire save was rejected with no way for the
+    // user to fix the draft. A new organization still needs a visible
+    // repository, so automatic inclusion cannot be widened by a crafted body.
+    mocks.settings.autoIncludeOrganizations = ['mid-refresh-org']
+    mocks.fetchRepositories.mockResolvedValue({
+      status: 'ok',
+      truncated: false,
+      repositories: [repository],
+    })
+
+    const kept = await PUT(request({
+      trackedRepositoryIds: ['101'],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: ['mid-refresh-org'],
+    }))
+    expect(kept.status).toBe(200)
+    expect(mocks.settings.autoIncludeOrganizations).toEqual(['mid-refresh-org'])
+
+    const invented = await PUT(request({
+      trackedRepositoryIds: ['101'],
+      excludedRepositoryIds: [],
+      autoIncludePersonal: false,
+      autoIncludeOrganizations: ['not-returned'],
+    }))
+    expect(invented.status).toBe(400)
+    expect(mocks.saveSettings).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('GET /api/github/repositories', () => {
