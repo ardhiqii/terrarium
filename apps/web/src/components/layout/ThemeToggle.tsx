@@ -10,15 +10,22 @@ export default function ThemeToggle() {
   useEffect(() => setMounted(true), [])
 
   if (!mounted) {
-    return <div className="w-8 h-8" />
+    return <div className="w-11 h-11" />
   }
 
   const isDark = resolvedTheme === 'dark'
 
+  /**
+   * 44px, not 32px.
+   *
+   * A 32x32 control is below the 44px minimum touch target and this one sits in the header on
+   * every route, so it was the most-reached and most-missed control on a phone. The icon stays
+   * 16px; only the hit area grows, and the placeholder below matches so nothing shifts on mount.
+   */
   return (
     <button
       onClick={() => setTheme(isDark ? 'light' : 'dark')}
-      className="w-8 h-8 flex items-center justify-center transition-colors hover:opacity-70"
+      className="w-11 h-11 flex items-center justify-center transition-colors hover:opacity-70"
       style={{ color: 'var(--ink-muted)' }}
       aria-label="Toggle theme"
       title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}

@@ -35,6 +35,12 @@ export interface GraphNode {
   backlinkCount: number
   /** Absent means 'seedling', same convention as MaturityMark. Notes only. */
   maturity?: Maturity
+  /**
+   * Frontmatter tags. Carried so the graph can be filtered without re-reading the corpus
+   * client-side; the filter runs in the browser and a filter that has to call the server to
+   * discover its own options is not a filter.
+   */
+  tags: string[]
 }
 
 export interface GraphLink {

@@ -79,6 +79,7 @@ export async function ProfileSpecimen({ user }: ProfileSpecimenProps) {
               xpIntoStage={resolved.xpIntoStage}
               xpForNextStage={resolved.xpForNextStage}
               progress={resolved.progress}
+              stageName={resolved.stage.name}
             />
 
             <div className="font-data flex items-baseline justify-between mt-4 text-xs flex-wrap gap-2">

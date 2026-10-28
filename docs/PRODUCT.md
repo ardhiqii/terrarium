@@ -809,3 +809,53 @@ The product is ready for a small friend test when:
 - the collection works with real provider metadata and static asset fallback;
 - the extension shows only public synced state;
 - no note content is uploaded by default.
+
+## 11. Interface rules
+
+Each rule below exists because reading the shipped build as a stranger found it broken.
+
+### 11.1 A number names what it counts
+
+Two correct numbers still read as a bug when neither says what it counts. The stage bar
+read `50 / 3500 xp` while the ledger below it read `Total 1550 xp`. Both were right:
+1,550 total, 1,500 to enter Mossling, so 50 into a 3,500-wide stage. Nothing said the
+fraction was XP *within* the stage.
+
+- A progress fraction states the scope of its denominator: `50 of 3,500 xp into Mossling`,
+  never `50 / 3500`.
+- `aria-valuetext` says what the visible label says, because a screen reader gets one of them.
+- A component rendering a fraction takes the stage name as a prop. `XpBar` cannot describe
+  a stage it was not told about, and a call site that omits it is a defect, not a default.
+
+### 11.2 A surface says whose garden it shows
+
+`/` renders the site owner's built-in garden; `/companions` renders the viewer's. Signed
+out those differ (1,550 xp and Mossling against 0 xp and Sporeling) and sat one click
+apart with no label, so one of them looked broken. State whose state. Where the viewer
+has nothing yet, say so and name the action that changes it.
+
+### 11.3 Interactive targets are at least 44 px
+
+Measured at 390 px on the shipped build: theme toggle 32x32, hamburger 30x30, brand 24 px
+tall, nav rows 32 px, footer links 20 px. Ten targets on one page. The icon may stay
+16 px; the hit area may not. Header controls are fixed first because they are reached on
+every route.
+
+### 11.4 A filter states its effect
+
+`/graph` is the surface that stops scaling first and it had no way to narrow anything. It
+filters by tag and maturity and prints `N of M nodes` while a filter is active, so the
+reader does not count to find out what happened. Filtering drops links whose far end was
+dropped: lines drawn into nothing read as corrupt data, not as a filter.
+
+### 11.5 One h1, and it is not a creature's name
+
+`/` had no `<h1>`: the outline began at `Mossling`, so the document's subject was a name
+inside a card. The tagline carries the h1; the styling stays quiet because DESIGN.md keeps
+the creature as the visual focal point. Semantics and visual emphasis may differ.
+
+### 11.6 Detail a stranger did not come for is opt-in
+
+The home page opened with a nine-row XP ledger before saying what the product is. The
+ledger remains, first-class, behind a `<details>` whose summary carries the total: no
+state, no JavaScript, keyboard-operable.
