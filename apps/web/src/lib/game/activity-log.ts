@@ -39,6 +39,9 @@ export const CATEGORY_LABEL: Readonly<Record<EventCategory, string>> = {
   'published-release': 'Published release',
   'closed-linked-issue': 'Closed linked issue',
   'successful-ci': 'Green build',
+  // A local content event, named here only because this map is exhaustive over EventCategory.
+  // It appears in the activity log so a maturity change is visible, not because it is rewarded.
+  'maturity-changed': 'Maturity changed',
 }
 
 export interface ActivityLogEntry {

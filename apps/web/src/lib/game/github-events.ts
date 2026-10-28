@@ -103,6 +103,9 @@ const CATEGORY_ORDER: Readonly<Record<NormalizedEvent['category'], number>> = {
   'published-release': 6,
   'closed-linked-issue': 7,
   'successful-ci': 8,
+  // Exhaustiveness only. This order is for GITHUB-sourced events; a maturity change comes from
+  // the mounted-markdown source and sorts last if it ever meets these.
+  'maturity-changed': 9,
 }
 
 interface ActivityFact {

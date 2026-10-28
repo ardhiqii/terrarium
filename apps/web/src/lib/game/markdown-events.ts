@@ -12,6 +12,7 @@
  */
 import { asCompanionId, makeEventId, type CompanionId, type EventCap, type NormalizedEvent } from './events'
 import type { MarkdownFileSummary } from './scan-summary-store'
+import type { Maturity } from './types'
 
 export interface MarkdownFileSnapshot {
   path: string
@@ -58,6 +59,23 @@ function wordCount(content: string): number {
     .trim()
     .split(/\s+/u)
     .filter(Boolean).length
+}
+
+/**
+ * The note's maturity from its own frontmatter, absent meaning `seedling`.
+ *
+ * Deliberately duplicated from `summaryMaturity` in `scan-summary-store.ts`, exactly as `hash`
+ * and `wordCount` are: this module produces events, that one decides what survives a reload,
+ * and sharing a helper would couple the two for no gain. The two MUST agree -- the diff here
+ * compares this value against the stored summary's -- so a test pins them together.
+ */
+function maturityOf(content: string): Maturity {
+  const front = /^---\r?\n([\s\S]*?)\r?\n---/u.exec(content)
+  if (!front) return 'seedling'
+  const line = /^maturity:\s*(.+)$/imu.exec(front[1])
+  if (!line) return 'seedling'
+  const value = line[1].trim().replace(/^["']|["']$/gu, '').toLowerCase()
+  return value === 'budding' || value === 'evergreen' ? value : 'seedling'
 }
 
 function links(content: string): string[] {
@@ -215,6 +233,44 @@ export function normalizeMarkdownEvents(input: MarkdownEventInput): readonly Nor
           contentCap(day, 'new-note'),
         ),
       )
+    }
+
+    // Maturity, compared only between two OBSERVED values. `previous.maturity` is undefined for a
+    // summary written before this field existed, and treating that as `seedling` would emit a
+    // change for every already-evergreen note on the first scan after deploying. A brand-new note
+    // is skipped by the same check: its frontmatter value is the user's STARTING state, not a
+    // change from anything.
+    if (previous?.maturity) {
+      const next = maturityOf(file.content)
+      if (next !== previous.maturity) {
+        events.push(
+          event(
+            normalizedInput,
+            // Both sides of the transition are in the ID: the previous content hash and the new
+            // one. The target value alone is not enough. A note can move seedling -> budding ->
+            // seedling -> budding, and the two budding promotions are separate events; keying by
+            // `to` (or by `from`+`to`) would give them the same ID and first-write-wins would
+            // silently swallow the second, turning a history into a set. Replaying the SAME
+            // transition still yields the same ID, which is what makes it idempotent.
+            `maturity:${path}:${previous.hash}:${revision}:${next}`,
+            'maturity-changed',
+            // The TRUSTED CLOCK, not `file.modifiedAt`.
+            //
+            // Every other content event in this module dates itself from the file's mtime, and
+            // this one deliberately does not. An mtime is user-settable (`touch -t`, archive
+            // extraction), and this event carries NO cap -- which matters twice: `budgetDayOf`
+            // in `events.ts` falls back to `occurredAt` for a cap-free event, so a forged mtime
+            // would inject a forged day into the daily budget; and an auditable history is
+            // worthless if the timestamps are chosen by the thing being audited. The honest
+            // answer to "when did this note change maturity" is "when the app first observed it",
+            // which is exactly what `now` is.
+            normalizedInput.now,
+            { path, from: previous.maturity, to: next },
+            // Deliberately uncapped: this is history, not a reward. Capping it would silently drop
+            // transitions, and no amount of writing can farm a maturity change.
+          ),
+        )
+      }
     }
 
     const oldWords = previous ? previous.words : 0
