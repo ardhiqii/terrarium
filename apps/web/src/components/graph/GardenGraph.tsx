@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useTheme } from 'next-themes'
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import type { GraphData, GraphNode } from '@/lib/types'
+import { endpointId } from '@/lib/graph/endpoints'
 
 const ForceGraph2D = dynamic(
   () => import('react-force-graph-2d').then((m) => m.default),
@@ -66,16 +67,6 @@ function hexToRgba(hex: string, alpha: number): string {
   const g = parseInt(p[2], 16)
   const b = parseInt(p[3], 16)
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
-}
-
-// react-force-graph mutates link.source/target in place, replacing the
-// string id with the resolved node object, once the force engine has
-// initialised. This works whichever form is currently present so
-// weight/hover lookups never assume timing.
-function endpointId(x: unknown): string | undefined {
-  if (!x) return undefined
-  if (typeof x === 'string') return x
-  return (x as GraphNode).id
 }
 
 const MIN_RADIUS = 3

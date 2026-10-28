@@ -72,6 +72,7 @@ export async function SpecimenPlate({ state, scale = 3 }: SpecimenPlateProps) {
             xpIntoStage={state.xpIntoStage}
             xpForNextStage={state.xpForNextStage}
             progress={state.progress}
+            stageName={state.stage.name}
           />
         </div>
       </div>
