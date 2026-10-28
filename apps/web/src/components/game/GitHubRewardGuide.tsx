@@ -23,6 +23,10 @@ const CATEGORY_LABELS: Readonly<Record<EventCategory, string>> = {
   'published-release': 'published release',
   'closed-linked-issue': 'closed linked issue',
   'successful-ci': 'successful CI',
+  // Exhaustiveness only: this guide lists GITHUB rewards, and maturity is a local content
+  // event. It is listed so the map type stays complete, and it is never rendered here because
+  // the guide filters to verified GitHub events.
+  'maturity-changed': 'maturity changed',
 }
 
 function recentVerifiedEvents(state: ProductState) {

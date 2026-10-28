@@ -19,6 +19,8 @@
  * events derived from it stay consistent by construction.
  */
 
+import type { Maturity } from './types'
+
 /** What one note looked like at a scan, with no readable content. */
 export interface MarkdownFileSummary {
   /** Path within the folder, as the scan saw it. */
@@ -37,6 +39,24 @@ export interface MarkdownFileSummary {
   linkTargets: readonly string[]
   /** The file's own mtime, when the platform reported one. */
   modifiedAt: string
+  /**
+   * The note's maturity as that scan saw it.
+   *
+   * WHY IT IS HERE: this is what makes "did this note change maturity" answerable at all.
+   * Before it, the only record of maturity was the CURRENT snapshot, so promotions were
+   * recomputed from what a note is now rather than replayed from what it was (see the note
+   * in `xp.ts`). A downgrade therefore erased its own XP with no trace it was ever awarded.
+   *
+   * Allowed under PRODUCT.md 4.2: maturity is a label the user writes in frontmatter, from a
+   * fixed three-value vocabulary -- the same class of data as `linkTargets`, which is kept
+   * for the same reason (a side-by-side comparison needs the value; a count cannot rebuild
+   * it). It says nothing about what the note says.
+   *
+   * OPTIONAL ON PURPOSE. Summaries written before this field existed have no maturity, and
+   * that absence means "not observed", NOT "seedling". Treating it as `seedling` would emit
+   * a promotion for every already-evergreen note on the first scan after deploying this.
+   */
+  maturity?: Maturity
 }
 
 /** Every summary for one mounted folder. */
@@ -73,6 +93,23 @@ export function summaryWordCount(content: string): number {
     .filter(Boolean).length
 }
 
+/**
+ * The note's maturity, read from its own frontmatter. Absent means `seedling`, matching the
+ * frontmatter contract in `types.ts`.
+ *
+ * Duplicated in `markdown-events.ts` for the same reason `hash` and `wordCount` are: this
+ * module is about what survives a reload, that one is about producing events, and a shared
+ * helper would couple the two for no gain. They MUST agree, so the test pins them together.
+ */
+export function summaryMaturity(content: string): Maturity {
+  const front = /^---\r?\n([\s\S]*?)\r?\n---/u.exec(content)
+  if (!front) return 'seedling'
+  const line = /^maturity:\s*(.+)$/imu.exec(front[1])
+  if (!line) return 'seedling'
+  const value = line[1].trim().replace(/^["']|["']$/gu, '').toLowerCase()
+  return value === 'budding' || value === 'evergreen' ? value : 'seedling'
+}
+
 /** Lowercased `[[wikilink]]` targets, matching `links` in `markdown-events.ts`. */
 export function summaryLinkTargets(content: string): string[] {
   return [...content.matchAll(/\[\[([^\]|#]+)(?:\|[^\]]+)?\]\]/gu)]
@@ -99,6 +136,9 @@ export function summarizeScanFiles(
       links: linkTargets.length,
       linkTargets,
       modifiedAt: file.modifiedAt,
+      // Recorded so the NEXT scan can tell whether it changed. A first observation is not a
+      // promotion, which is why the diff only compares two OBSERVED values.
+      maturity: summaryMaturity(file.content),
     }
   })
 }
@@ -185,6 +225,15 @@ function parseSummary(value: unknown): MarkdownScanSummary | null {
     const linkTargets = Array.isArray(file.linkTargets)
       ? file.linkTargets.filter((target): target is string => typeof target === 'string')
       : []
+    // Maturity is read OPTIONALLY, and a missing or unrecognised value means "not observed"
+    // -- never `seedling`. Dropping the summary here (the `return null` style used for a
+    // malformed path or hash) would re-baseline the whole vault and re-award `new-note` for
+    // every note, which is precisely the failure this optional field exists to avoid.
+    const maturity: Maturity | undefined =
+      file.maturity === 'seedling' || file.maturity === 'budding' || file.maturity === 'evergreen'
+        ? file.maturity
+        : undefined
+
     files.push({
       path: file.path,
       hash: file.hash,
@@ -192,6 +241,7 @@ function parseSummary(value: unknown): MarkdownScanSummary | null {
       links: file.links,
       linkTargets,
       modifiedAt: file.modifiedAt,
+      ...(maturity ? { maturity } : {}),
     })
   }
 
