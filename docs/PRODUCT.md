@@ -584,6 +584,29 @@ semantics are not required for the initial graph.
 This is deliberately a rules-based system. AI may help summarize activity later,
 but it must not decide whether XP is deserved.
 
+### 5.3 Note maturity history
+
+Maturity (seedling / budding / evergreen) is authored in note frontmatter, not derived. A change
+between two **observed** values is recorded as a dated, deduplicated `maturity-changed` event in
+the ledger, carrying the path and the `from` / `to` values.
+
+- **A downgrade is recorded too.** The previous behaviour recomputed promotions from the current
+  snapshot, so moving a note back to `seedling` silently erased XP that had already been awarded,
+  with no record it ever existed. That is the failure this history removes.
+- **Only two observed values are compared.** A note's first observation is its starting state, not
+  a change; and a scan summary written before this field existed has no observed value at all.
+  Both cases emit nothing. Treating a missing value as `seedling` would emit a change for every
+  already-evergreen note on the first scan after an upgrade.
+- **The timestamp is the scan's trusted clock, never the file's mtime.** mtime is user-settable,
+  and this event carries no cap, so an uncapped event's budget day falls back to its timestamp. A
+  history whose timestamps are chosen by the thing being audited is not a history.
+- **It is worth zero XP today, deliberately.** Promotion XP still comes from the snapshot exactly
+  as before. Recording history first makes the existing claim auditable; replaying promotions from
+  this log is a separate decision with a migration consequence, and it has not been taken.
+- Per section 4.2 the record stores the path and the maturity label only, never note text. A
+  maturity word is user-authored metadata from a fixed three-value vocabulary, the same class of
+  data as the wikilink targets a scan already keeps.
+
 ## 6. Encounters and collection
 
 Encounters are the main source of dopamine after the first companion.

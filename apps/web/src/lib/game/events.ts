@@ -21,6 +21,14 @@ export type EventCategory =
   | 'published-release'
   | 'closed-linked-issue'
   | 'successful-ci'
+  /**
+   * A note moved between seedling / budding / evergreen.
+   *
+   * Recorded as HISTORY: a dated event carrying `from` and `to`, so the timeline exists and a
+   * downgrade is visible instead of silently erasing its own XP. See the zero rate for this
+   * category in `XP_BY_EVENT_CATEGORY`, which explains why it is zero on purpose.
+   */
+  | 'maturity-changed'
 
 /**
  * A stable ID must come from the source's durable identity, not from a scan
@@ -106,6 +114,21 @@ export const XP_BY_EVENT_CATEGORY: Readonly<Record<EventCategory, number>> = {
   'published-release': 40,
   'closed-linked-issue': 10,
   'successful-ci': 10,
+  /**
+   * ZERO, DELIBERATELY -- not an unfinished value.
+   *
+   * A maturity change is recorded as HISTORY first: when a note moves between
+   * seedling / budding / evergreen, the ledger gets a dated event carrying `from` and `to`. The
+   * timeline begins to exist, and XP stays exactly what it is today.
+   *
+   * WHY ZERO AND NOT A RATE: promotion XP is currently a cumulative-credit reading of the
+   * current snapshot (see `xp.ts`), which means a DOWNGRADE silently erases XP the user already
+   * earned. Making this rate non-zero means replaying promotions from this log instead, and that
+   * forces a migration decision -- grandfather every existing user's current claim once, or start
+   * empty and erase it. That choice deserves real promotions in the log before it is made, so
+   * until then this event is the audit trail, not the payer.
+   */
+  'maturity-changed': 0,
 }
 
 function assertCap(cap: EventCap): void {
