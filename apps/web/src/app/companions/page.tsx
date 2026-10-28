@@ -106,6 +106,16 @@ export default async function CompanionsPage() {
     ...gardenStatRows,
   ]
   const statRows = productState || accountIsSignedIn ? gardenStatRows : legacyStatRows
+  /**
+   * True when this block is showing the VISITOR's garden and that garden is empty, which is
+   * every signed-out first visit.
+   *
+   * WHY IT EXISTS: the home page renders the owner's built-in garden and this page renders the
+   * viewer's. A signed-out stranger saw `/` say "4 notes / 1,550 xp / Mossling" and this page
+   * say "0 / 0 / Sporeling", a scroll apart, with nothing saying they were two different
+   * gardens. Side by side, one of them reads as broken. This flag drives a label, not a hiding.
+   */
+  const emptyViewerGarden = !productState && !accountIsSignedIn
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-16">
@@ -197,6 +207,38 @@ export default async function CompanionsPage() {
           breakpoint. Product XP is deliberately rendered by the synced
           condition above rather than the legacy github-cache aggregate.
         */}
+        {/*
+          WHOSE GARDEN THESE NUMBERS ARE.
+
+          The home page renders the owner's built-in garden; this block renders the VIEWER's.
+          For a signed-out stranger that meant `/` said "4 notes / 1,550 xp / Mossling" and this
+          page said "0 / 0 / Sporeling", a scroll apart, with nothing saying they were two
+          different gardens. The label removes the contradiction without pretending the numbers
+          are the same, and the second line tells them what to do about it.
+        */}
+        <p
+          className="font-data text-xs uppercase tracking-widest mb-3"
+          style={{ color: 'var(--ink-muted)', letterSpacing: '0.15em' }}
+        >
+          {emptyViewerGarden ? 'Your garden · nothing connected on this device' : 'Your garden'}
+        </p>
+        {emptyViewerGarden && (
+          <p
+            className="font-prose text-sm leading-relaxed mb-4 max-w-2xl"
+            style={{ color: 'var(--ink-muted)' }}
+          >
+            The figures on the home page are the site owner&apos;s garden, not yours. Connect
+            a folder under{' '}
+            <Link
+              href="/write"
+              className="underline decoration-dotted underline-offset-2 hover:opacity-70 transition-opacity"
+              style={{ color: 'var(--accent)' }}
+            >
+              Write
+            </Link>{' '}
+            to start your own.
+          </p>
+        )}
         <div
           className="grid grid-cols-2 sm:grid-cols-4"
           style={{

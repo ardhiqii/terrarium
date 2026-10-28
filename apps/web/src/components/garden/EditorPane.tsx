@@ -197,6 +197,7 @@ function SidebarCreature({ state }: { state: CreatureState }) {
           xpIntoStage={state.xpIntoStage}
           xpForNextStage={state.xpForNextStage}
           progress={state.progress}
+          stageName={state.stage.name}
         />
       </div>
     </a>

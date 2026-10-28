@@ -230,6 +230,27 @@ component and the sprite component reaches `node:fs`, so a single server-rendere
 been threaded through and reused. Tiles now resolve their own companion's sprite through a
 client-safe resolver, with each sprite's dimensions measured from the file itself.
 
+### UX review pass (shipped)
+
+The production build read as a signed-out stranger found six defects. All six are fixed;
+the rules they produced are in `PRODUCT.md` section 11.
+
+- **Numbers were unattributed.** `50 / 3500 xp` on the stage bar against `Total 1550 xp`
+  in the ledger below it. Both correct, neither explained. The bar now reads
+  `50 of 3,500 xp into Mossling`, and `XpBar` requires a stage name.
+- **Two gardens, one click apart.** `/` showed the owner's garden (1,550 xp, Mossling),
+  `/companions` the viewer's (0 xp, Sporeling), neither labelled.
+- **No `<h1>` on `/`.** The outline began at the creature's name.
+- **Landing page led with a nine-row XP ledger.** Folded behind its own total.
+- **Ten tap targets under 44 px** at 390 px: theme toggle, hamburger, brand, nav rows,
+  footer links.
+- **`/graph` had no filters** on the surface that stops scaling first. Now filters by tag
+  and maturity, prints `N of M nodes`, and drops links whose far end was filtered out.
+
+Two regressions are pinned by tests because both fail silently: `components/game/xp-bar.test.ts`
+(the label and every call site) and `lib/graph/filter.test.ts` (endpoint resolution still
+works after the force engine rewrites ids into objects).
+
 ## Delivery order
 
 | Phase | Goal | Status |

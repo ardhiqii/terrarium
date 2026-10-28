@@ -1,5 +1,5 @@
 import { buildGraphData } from '@/lib/graph'
-import GardenGraph from '@/components/graph/GardenGraph'
+import GraphExplorer from '@/components/graph/GraphExplorer'
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
@@ -17,11 +17,12 @@ export default function GraphPage() {
           Graph
         </h1>
         <p className="font-ui text-sm" style={{ color: 'var(--ink-muted)' }}>
-          {graphData.nodes.length} nodes, {graphData.links.length} connections. Click a node to navigate.
+          {graphData.nodes.length} nodes, {graphData.links.length} connections. Click a node
+          to navigate, or filter to find one.
         </p>
       </div>
 
-      <GardenGraph data={graphData} />
+      <GraphExplorer data={graphData} />
     </div>
   )
 }

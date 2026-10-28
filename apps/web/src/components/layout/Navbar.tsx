@@ -185,7 +185,7 @@ export default function Navbar() {
           {/* Logo */}
           <Link
             href="/"
-            className="flex items-center gap-2.5 hover:opacity-70 transition-opacity"
+            className="flex items-center gap-2.5 min-h-11 hover:opacity-70 transition-opacity"
           >
             <GardenMark size={24} />
             <span
@@ -213,7 +213,7 @@ export default function Navbar() {
                 <Link
                   key={link.href}
                   href={link.href}
-                  className="ui-row font-ui px-2.5 py-1.5 text-sm whitespace-nowrap rounded"
+                  className="ui-row font-ui px-2.5 py-1.5 min-h-11 inline-flex items-center text-sm whitespace-nowrap rounded"
                   data-active={isActive}
                   // Announces the current page to a screen reader. Previously
                   // the only signals were colour and font weight, neither of
@@ -252,7 +252,7 @@ export default function Navbar() {
             <ThemeToggle />
             <button
               onClick={() => setOpen(!open)}
-              className="p-1.5"
+              className="p-1.5 min-h-11 min-w-11 inline-flex items-center justify-center"
               style={{ color: 'var(--ink-muted)' }}
               aria-label="Toggle menu"
               aria-expanded={open}
@@ -296,7 +296,7 @@ export default function Navbar() {
                   key={link.href}
                   href={link.href}
                   onClick={() => setOpen(false)}
-                  className="ui-row font-ui px-3 py-2 text-sm rounded"
+                  className="ui-row font-ui px-3 py-2 min-h-11 inline-flex items-center text-sm rounded"
                   data-active={isActive}
                   aria-current={isActive ? (link.href === '/notes' && pathname !== '/notes' ? 'location' : 'page') : undefined}
                   style={{

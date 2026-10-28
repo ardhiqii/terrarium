@@ -29,9 +29,9 @@ export default function Footer() {
             : `${wordmarkText()}. Ideas in various states of growth.`}
         </p>
         <nav className="flex gap-4">
-          <Link href="/graph" className="hover:opacity-70 transition-opacity">Graph</Link>
-          <Link href="/tags" className="hover:opacity-70 transition-opacity">Tags</Link>
-          <Link href="/search" className="hover:opacity-70 transition-opacity">Search</Link>
+          <Link href="/graph" className="min-h-11 inline-flex items-center hover:opacity-70 transition-opacity">Graph</Link>
+          <Link href="/tags" className="min-h-11 inline-flex items-center hover:opacity-70 transition-opacity">Tags</Link>
+          <Link href="/search" className="min-h-11 inline-flex items-center hover:opacity-70 transition-opacity">Search</Link>
         </nav>
       </div>
     </footer>
