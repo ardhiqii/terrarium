@@ -14,6 +14,8 @@ import {
   asCompanionId,
   asEventId,
   acceptedLedgerEvents,
+  budgetDayOf,
+  dayOf,
   explainLedgerAcceptance,
   totalXpOf,
   type EventCategory,
@@ -210,47 +212,70 @@ describe('the global daily budget', () => {
   })
 })
 
+describe('a malformed timestamp cannot buy extra budget days', () => {
+  it('charges every unparseable event to ONE day, so forty of them share one budget', () => {
+    // Before: `dayOf` was `timestamp.slice(0, 10)`, so `garbage-0` .. `garbage-39` were
+    // forty distinct days and forty distinct 300 XP allowances: 40 x 25 = 1,000 XP
+    // accepted against a 300 XP budget.
+    const events = Array.from({ length: 40 }, (_, i) => ev('new-note', `garbage-${i}`))
+
+    const { accepted, rejected } = explainLedgerAcceptance({ events })
+
+    expect(totalXpOf(accepted)).toBe(GLOBAL_DAILY_XP_BUDGET)
+    expect(accepted.length).toBe(GLOBAL_DAILY_XP_BUDGET / XP_BY_EVENT_CATEGORY['new-note'])
+    expect(rejected.size).toBe(events.length - accepted.length)
+  })
+
+  it('charges an offset timestamp to its UTC day, not its author\'s day', () => {
+    // 00:30 at +14:00 is 2026-09-30T10:30Z. Slicing the string charged it to 10-01, so
+    // two events half an hour apart could land in different budgets.
+    const events = [
+      ev('new-note', '2026-10-01T00:30:00.000+14:00'),
+      ev('new-note', '2026-09-30T11:00:00.000Z'),
+    ]
+
+    expect(dayOf(events[0].occurredAt)).toBe('2026-09-30')
+    expect(dayOf(events[1].occurredAt)).toBe('2026-09-30')
+  })
+})
+
 describe('the budget cannot be escaped by forging local timestamps', () => {
   it('charges a whole scan to ONE budget day, not one day per forged mtime', () => {
     // The vector a red team found: pass 1 keys the note caps by the trusted scan
     // day, but pass 2 originally keyed the budget by `occurredAt`, which for
-    // local notes is the file's mtime. Ten word events sharing one cap bucket but
-    // carrying ten different mtimes were charged to ten different budgets: 10
-    // accepted, 0 rejected, and the day's sum never bounded.
+    // local notes is the file's mtime. Events sharing one cap bucket but carrying
+    // eighty different mtimes were charged to eighty different budgets.
+    //
+    // THE FIXTURE HAS TO BIND THE BUDGET OR IT PROVES NOTHING. The first version of this
+    // test used ten 5 XP events (50 XP), so it passed whether or not the bug was present:
+    // reverting `budgetDayOf` to `dayOf(occurredAt)` changed no assertion. Eighty events
+    // at 5 XP is 400, which the 300 budget must cut to sixty whichever way the day is
+    // computed — and sixty only happens if all eighty land on one day.
     const scanDay = '2026-10-01'
-    const shared = { key: `mounted-markdown:${scanDay}:new-words`, limit: 10 }
-    const events = Array.from({ length: 10 }, (_, i) =>
-      ev('new-words', `2026-09-${String(20 + i).padStart(2, '0')}T10:00:00.000Z`, { cap: shared }),
+    const shared = { key: `mounted-markdown:${scanDay}:new-words`, limit: 100 }
+    const events = Array.from({ length: 80 }, (_, i) =>
+      ev('new-words', `2026-09-${String(1 + (i % 28)).padStart(2, '0')}T10:00:00.000Z`, { cap: shared }),
     )
 
     const { accepted, rejected } = explainLedgerAcceptance({ events })
-    // All ten survive the cap, so none is rejected here either way. What matters
-    // is that they are all charged to the SAME budget day, which the day key
-    // proves: the budget must not have spread them.
-    expect(accepted).toHaveLength(10)
-    const days = new Set(accepted.map((e) => e.cap!.key.match(/\d{4}-\d{2}-\d{2}/)![0]))
-    expect(days.size).toBe(1)
-    expect(rejected.size).toBe(0)
+
+    expect(new Set(events.map(budgetDayOf))).toEqual(new Set([scanDay]))
+    expect(accepted).toHaveLength(60)
+    expect(totalXpOf(accepted)).toBe(GLOBAL_DAILY_XP_BUDGET)
+    expect(rejected.size).toBe(20)
+    for (const event of rejected.values()) expect(event).toBe('daily-budget')
   })
 
-  it('does not let forged mtimes across many days multiply the budget', () => {
-    // Same ten events, but the budget total for the scan day must be bounded.
-    // Each event is capped at its own key, so model the day as one bucket and
-    // assert the SUM cannot exceed the budget when it is the only day in play.
-    const events = Array.from({ length: 10 }, (_, i) =>
-      ev('new-words', `2026-09-${String(20 + i).padStart(2, '0')}T10:00:00.000Z`, {
-        cap: { key: 'mounted-markdown:2026-10-01:new-words', limit: 10 },
-      }),
-    )
-    // Force the budget to bind by making them expensive instead: same shape,
-    // releases at 40 xp, all sharing one trusted day.
-    const pricey = Array.from({ length: 10 }, () =>
-      ev('published-release', '2026-09-01T10:00:00.000Z', {
-        cap: { key: 'github:acct:2026-10-01:published-release', limit: 10 },
-      }),
-    )
-    expect(totalXpOf(acceptedLedgerEvents({ events: pricey }))).toBeLessThanOrEqual(GLOBAL_DAILY_XP_BUDGET)
-    expect(events).toHaveLength(10)
+  it('takes the day from the cap key, not from the timestamp beside it', () => {
+    // The invariant the two tests above rest on, stated once: an event's budget day is
+    // the trusted day in its cap key, which is the whole reason that key is the input.
+    const capped = ev('new-note', '2019-03-04T08:00:00.000Z', {
+      cap: { key: 'mounted-markdown:2026-10-01:new-note', limit: 3 },
+    })
+    const uncapped = ev('merged-pull-request', '2026-10-02T08:00:00.000Z')
+
+    expect(budgetDayOf(capped)).toBe('2026-10-01')
+    expect(budgetDayOf(uncapped)).toBe('2026-10-02')
   })
 })
 

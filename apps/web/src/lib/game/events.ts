@@ -205,9 +205,40 @@ export interface LedgerAcceptance {
   readonly rejected: ReadonlyMap<string, LedgerRejectionReason>
 }
 
-/** The calendar day an event is charged to, in UTC. */
-function dayOf(timestamp: string): string {
-  return timestamp.slice(0, 10)
+/**
+ * The day value for an event whose timestamp cannot be parsed.
+ *
+ * NOT a date, deliberately: every malformed event lands in this ONE bucket, so a
+ * hundred garbage timestamps cannot buy a hundred daily budgets. Fail-closed, and it
+ * never throws, because a corrupt local record must not take the page down.
+ */
+const UNDATED_DAY = '0000-00-00'
+
+/**
+ * The calendar day an event is charged to, in UTC.
+ *
+ * WHY THIS PARSES INSTEAD OF SLICING: `timestamp.slice(0, 10)` reads the WRITER's
+ * calendar, not UTC. `2026-10-01T00:30:00+14:00` is 2026-09-30 in UTC, and slicing
+ * charged it to 2026-10-01, so two events an hour apart could land in different
+ * budgets. Re-projecting through `Date` normalises every offset to one calendar.
+ *
+ * WHY THE REGEX AND NOT JUST `Date.parse`: `Date.parse` is lenient to the point of
+ * uselessness here. `Date.parse('garbage-0')` returns 2000-01-01 and
+ * `Date.parse('garbage-7')` returns 2001-08-01 — V8 reads the trailing digits as a
+ * year. Forty such strings became forty distinct days and forty 300 XP allowances.
+ * Only a real ISO-8601 date is a day; anything else is charged to `UNDATED_DAY`, one
+ * shared bucket that cannot be farmed by inventing timestamps.
+ */
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2}))?$/u
+
+/** True only for a string that is really an ISO-8601 timestamp. See `dayOf`. */
+export function isIsoTimestamp(value: string): boolean {
+  return ISO_TIMESTAMP.test(value) && Number.isFinite(Date.parse(value))
+}
+
+export function dayOf(timestamp: string): string {
+  if (!isIsoTimestamp(timestamp)) return UNDATED_DAY
+  return new Date(Date.parse(timestamp)).toISOString().slice(0, 10)
 }
 
 /**
@@ -228,15 +259,35 @@ function dayOf(timestamp: string): string {
  *
  * The day is the LAST date-shaped segment: the category names contain no date,
  * while a source id in the middle of a GitHub key theoretically could.
+ *
+ * THE `@<day>` SUFFIX IS PART OF THIS CONTRACT. The sync contract hashes a cap key
+ * (it can name a source), and a hash hides the day, which sent every synced event
+ * back to `occurredAt` — the file mtime this function exists to distrust. So the
+ * snapshot builder appends `@YYYY-MM-DD` to the hash and this reads the last date in
+ * the string, which the suffix satisfies without a second rule.
  */
 const ISO_DAY = /\d{4}-\d{2}-\d{2}/g
 
-function budgetDayOf(event: NormalizedEvent): string {
+/** The day an event's budget is charged to. */
+export function budgetDayOf(event: NormalizedEvent): string {
   if (event.cap) {
     const matches = event.cap.key.match(ISO_DAY)
     if (matches && matches.length > 0) return matches[matches.length - 1]
   }
   return dayOf(event.occurredAt)
+}
+
+/**
+ * A cap bucket's identity, with the trailing budget-day annotation removed.
+ *
+ * Grouping on the annotated string would split one bucket in two the day the suffix
+ * shipped — a stored `cap-abc12345-6789abcd` against a fresh `cap-abc12345-6789abcd@2026-10-01`
+ * — silently doubling that bucket's allowance. The annotation is metadata about the
+ * day; the hash is the identity.
+ */
+function capIdentity(key: string): string {
+  const at = key.lastIndexOf('@')
+  return at === -1 ? key : key.slice(0, at)
 }
 
 /**
@@ -267,9 +318,10 @@ export function explainLedgerAcceptance(ledger: EventLedger): LedgerAcceptance {
       candidates.push(event)
       continue
     }
-    const group = cappedGroups.get(event.cap.key) ?? []
+    const bucket = capIdentity(event.cap.key)
+    const group = cappedGroups.get(bucket) ?? []
     group.push(event)
-    cappedGroups.set(event.cap.key, group)
+    cappedGroups.set(bucket, group)
   }
 
   for (const group of cappedGroups.values()) {
@@ -340,8 +392,12 @@ export function sumXpPerCompanion(
 ): Readonly<Record<CompanionId, number>> {
   const totals: Record<CompanionId, number> = {}
   for (const event of acceptedLedgerEvents(ledger)) {
+    // `?? 0` matches `totalXpOf` and `explainLedgerAcceptance`. Without it an unknown
+    // category made this sum NaN, which propagated into every companion total, then
+    // into the wire snapshot, where the finite-number validator turned a clean 400
+    // into a 500 and lost the whole upload.
     totals[event.companionId] =
-      (totals[event.companionId] ?? 0) + XP_BY_EVENT_CATEGORY[event.category]
+      (totals[event.companionId] ?? 0) + (XP_BY_EVENT_CATEGORY[event.category] ?? 0)
   }
 
   return totals
