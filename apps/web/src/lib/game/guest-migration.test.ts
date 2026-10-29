@@ -29,6 +29,61 @@ describe('nothing to do', () => {
     const one = profile({ guestId: 'same' })
     expect(planGuestMigration(one, profile({ guestId: 'same' }))).toBeNull()
   })
+
+  it('still merges when the same identity holds progress the account has not seen', () => {
+    // Signed out, played, signed back in: the account key adopted this guest id long ago, so
+    // the two ids match while the guest copy carries a companion the account lacks. Treating
+    // equal ids as "already migrated" threw that progress away.
+    const account = profile({
+      guestId: 'same',
+      collection: [
+        { referenceId: 'a1', companionId: 'pikachu-family', acquiredAt: NOW, acquisition: 'starter' },
+      ],
+    })
+    const guest = profile({
+      guestId: 'same',
+      collection: [
+        { referenceId: 'a1', companionId: 'pikachu-family', acquiredAt: NOW, acquisition: 'starter' },
+        { referenceId: 'g2', companionId: 'ditto-like', acquiredAt: NOW, acquisition: 'encounter' },
+      ],
+    })
+
+    const plan = planGuestMigration(guest, account)
+
+    expect(plan).not.toBeNull()
+    expect(plan?.profile.collection.map((entry) => entry.referenceId)).toEqual(['a1', 'g2'])
+    expect(plan?.clearGuest).toBe(true)
+  })
+
+  it('treats an unopened egg the account lacks as progress worth merging', () => {
+    const account = profile({ guestId: 'same', eggs: [] })
+    const guest = profile({
+      guestId: 'same',
+      eggs: [{ drawId: 'g:0', companionId: 'ditto-like', laidAt: NOW }],
+    })
+
+    expect(planGuestMigration(guest, account)?.profile.eggs?.map((egg) => egg.drawId)).toEqual(['g:0'])
+  })
+
+  it('keeps a differing active companion instead of quietly dropping it', () => {
+    // Same collection, different choice. The guest was the profile on screen a moment ago, so
+    // its choice is the one the user expects after signing in.
+    const shared = { referenceId: 'a1', companionId: 'pikachu-family', acquiredAt: NOW, acquisition: 'starter' as const }
+    const account = profile({ guestId: 'same', collection: [shared], activeCompanionId: 'pikachu-family' })
+    const guest = profile({ guestId: 'same', collection: [shared], activeCompanionId: 'pikachu-family' })
+
+    expect(planGuestMigration(guest, account)).toBeNull()
+
+    const other = profile({
+      guestId: 'same',
+      collection: [shared, { referenceId: 'g2', companionId: 'ditto-like', acquiredAt: NOW, acquisition: 'encounter' }],
+      activeCompanionId: 'ditto-like',
+    })
+    const plan = planGuestMigration(other, account)
+
+    expect(plan?.profile.activeCompanionId).toBe('ditto-like')
+    expect(plan?.activeCompanionChanged).toBe(true)
+  })
 })
 
 describe('unions the collection', () => {

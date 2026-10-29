@@ -251,8 +251,11 @@ describe('the guest import carries the encounter state, not just the profile', (
     // for a browser that has only ever used one identity. Returning early there would
     // skip the encounter move exactly when it is most likely to be needed.
     const sameIdentity = source.slice(source.indexOf('const plan = planGuestMigration'))
-    expect(sameIdentity.indexOf('migrateEncounterStateIntoAccount')).toBeLessThan(
-      sameIdentity.indexOf('return'),
-    )
+    const moveAt = sameIdentity.indexOf('migrateEncounterStateIntoAccount')
+    // Matched as a WORD: a prose mention of "returning" in a comment is not the branch.
+    const returnAt = sameIdentity.search(/\breturn\b/u)
+    expect(moveAt).toBeGreaterThan(-1)
+    expect(returnAt).toBeGreaterThan(-1)
+    expect(moveAt).toBeLessThan(returnAt)
   })
 })
