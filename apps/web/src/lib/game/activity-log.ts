@@ -19,7 +19,7 @@
 
 import {
   XP_BY_EVENT_CATEGORY,
-  acceptedLedgerEvents,
+  budgetDayOf,
   explainLedgerAcceptance,
   type CompanionId,
   type EventCategory,
@@ -175,15 +175,21 @@ export function resolveActivityLog(
   // What the DAY has spent, for the budget meter. Deliberately not `totalXp`:
   // that is this companion's entire history, while the budget is one day across
   // every companion. Rendering the lifetime total against a daily budget showed
-  // "1,800 / 250" for a busy companion and made the label a false statement.
-  // The day is the newest event's day, which is the day a live session is in.
-  const newestDay = entries.length > 0 ? entries[0].occurredAt.slice(0, 10) : null
-  const dayXp = newestDay === null
-    ? 0
-    : acceptedLedgerEvents(ledger).reduce((sum, event) => {
-        if (event.occurredAt.slice(0, 10) !== newestDay) return sum
-        return sum + (XP_BY_EVENT_CATEGORY[event.category] ?? 0)
-      }, 0)
+  // "1,800 / 300" for a busy companion and made the label a false statement.
+  //
+  // THE DAY COMES FROM `budgetDayOf`, NOT FROM THE TIMESTAMP'S PREFIX. The ledger
+  // charges an event to the day inside its cap key (the trusted scan day), while a
+  // local note's `occurredAt` is the file's mtime. Counting by the timestamp here let a
+  // scan of twenty backdated notes spend the whole 300 budget while this number read 0:
+  // the meter and the engine disagreed about what day it was. One function, or they drift.
+  const spendByDay = new Map<string, number>()
+  for (const event of accepted) {
+    const day = budgetDayOf(event)
+    spendByDay.set(day, (spendByDay.get(day) ?? 0) + (XP_BY_EVENT_CATEGORY[event.category] ?? 0))
+  }
+  const newestEvent = entries.length > 0 ? canonical.get(entries[0].eventId) : undefined
+  const newestDay = newestEvent ? budgetDayOf(newestEvent) : null
+  const dayXp = newestDay === null ? 0 : (spendByDay.get(newestDay) ?? 0)
 
   return {
     entries,
