@@ -533,5 +533,93 @@ describe('product snapshot', () => {
       expect(mergeGuestWithServer(without, withCare).condition?.lastFedAt).toBe(now)
       expect(mergeGuestWithServer(withCare, without).condition?.lastFedAt).toBe(now)
     })
+
+    it('carries the active acquisition through build, restore and merge', () => {
+      // Two Pikachu: the species id is identical, so only this field can say
+      // which one the user marked active.
+      const twoPikachu = snapshotWith((profile) => ({
+        ...profile,
+        collection: [
+          ...profile.collection,
+          {
+            referenceId: 'guest-2:starter',
+            companionId: 'pikachu-family',
+            acquiredAt: earlier,
+            acquisition: 'starter' as const,
+          },
+        ],
+        activeReferenceId: 'guest-2:starter',
+      }))
+      // The snapshot stores opaque references, so the pointer must name one of
+      // its own collection entries rather than the raw local id.
+      const collectionIds = twoPikachu.collection.map((reference) => reference.referenceId)
+      expect(collectionIds).toContain(twoPikachu.activeReferenceId)
+      expect(twoPikachu.activeReferenceId).not.toBe(collectionIds[0])
+
+      const restored = restoreProductStateFromSnapshot(
+        twoPikachu,
+        createGuestProfile({ guestId: 'other', starterCompanionId: 'pikachu-family', now }),
+        PROTOTYPE_COMPANION_CATALOG,
+      )
+      expect(restored.profile.activeReferenceId).toBe(twoPikachu.activeReferenceId)
+
+      const other = snapshotWith((profile) => ({
+        ...profile,
+        activeReferenceId: profile.collection[0].referenceId,
+      }))
+      // The guest (local) choice wins on each side, but only while it still
+      // exists in the merged collection — the same rule activeCompanionId uses.
+      expect(mergeGuestWithServer(twoPikachu, other).activeReferenceId).toBe(
+        twoPikachu.activeReferenceId,
+      )
+      expect(mergeGuestWithServer(other, twoPikachu).activeReferenceId).toBe(
+        other.activeReferenceId,
+      )
+    })
+
+    it('falls back to an owned entry when the pointer is not in the merged collection', () => {
+      const stale = snapshotWith((profile) => ({
+        ...profile,
+        activeReferenceId: 'gone:starter',
+      }))
+      const plain = snapshotWith((profile) => profile)
+      const merged = mergeGuestWithServer(stale, plain)
+      expect(merged.activeReferenceId).toBe(plain.collection[0].referenceId)
+    })
+
+    it('folds duplicate starters from both sides of the merge', () => {
+      // Two profiles' starters arriving in one collection: the union is what
+      // creates the duplicate, so the union is where it has to be folded.
+      const guest = snapshotWith((profile) => ({
+        ...profile,
+        collection: [
+          ...profile.collection,
+          {
+            referenceId: 'guest-2:starter',
+            companionId: 'pikachu-family',
+            acquiredAt: earlier,
+            acquisition: 'starter' as const,
+          },
+        ],
+      }))
+      const server = snapshotWith((profile) => ({
+        ...profile,
+        collection: [
+          ...profile.collection,
+          {
+            referenceId: 'guest-3:starter',
+            companionId: 'pikachu-family',
+            acquiredAt: now,
+            acquisition: 'starter' as const,
+          },
+        ],
+      }))
+
+      const merged = mergeGuestWithServer(guest, server)
+      expect(merged.collection.filter((entry) => entry.companionId === 'pikachu-family')).toHaveLength(1)
+      // The merged snapshot is validated inside mergeGuestWithServer, so this
+      // also proves the surviving assignment points at an entry that exists.
+      expect(validateProductSnapshot(merged)).toBeUndefined()
+    })
   })
 })

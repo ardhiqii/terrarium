@@ -29,6 +29,7 @@ import {
 import {
   createGuestProfile,
   GUEST_PROFILE_STORAGE_KEY,
+  collapseDuplicateStarters,
   loadGuestProfile,
   saveGuestProfile,
   type GuestProfile,
@@ -405,7 +406,16 @@ export function ensureBrowserGuestProfile(
 ): GuestProfile {
   const profileKey = namespace ? namespacedKey(GUEST_PROFILE_STORAGE_KEY, namespace) : undefined
   const existing = loadGuestProfile(storage, profileKey)
-  if (existing) return existing
+  if (existing) {
+    // REPAIR ON ENSURE, not on a dedicated repair screen. A profile unioned from
+    // two guests can hold two starters of one species, and that has to be fixed
+    // before any surface reads it. `collapseDuplicateStarters` returns the same
+    // object when there is nothing to fold, so this writes only on a real change
+    // and is idempotent on every later call.
+    const repaired = collapseDuplicateStarters(existing, new Date().toISOString())
+    if (repaired !== existing) saveGuestProfile(storage, repaired, profileKey)
+    return repaired
+  }
   const now = new Date().toISOString()
   const randomId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()

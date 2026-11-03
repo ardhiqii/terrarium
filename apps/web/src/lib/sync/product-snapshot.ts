@@ -30,6 +30,7 @@ import type {
   GuestProfile,
   LocalSourceBaseline,
 } from '../game/guest-profile'
+import { activeCollectionReference } from '../game/guest-profile'
 import {
   createCareState,
   mergeCareState,
@@ -148,6 +149,14 @@ export interface ProductSnapshot {
   readonly updatedAt: string
   readonly generatedAt: string
   readonly activeCompanionId: string
+  /**
+   * Which acquisition is active, when the client knew.
+   *
+   * OPTIONAL because a snapshot written before the field existed has only the
+   * species id, and the resolver falls back to the first entry of that species.
+   * Without it a two-Pikachu collection cannot say which one the user chose.
+   */
+  readonly activeReferenceId?: string
   readonly companions: readonly ProductSnapshotCompanion[]
   readonly collection: readonly ProductSnapshotCollectionReference[]
   readonly sourceBaselines: readonly ProductSnapshotSourceBaseline[]
@@ -422,6 +431,12 @@ export function buildProductSnapshot(
     updatedAt: profile.updatedAt,
     generatedAt,
     activeCompanionId: profile.activeCompanionId,
+    // Resolved, then hashed like every other reference in this payload: the
+    // snapshot stores opaque ids, so writing the raw reference would produce a
+    // pointer that matches no collection entry on restore.
+    activeReferenceId: activeCollectionReference(profile)
+      ? opaqueId(activeCollectionReference(profile)!.referenceId, 'ref')
+      : undefined,
     companions: state.companions.map(snapshotCompanion),
     collection: profile.collection.map(snapshotCollectionReference),
     sourceBaselines: profile.sourceBaselines.map(snapshotBaseline),
@@ -612,7 +627,7 @@ export function validateProductSnapshot(value: unknown): asserts value is Produc
     // OPTIONAL, not required: a snapshot written by an older client has none of
     // these fields, and requiring them would reject every payload already in
     // flight. All are read as `?? []` (or `createCareState`) on restore.
-    ['eggs', 'assignments', 'condition'],
+    ['eggs', 'assignments', 'condition', 'activeReferenceId'],
     'Product snapshot',
   )
   if (value.schemaVersion !== PRODUCT_SNAPSHOT_SCHEMA_VERSION) throw new TypeError('Unsupported product snapshot schema version')
@@ -621,6 +636,9 @@ export function validateProductSnapshot(value: unknown): asserts value is Produc
   assertTimestamp(value.updatedAt, 'updatedAt')
   assertTimestamp(value.generatedAt, 'generatedAt')
   assertNonEmptyString(value.activeCompanionId, 'activeCompanionId')
+  if ('activeReferenceId' in value && value.activeReferenceId !== undefined) {
+    assertNonEmptyString(value.activeReferenceId, 'activeReferenceId')
+  }
   if (!Array.isArray(value.companions)) throw new TypeError('companions must be an array')
   if (!Array.isArray(value.collection)) throw new TypeError('collection must be an array')
   if (!Array.isArray(value.sourceBaselines)) throw new TypeError('sourceBaselines must be an array')
@@ -776,6 +794,7 @@ export function restoreProductStateFromSnapshot(
     createdAt: snapshot.createdAt,
     updatedAt: snapshot.updatedAt,
     activeCompanionId: snapshot.activeCompanionId,
+    activeReferenceId: snapshot.activeReferenceId,
     collection: snapshot.collection.map((reference) => ({ ...reference })),
     // `?? []` so a snapshot from an older client still restores. Dropping these
     // would lose unopened eggs and repository assignments on every sync.
@@ -873,9 +892,18 @@ export function mergeGuestWithServer(guest: ProductSnapshot, server: ProductSnap
   const events = unionEvents(guest.events, server.events).sort(
     (left, right) => left.occurredAt.localeCompare(right.occurredAt) || left.eventId.localeCompare(right.eventId),
   )
-  const collection = unionById(guest.collection, server.collection, (reference) => reference.referenceId).sort(
+  const unionCollection = unionById(guest.collection, server.collection, (reference) => reference.referenceId).sort(
     (left, right) => left.acquiredAt.localeCompare(right.acquiredAt) || left.referenceId.localeCompare(right.referenceId),
   )
+  const mergedAssignments = mergeAssignments(guest.assignments ?? [], server.assignments ?? [])
+  // Fold duplicate starters BEFORE anything else reads the collection: companions,
+  // the active companion and the assignments all have to agree on the same list.
+  const { collection, dropped } = collapseSnapshotStarters(
+    unionCollection,
+    guest.activeReferenceId ?? server.activeReferenceId,
+    mergedAssignments,
+  )
+  const assignments = remapCollapsedAssignments(mergedAssignments, dropped)
   const eventLedger: EventLedger = { events: events.map(toNormalizedEvent) }
   const companions = mergeCompanions(guest.companions, server.companions, eventLedger, collection)
   const validCompanion = (id: string) => collection.some((reference) => reference.companionId === id)
@@ -895,6 +923,15 @@ export function mergeGuestWithServer(guest: ProductSnapshot, server: ProductSnap
     updatedAt: guest.updatedAt >= server.updatedAt ? guest.updatedAt : server.updatedAt,
     generatedAt: guest.generatedAt >= server.generatedAt ? guest.generatedAt : server.generatedAt,
     activeCompanionId,
+    // The user's choice of instance, kept only if the merged collection still
+    // holds it; otherwise it is re-derived from the active species so the badge
+    // has something real to point at.
+    activeReferenceId: mergeActiveReferenceId(
+      guest.activeReferenceId,
+      server.activeReferenceId,
+      collection,
+      activeCompanionId,
+    ),
     companions,
     collection,
     sourceBaselines,
@@ -906,7 +943,7 @@ export function mergeGuestWithServer(guest: ProductSnapshot, server: ProductSnap
     // The fields existed and validated, which is what made the loss invisible:
     // a merged snapshot looked like a snapshot taken before the user owned them.
     eggs: unionById(guest.eggs ?? [], server.eggs ?? [], (egg) => egg.drawId),
-    assignments: mergeAssignments(guest.assignments ?? [], server.assignments ?? []),
+    assignments,
     // The condition layer merges by NEWEST TIMESTAMP PER FIELD, not by whole
     // state: a laptop that fed the companion and a phone that let it rest must
     // both survive, and taking the newer snapshot whole would erase one of them.
@@ -914,6 +951,107 @@ export function mergeGuestWithServer(guest: ProductSnapshot, server: ProductSnap
   }
   validateProductSnapshot(merged)
   return merged
+}
+
+/**
+ * Fold duplicate STARTERS of one species in a merged collection.
+ *
+ * The same rule as `collapseDuplicateStarters` on the profile, applied to the
+ * snapshot because the union is what re-introduces the duplicate: a server copy
+ * written before the repair still holds both starters, so folding only on the
+ * client would be undone by the next sync. Encounter and history entries are
+ * never folded — those are real acquisitions.
+ */
+function collapseSnapshotStarters(
+  collection: ProductSnapshotCollectionReference[],
+  activeReferenceId: string | undefined,
+  assignments: readonly ProductSnapshotAssignment[],
+): {
+  collection: ProductSnapshotCollectionReference[]
+  dropped: Map<string, string>
+} {
+  const assigned = new Set(assignments.map((assignment) => assignment.referenceId))
+  const bySpecies = new Map<string, ProductSnapshotCollectionReference[]>()
+  for (const reference of collection) {
+    if (reference.acquisition !== 'starter') continue
+    const group = bySpecies.get(reference.companionId) ?? []
+    group.push(reference)
+    bySpecies.set(reference.companionId, group)
+  }
+
+  const dropped = new Map<string, string>()
+  for (const group of bySpecies.values()) {
+    if (group.length < 2) continue
+    const keep =
+      group.find((reference) => reference.referenceId === activeReferenceId) ??
+      group.find((reference) => assigned.has(reference.referenceId)) ??
+      [...group].sort(
+        (left, right) =>
+          left.acquiredAt.localeCompare(right.acquiredAt) ||
+          left.referenceId.localeCompare(right.referenceId),
+      )[0]
+    for (const reference of group) {
+      if (reference.referenceId !== keep.referenceId) {
+        dropped.set(reference.referenceId, keep.referenceId)
+      }
+    }
+  }
+
+  if (dropped.size === 0) return { collection, dropped }
+  return {
+    collection: collection.filter((reference) => !dropped.has(reference.referenceId)),
+    dropped,
+  }
+}
+
+/**
+ * Which acquisition the merged snapshot should call active.
+ *
+ * Prefers the guest's explicit choice, then the server's, then the first entry of
+ * the active species. Every candidate is checked against the MERGED collection:
+ * a pointer that survived neither side's union would otherwise be published and
+ * fail the collection/active consistency the validator expects.
+ */
+function mergeActiveReferenceId(
+  guestReferenceId: string | undefined,
+  serverReferenceId: string | undefined,
+  collection: readonly ProductSnapshotCollectionReference[],
+  activeCompanionId: string,
+): string | undefined {
+  const owned = new Set(collection.map((reference) => reference.referenceId))
+  if (guestReferenceId && owned.has(guestReferenceId)) return guestReferenceId
+  if (serverReferenceId && owned.has(serverReferenceId)) return serverReferenceId
+  return collection.find((reference) => reference.companionId === activeCompanionId)?.referenceId
+}
+
+/**
+ * Re-point assignments from a folded-away starter to the one that survived.
+ *
+ * One companion dresses one repository, so a keeper that is already dressed
+ * cannot take a second repository: that assignment is released rather than
+ * double-booked, which the profile validator refuses. Losing a dressing is
+ * recoverable in one click; publishing an invalid assignment loses the whole
+ * profile on the next read.
+ */
+function remapCollapsedAssignments(
+  assignments: readonly ProductSnapshotAssignment[],
+  dropped: ReadonlyMap<string, string>,
+): ProductSnapshotAssignment[] {
+  if (dropped.size === 0) return [...assignments]
+  const taken = new Set<string>()
+  const result: ProductSnapshotAssignment[] = []
+  for (const assignment of assignments) {
+    const keeper = dropped.get(assignment.referenceId)
+    if (keeper === undefined) {
+      taken.add(assignment.referenceId)
+      result.push(assignment)
+      continue
+    }
+    if (taken.has(keeper)) continue
+    taken.add(keeper)
+    result.push({ ...assignment, referenceId: keeper })
+  }
+  return result
 }
 
 /**

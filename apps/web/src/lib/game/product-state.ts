@@ -220,17 +220,34 @@ export function applyProductEvents(
   return createProductState(profile, ledger, encounterResult.state, catalog)
 }
 
+/**
+ * Switch the active companion.
+ *
+ * `referenceId` selects WHICH acquisition when the species has more than one
+ * entry; without it the first owned entry of that species is chosen. Both fields
+ * are written, because XP keeps following the species while the badge follows the
+ * acquisition.
+ */
 export function switchActiveCompanion(
   state: ProductState,
   companionId: string,
   catalog: CompanionCatalog,
+  referenceId?: string,
 ): ProductState {
-  if (!state.profile.collection.some((reference) => reference.companionId === companionId)) {
-    return state
-  }
+  const owned = state.profile.collection.filter(
+    (reference) => reference.companionId === companionId,
+  )
+  if (owned.length === 0) return state
+
+  const chosen =
+    (referenceId ? owned.find((reference) => reference.referenceId === referenceId) : undefined) ??
+    owned.find((reference) => reference.referenceId === state.profile.activeReferenceId) ??
+    owned[0]
+
   const profile = {
     ...state.profile,
     activeCompanionId: companionId,
+    activeReferenceId: chosen.referenceId,
     updatedAt: new Date().toISOString(),
   }
   return createProductState(profile, state.ledger, state.encounters, catalog)

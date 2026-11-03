@@ -34,7 +34,12 @@ import {
   type CareScene,
 } from '@/lib/game/care'
 import { createCareState } from '@/lib/game/care'
-import { loadGuestProfile, saveGuestProfile, type GuestProfile } from '@/lib/game/guest-profile'
+import {
+  activeCollectionReference,
+  loadGuestProfile,
+  saveGuestProfile,
+  type GuestProfile,
+} from '@/lib/game/guest-profile'
 import {
   browserProductStorage,
   loadBrowserLedger,
@@ -262,7 +267,11 @@ export function CareHouse() {
 
   const readout = useMemo(() => {
     if (!house) return null
-    const companionId = house.profile.activeCompanionId
+    // The resolved acquisition, so the room shows the instance the grid marked
+    // active even when the profile's species pointer drifted.
+    const companionId =
+      activeCollectionReference(house.profile)?.companionId ??
+      house.profile.activeCompanionId
     // A profile saved before the care layer existed has no `care`. Starting the
     // clock at the profile's own creation (not at "now") is what stops the first
     // visit after the upgrade from handing the companion a free full belly.
