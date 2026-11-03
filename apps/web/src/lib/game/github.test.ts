@@ -151,6 +151,51 @@ describe('fetchGithubStats: no token configured', () => {
   })
 })
 
+describe('fetchGithubStats: the on-disk cache belongs to one login', () => {
+  it('treats an entry written for a different login as a miss, not as stale data', async () => {
+    // The path is the only key, so a shared path used to hand one user's numbers to another —
+    // including through the "GitHub is down, serve what we have" fallback.
+    writeGithubCache(makeGithubStats({ login: 'alice', totalCommits: 999 }), cachePath)
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network unreachable')))
+
+    const result = await fetchGithubStats({
+      login: 'bob',
+      cachePath,
+      apiBase: 'https://fake.invalid',
+    })
+
+    expect(result).toBeNull()
+  })
+
+  it('still serves the cache to the login it was written for, without a request', async () => {
+    writeGithubCache(makeGithubStats({ login: 'alice', totalCommits: 7 }), cachePath)
+    const fetchMock = vi.fn().mockRejectedValue(new Error('network unreachable'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await fetchGithubStats({
+      login: 'alice',
+      cachePath,
+      apiBase: 'https://fake.invalid',
+    })
+
+    expect(result?.totalCommits).toBe(7)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('matches the login case-insensitively, because GitHub handles are', async () => {
+    writeGithubCache(makeGithubStats({ login: 'alice' }), cachePath)
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network unreachable')))
+
+    const result = await fetchGithubStats({
+      login: 'Alice',
+      cachePath,
+      apiBase: 'https://fake.invalid',
+    })
+
+    expect(result?.login).toBe('alice')
+  })
+})
+
 describe('fetchGithubStats: network rejects', () => {
   it('returns null, never throws, when fetch rejects outright', async () => {
     vi.stubGlobal(

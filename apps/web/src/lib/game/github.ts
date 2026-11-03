@@ -242,11 +242,23 @@ async function fetchGithubStatsInner(
   const token = options.token ?? process.env.GITHUB_TOKEN
 
   const cached = readGithubCache(cachePath)
-  if (cached) {
-    const cachedAt = Date.parse(cached.fetchedAt)
+  /**
+   * A cache entry for a DIFFERENT login is not a stale hit — it is someone else's stats.
+   *
+   * Nothing tied the file to the handle it described: the path is the only key, so every
+   * caller was trusted to derive a per-handle path (`diskCachePathFor` exists for exactly
+   * that reason, and says so). One caller that forgets, or a future one that deliberately
+   * shares a path, would serve one user's commit history as another's — including through the
+   * "GitHub is down, serve what we have" fallback below. Comparing the login makes the
+   * requirement self-enforcing instead of remembered.
+   */
+  const cachedForLogin =
+    cached && cached.login.toLowerCase() === options.login.toLowerCase() ? cached : null
+  if (cachedForLogin) {
+    const cachedAt = Date.parse(cachedForLogin.fetchedAt)
     const age = Number.isFinite(cachedAt) ? Date.now() - cachedAt : Infinity
     if (age < maxAgeMs) {
-      return cached
+      return cachedForLogin
     }
   }
 
@@ -264,7 +276,7 @@ async function fetchGithubStatsInner(
   // Path 2: no token, or GraphQL failed. Falls back to the REST public
   // events feed, which still benefits from the token (higher rate limit)
   // when one is present.
-  return await fetchViaEvents(options, apiBase, token, cachePath, cached)
+  return await fetchViaEvents(options, apiBase, token, cachePath, cachedForLogin)
 }
 
 async function fetchViaEvents(
