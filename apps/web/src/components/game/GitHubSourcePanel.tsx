@@ -1027,8 +1027,15 @@ export function GitHubSourcePanel() {
       )
       const storage = browserProductStorage()
       saveGuestProfile(storage, next.profile, accountNamespace ? `terrarium:guest-profile:${accountNamespace}` : undefined)
-      saveBrowserLedger(storage, next.ledger, accountNamespace ?? undefined)
+      const ledgerSaved = saveBrowserLedger(storage, next.ledger, accountNamespace ?? undefined)
       saveBrowserEncounters(storage, next.encounters, accountNamespace ?? undefined)
+      if (!ledgerSaved) {
+        // The profile write above already landed, so this device now owns companions whose
+        // events were not persisted. Say that plainly instead of letting it look like a
+        // successful sync: the events still exist on the server, and the next sync re-merges
+        // them, so the fix is free space rather than a lost companion.
+        throw new Error('Browser storage is full, so this sync was not saved. Free some space, then sync again.')
+      }
       setProductState(next)
 
       const persistedProofs = {

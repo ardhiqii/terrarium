@@ -11,7 +11,10 @@ import {
   loadSyncScheduleState,
   loadVerifiedEventProofs,
   mergeVerifiedEventProofs,
+  saveBrowserEncounters,
+  saveBrowserLedger,
   saveGithubSyncRecovery,
+  saveRevealedDraws,
   saveSyncRequestUsage,
   saveSyncScheduleState,
   saveVerifiedEventProofs,
@@ -178,5 +181,26 @@ describe('browser GitHub receipt storage', () => {
     // The merged in-memory record survives the refused write.
     expect(saveSyncRequestUsage(hostile, [{ at: 1, requests: 10 }], 'github-42', 1))
       .toEqual([{ at: 1, requests: 10 }])
+  })
+
+  it('never throws from the four writes that carry actual progress', () => {
+    // These used to be the only savers in the module with no guard. On a full quota, or in
+    // Safari's private mode where every write throws, the exception escaped the scan or the
+    // sync — after the profile had already been written, leaving companions with no events.
+    const hostile: BrowserProductStorage = {
+      getItem: () => null,
+      setItem: () => { throw new Error('quota exceeded') },
+      removeItem: () => {},
+    }
+
+    expect(saveBrowserLedger(hostile, { events: [] })).toBe(false)
+    expect(saveBrowserEncounters(hostile, createEncounterState())).toBe(false)
+    expect(saveRevealedDraws(hostile, [])).toBe(false)
+    expect(saveVerifiedEventProofs(hostile, {})).toBe(false)
+  })
+
+  it('reports a write that landed, so a caller can tell the difference', () => {
+    expect(saveBrowserLedger(storage(), { events: [] })).toBe(true)
+    expect(saveRevealedDraws(storage(), [])).toBe(true)
   })
 })

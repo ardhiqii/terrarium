@@ -114,8 +114,29 @@ export function loadBrowserLedger(storage: BrowserProductStorage, namespace?: st
   }
 }
 
-export function saveBrowserLedger(storage: BrowserProductStorage, ledger: EventLedger, namespace?: string): void {
-  storage.setItem(namespacedKey(LEDGER_KEY, namespace), JSON.stringify(ledger))
+/**
+ * A storage write that cannot throw.
+ *
+ * `localStorage.setItem` throws `QuotaExceededError` when the origin's storage is full, and in
+ * Safari's private mode it throws on every write. The best-effort savers in this module
+ * (recovery, schedule, request usage) already caught that. The four that carry the user's
+ * actual progress — ledger, receipts, encounters, revealed draws — did not, so a full quota or
+ * a private window escaped as an exception out of a scan or a sync.
+ *
+ * Returns false when nothing was persisted. A caller that can tell the user is expected to;
+ * the rest degrade to "this tick did not save" rather than taking the interaction down.
+ */
+function writeBestEffort(storage: BrowserProductStorage, key: string, value: string): boolean {
+  try {
+    storage.setItem(key, value)
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function saveBrowserLedger(storage: BrowserProductStorage, ledger: EventLedger, namespace?: string): boolean {
+  return writeBestEffort(storage, namespacedKey(LEDGER_KEY, namespace), JSON.stringify(ledger))
 }
 
 /**
@@ -146,7 +167,7 @@ export function saveVerifiedEventProofs(
   proofs: Readonly<Record<string, string>>,
   eventIds?: readonly string[],
   namespace?: string,
-): void {
+): boolean {
   const allowed = eventIds ? new Set(eventIds) : null
   const clean = Object.fromEntries(
     Object.entries(proofs).filter(([eventId, proof]) =>
@@ -155,7 +176,7 @@ export function saveVerifiedEventProofs(
       typeof proof === 'string' && proof.length > 0 && proof.length <= 128,
     ),
   )
-  storage.setItem(namespacedKey(VERIFIED_EVENT_PROOFS_KEY, namespace), JSON.stringify(clean))
+  return writeBestEffort(storage, namespacedKey(VERIFIED_EVENT_PROOFS_KEY, namespace), JSON.stringify(clean))
 }
 
 /** Merge a repair's replacements into the namespace without erasing other
@@ -270,8 +291,8 @@ export function loadBrowserEncounters(storage: BrowserProductStorage, namespace?
   }
 }
 
-export function saveBrowserEncounters(storage: BrowserProductStorage, encounters: EncounterState, namespace?: string): void {
-  storage.setItem(namespacedKey(ENCOUNTER_KEY, namespace), JSON.stringify(encounters))
+export function saveBrowserEncounters(storage: BrowserProductStorage, encounters: EncounterState, namespace?: string): boolean {
+  return writeBestEffort(storage, namespacedKey(ENCOUNTER_KEY, namespace), JSON.stringify(encounters))
 }
 
 export function loadRevealedDraws(storage: BrowserProductStorage, namespace?: string): string[] {
@@ -285,8 +306,8 @@ export function loadRevealedDraws(storage: BrowserProductStorage, namespace?: st
   }
 }
 
-export function saveRevealedDraws(storage: BrowserProductStorage, ids: readonly string[], namespace?: string): void {
-  storage.setItem(namespacedKey(REVEALED_DRAWS_KEY, namespace), JSON.stringify(ids))
+export function saveRevealedDraws(storage: BrowserProductStorage, ids: readonly string[], namespace?: string): boolean {
+  return writeBestEffort(storage, namespacedKey(REVEALED_DRAWS_KEY, namespace), JSON.stringify(ids))
 }
 
 /** Stored automatic-sync cadence and the last attempt time. */
