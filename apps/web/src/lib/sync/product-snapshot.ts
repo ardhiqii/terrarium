@@ -30,6 +30,12 @@ import type {
   GuestProfile,
   LocalSourceBaseline,
 } from '../game/guest-profile'
+import {
+  createCareState,
+  mergeCareState,
+  validateCareState,
+  type CareState,
+} from '../game/care/state'
 import type { ProductCompanionState } from '../game/product-state'
 import { productEventId } from './product-event-id'
 
@@ -154,6 +160,14 @@ export interface ProductSnapshot {
    */
   readonly eggs?: readonly ProductSnapshotEgg[]
   readonly assignments?: readonly ProductSnapshotAssignment[]
+  /**
+   * The condition layer: care timestamps, item mints and spend counters.
+   *
+   * OPTIONAL for the same reason as `eggs` and `assignments`. Unlike those two,
+   * it carries no identifiers at all — only timestamps and counts — so it needs
+   * no opaque-id treatment and reveals nothing about a note or a repository.
+   */
+  readonly condition?: CareState
   readonly recoverabilityWarning: ProductSnapshotWarning
   readonly events: readonly ProductSnapshotEvent[]
   readonly encounters: ProductSnapshotEncounters
@@ -416,6 +430,18 @@ export function buildProductSnapshot(
     // had drawn but not yet opened.
     eggs: (profile.eggs ?? []).map((egg) => ({ ...egg })),
     assignments: (profile.assignments ?? []).map((assign) => ({ ...assign })),
+    // Carried so a meal fed on one device still counts on another. Copied
+    // shallowly at the top level and deeply for `mints`, because that array is
+    // the only nested structure and sharing it would let a later mint mutate a
+    // snapshot already handed to the sync layer.
+    condition: profile.care
+      ? {
+          ...profile.care,
+          mints: profile.care.mints.map((mint) => ({ ...mint })),
+          granted: { ...profile.care.granted },
+          spent: { ...profile.care.spent },
+        }
+      : undefined,
     recoverabilityWarning: { ...profile.recoverabilityWarning },
     events: state.ledger.events.map((event) => {
       const eventId = opaqueId(event.eventId, 'event')
@@ -583,10 +609,10 @@ export function validateProductSnapshot(value: unknown): asserts value is Produc
   assertExactKeys(
     value,
     ['schemaVersion', 'guestId', 'createdAt', 'updatedAt', 'generatedAt', 'activeCompanionId', 'companions', 'collection', 'sourceBaselines', 'recoverabilityWarning', 'events', 'encounters'],
-    // OPTIONAL, not required: a snapshot written by an older client has neither
-    // field, and requiring them would reject every payload already in flight.
-    // Both are read as `?? []` on restore.
-    ['eggs', 'assignments'],
+    // OPTIONAL, not required: a snapshot written by an older client has none of
+    // these fields, and requiring them would reject every payload already in
+    // flight. All are read as `?? []` (or `createCareState`) on restore.
+    ['eggs', 'assignments', 'condition'],
     'Product snapshot',
   )
   if (value.schemaVersion !== PRODUCT_SNAPSHOT_SCHEMA_VERSION) throw new TypeError('Unsupported product snapshot schema version')
@@ -605,6 +631,11 @@ export function validateProductSnapshot(value: unknown): asserts value is Produc
   value.events.forEach(validateEvent)
   validateWarning(value.recoverabilityWarning)
   validateEncounters(value.encounters)
+  // Present must be well formed. The snapshot crosses the network, so a
+  // negative spend or an item the catalog does not know has to be refused here.
+  if ('condition' in value && value.condition !== undefined) {
+    validateCareState(value.condition)
+  }
 
   const companionIds = new Set(value.companions.map((companion) => companion.companionId))
   if (companionIds.size !== value.companions.length) {
@@ -750,6 +781,18 @@ export function restoreProductStateFromSnapshot(
     // would lose unopened eggs and repository assignments on every sync.
     eggs: (snapshot.eggs ?? []).map((egg) => ({ ...egg })),
     assignments: (snapshot.assignments ?? []).map((assign) => ({ ...assign })),
+    // `?? createCareState(createdAt)` so a snapshot from an older client still
+    // restores, and the companion starts its care clock at the profile's own
+    // creation rather than at the moment of restore (which would refill every
+    // need for free on the first sync after the upgrade).
+    care: snapshot.condition
+      ? {
+          ...snapshot.condition,
+          mints: snapshot.condition.mints.map((mint) => ({ ...mint })),
+          granted: { ...snapshot.condition.granted },
+          spent: { ...snapshot.condition.spent },
+        }
+      : createCareState(snapshot.createdAt),
     recoverabilityWarning: { ...snapshot.recoverabilityWarning },
   }
   const encounters: EncounterState = {
@@ -858,9 +901,60 @@ export function mergeGuestWithServer(guest: ProductSnapshot, server: ProductSnap
     recoverabilityWarning,
     events,
     encounters: mergeEncounters(guest.encounters, server.encounters),
+    // Eggs and assignments were built into the snapshot but NOT merged, so a
+    // sync silently dropped every unopened egg and every repository dressing.
+    // The fields existed and validated, which is what made the loss invisible:
+    // a merged snapshot looked like a snapshot taken before the user owned them.
+    eggs: unionById(guest.eggs ?? [], server.eggs ?? [], (egg) => egg.drawId),
+    assignments: mergeAssignments(guest.assignments ?? [], server.assignments ?? []),
+    // The condition layer merges by NEWEST TIMESTAMP PER FIELD, not by whole
+    // state: a laptop that fed the companion and a phone that let it rest must
+    // both survive, and taking the newer snapshot whole would erase one of them.
+    condition: mergeCondition(guest.condition, server.condition, guest.createdAt),
   }
   validateProductSnapshot(merged)
   return merged
+}
+
+/**
+ * Assignments union by repository, newest assignment wins.
+ *
+ * `PRODUCT.md` §6.3 allows one companion per repository, so two devices holding
+ * different companions for the same repository is a genuine conflict rather than
+ * two facts. The newer `assignedAt` is the choice the user made last, so that is
+ * the one kept; the loser's companion is simply unspent again, which is the
+ * recoverable outcome.
+ */
+function mergeAssignments(
+  guest: readonly ProductSnapshotAssignment[],
+  server: readonly ProductSnapshotAssignment[],
+): ProductSnapshotAssignment[] {
+  const byRepo = new Map<string, ProductSnapshotAssignment>()
+  for (const assignment of [...server, ...guest]) {
+    const existing = byRepo.get(assignment.repositoryId)
+    if (!existing || assignment.assignedAt >= existing.assignedAt) {
+      byRepo.set(assignment.repositoryId, assignment)
+    }
+  }
+  return [...byRepo.values()].sort((left, right) =>
+    left.repositoryId.localeCompare(right.repositoryId),
+  )
+}
+
+/**
+ * Merge the condition layer, tolerating a snapshot from before it existed.
+ *
+ * An absent side is treated as a companion that has just started being cared
+ * for, anchored at the profile's creation. Anchoring at "now" would hand the
+ * user a full belly and a full night's sleep simply for upgrading.
+ */
+function mergeCondition(
+  guest: CareState | undefined,
+  server: CareState | undefined,
+  createdAt: string,
+): CareState {
+  const fallback = createCareState(createdAt)
+  return mergeCareState(guest ?? fallback, server ?? fallback)
 }
 
 // Explicit aliases keep the adapter discoverable without breaking the names

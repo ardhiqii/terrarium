@@ -15,6 +15,7 @@ import { StageLine } from '@/components/game/StageLine'
 import { ItemDrawer } from '@/components/game/ItemDrawer'
 import { OwnedCompanionGrid } from '@/components/game/OwnedCompanionGrid'
 import { ProductActivityPanel } from '@/components/game/ProductActivityPanel'
+import { CareHouse } from '@/components/game/CareHouse'
 
 export const metadata: Metadata = {
   title: 'Companions',
@@ -163,6 +164,16 @@ export default async function CompanionsPage() {
           .
         </p>
       </div>
+
+      {/*
+        The House comes FIRST on this page. It is the only surface that shows
+        the companion as a creature rather than as a progress readout, and the
+        page's own heading is "Companions" — a user who came to be with their
+        companion should meet it before the ladder it is climbing.
+      */}
+      <section className="mb-10" aria-label="The House">
+        <CareHouse />
+      </section>
 
       {productState && (
         <section className="mb-10" aria-label="Synced product condition">

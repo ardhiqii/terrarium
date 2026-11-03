@@ -3,6 +3,7 @@ import { asCompanionId, asEventId, type NormalizedEvent } from '../game/events'
 import { PROTOTYPE_COMPANION_CATALOG } from '../game/companion-catalog'
 import { advanceEncounter, createEncounterState } from '../game/encounters'
 import { createGuestProfile } from '../game/guest-profile'
+import { createCareState } from '../game/care/state'
 import { applyProductEvents, createProductState } from '../game/product-state'
 import {
   buildProductSnapshot,
@@ -437,7 +438,7 @@ describe('product snapshot', () => {
       PROTOTYPE_COMPANION_CATALOG,
     )
     const snapshot = buildProductSnapshot(state, now)
-    const { eggs: _eggs, assignments: _assignments, ...legacy } = snapshot
+    const { eggs: _eggs, assignments: _assignments, condition: _condition, ...legacy } = snapshot
 
     expect(() => validateProductSnapshot(legacy)).not.toThrow()
 
@@ -448,6 +449,89 @@ describe('product snapshot', () => {
     )
     expect(restored.profile.eggs).toEqual([])
     expect(restored.profile.assignments).toEqual([])
+    // The care clock starts at the profile's own creation, not at the restore:
+    // anchoring it at "now" would refill hunger for free on the first sync.
+    expect(restored.profile.care?.startedAt).toBe(now)
+    expect(restored.profile.care?.mints).toEqual([])
+    })
+  })
+
+  describe('merging condition state', () => {
+    const now = '2026-08-28T10:00:00.000Z'
+    const earlier = '2026-08-25T10:00:00.000Z'
+
+    function snapshotWith(mutate: (profile: ReturnType<typeof createGuestProfile>) => ReturnType<typeof createGuestProfile>) {
+      const profile = mutate(
+        createGuestProfile({ guestId: 'guest-1', starterCompanionId: 'pikachu-family', now }),
+      )
+      const state = createProductState(profile, { events: [] }, createEncounterState(), PROTOTYPE_COMPANION_CATALOG)
+      return buildProductSnapshot(state, now)
+    }
+
+    it('keeps an unopened egg from either side', () => {
+      // The fields were built into the snapshot but never merged, so a sync
+      // silently dropped every egg. Nothing failed; they were simply gone.
+      const guest = snapshotWith((profile) => ({
+        ...profile,
+        eggs: [{ drawId: 'guest:a', companionId: 'ditto-like', laidAt: now }],
+      }))
+      const server = snapshotWith((profile) => ({
+        ...profile,
+        eggs: [{ drawId: 'guest:b', companionId: 'magikarp-line', laidAt: earlier }],
+      }))
+      const merged = mergeGuestWithServer(guest, server)
+      expect(new Set((merged.eggs ?? []).map((egg) => egg.drawId))).toEqual(
+        new Set(['guest:a', 'guest:b']),
+      )
+    })
+
+    it('keeps the newest assignment when two devices dressed the same repository', () => {
+      const guest = snapshotWith((profile) => ({
+        ...profile,
+        assignments: [
+          { repositoryId: '42', referenceId: 'guest-1:starter', companionId: 'pikachu-family', assignedAt: earlier },
+        ],
+      }))
+      const server = snapshotWith((profile) => ({
+        ...profile,
+        assignments: [
+          { repositoryId: '42', referenceId: 'guest-1:starter', companionId: 'ditto-like', assignedAt: now },
+          { repositoryId: '43', referenceId: 'guest-1:starter', companionId: 'pikachu-family', assignedAt: now },
+        ],
+      }))
+      const merged = mergeGuestWithServer(guest, server)
+      const byRepo = new Map((merged.assignments ?? []).map((entry) => [entry.repositoryId, entry]))
+      expect(byRepo.get('42')?.companionId).toBe('ditto-like')
+      expect(byRepo.get('43')?.companionId).toBe('pikachu-family')
+    })
+
+    it('merges condition per field, not per snapshot', () => {
+      // A laptop that fed the companion and a phone that let it rest: taking the
+      // newer snapshot whole would erase one of the two facts.
+      const guest = snapshotWith((profile) => ({
+        ...profile,
+        care: { ...createCareState(earlier), lastFedAt: earlier, updatedAt: now },
+      }))
+      const server = snapshotWith((profile) => ({
+        ...profile,
+        care: { ...createCareState(earlier), lastRestedAt: now, updatedAt: earlier },
+      }))
+      const merged = mergeGuestWithServer(guest, server)
+      expect(merged.condition?.lastFedAt).toBe(earlier)
+      expect(merged.condition?.lastRestedAt).toBe(now)
+      // The care clock keeps the EARLIER start, so a merge cannot make the
+      // companion younger and refill its needs.
+      expect(merged.condition?.startedAt).toBe(earlier)
+    })
+
+    it('does not let a snapshot without condition erase one that has it', () => {
+      const withCare = snapshotWith((profile) => ({
+        ...profile,
+        care: { ...createCareState(now), lastFedAt: now },
+      }))
+      const without = snapshotWith((profile) => profile)
+      expect(mergeGuestWithServer(without, withCare).condition?.lastFedAt).toBe(now)
+      expect(mergeGuestWithServer(withCare, without).condition?.lastFedAt).toBe(now)
     })
   })
 })
