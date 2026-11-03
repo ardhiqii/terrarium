@@ -252,4 +252,63 @@ describe('product state', () => {
     expect(switched.companions.find((item) => item.companionId === 'pikachu-family')?.xp).toBe(50)
     expect(switched.activeCompanion?.xp).toBe(0)
   })
+
+  it('switches to the named acquisition when two entries share a species', () => {
+    // The two-Pikachu case: the species id alone cannot say which one was clicked,
+    // so the switch has to carry the reference id through to the profile.
+    const base = createProductState(
+      createGuestProfile({ guestId: 'guest-1', starterCompanionId: 'pikachu-family', now }),
+      { events: [] },
+      createEncounterState(),
+      PROTOTYPE_COMPANION_CATALOG,
+    )
+    const two = {
+      ...base,
+      profile: {
+        ...base.profile,
+        collection: [
+          ...base.profile.collection,
+          {
+            referenceId: 'guest-2:starter',
+            companionId: 'pikachu-family',
+            acquiredAt: now,
+            acquisition: 'starter' as const,
+          },
+        ],
+      },
+    }
+
+    const second = switchActiveCompanion(
+      two,
+      'pikachu-family',
+      PROTOTYPE_COMPANION_CATALOG,
+      'guest-2:starter',
+    )
+    expect(second.profile.activeCompanionId).toBe('pikachu-family')
+    expect(second.profile.activeReferenceId).toBe('guest-2:starter')
+
+    const first = switchActiveCompanion(
+      second,
+      'pikachu-family',
+      PROTOTYPE_COMPANION_CATALOG,
+      'guest-1:starter',
+    )
+    expect(first.profile.activeReferenceId).toBe('guest-1:starter')
+  })
+
+  it('falls back to an owned entry when the requested acquisition is not this species', () => {
+    const state = createProductState(
+      createGuestProfile({ guestId: 'guest-1', starterCompanionId: 'pikachu-family', now }),
+      { events: [] },
+      createEncounterState(),
+      PROTOTYPE_COMPANION_CATALOG,
+    )
+    const switched = switchActiveCompanion(
+      state,
+      'pikachu-family',
+      PROTOTYPE_COMPANION_CATALOG,
+      'not-owned',
+    )
+    expect(switched.profile.activeReferenceId).toBe('guest-1:starter')
+  })
 })

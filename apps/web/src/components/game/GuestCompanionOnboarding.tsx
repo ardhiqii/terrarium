@@ -95,9 +95,17 @@ export function persistOnboardingSelection(
           )
         : [...profile.collection, selectionReference]
 
+  const activeReferenceId =
+    collection.find((item) => item.referenceId === referenceId)?.referenceId ??
+    collection.find((item) => item.companionId === companionId)?.referenceId
+
   return {
     ...profile,
     activeCompanionId: companionId,
+    // The chosen acquisition, when the collection actually holds it. Onboarding
+    // rewrites the starter entry rather than adding one, so the reference to
+    // re-point at is whichever entry now carries the chosen species.
+    ...(activeReferenceId ? { activeReferenceId } : {}),
     updatedAt: timestamp,
     collection,
   }

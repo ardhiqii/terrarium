@@ -25,7 +25,12 @@
  */
 
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { loadGuestProfile, saveGuestProfile, type GuestProfile } from '@/lib/game/guest-profile'
+import {
+  activeReferenceIdOf,
+  loadGuestProfile,
+  saveGuestProfile,
+  type GuestProfile,
+} from '@/lib/game/guest-profile'
 import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
 import { assignments, remainingAssignments } from '@/lib/game/repo-assignments'
 import { hatchEgg, pendingEggs } from '@/lib/game/companion-eggs'
@@ -122,17 +127,22 @@ export function OwnedCompanionGrid({ sprite }: OwnedCompanionGridProps) {
   )
 
   const makeActive = useCallback(
-    (companionId: string) => {
+    (entry: { companionId: string; referenceId: string }) => {
       setProfile((current) => {
         if (!current || !profileKey) return current
         // The active companion is a field on the profile, not a separate store, so
         // this is a plain profile edit. `switchActiveCompanion` on ProductState is
         // the engine's own guard; here the profile is the only thing being changed
         // and the guard is the ownership check below.
-        if (!current.collection.some((entry) => entry.companionId === companionId)) return current
+        if (!current.collection.some((owned) => owned.referenceId === entry.referenceId)) {
+          return current
+        }
         const next: GuestProfile = {
           ...current,
-          activeCompanionId: companionId,
+          activeCompanionId: entry.companionId,
+          // The acquisition, not the species: two Pikachu share a companionId, and
+          // writing only that marked both tiles active.
+          activeReferenceId: entry.referenceId,
           updatedAt: new Date().toISOString(),
         }
         saveGuestProfile(window.localStorage, next, profileKey)
@@ -153,6 +163,9 @@ export function OwnedCompanionGrid({ sprite }: OwnedCompanionGridProps) {
   const eggs = profile ? pendingEggs(profile) : []
   const dressed = profile ? assignments(profile) : []
   const remaining = profile ? remainingAssignments(profile) : 0
+  // Resolved once, through the shared resolver, so the grid cannot disagree with
+  // the House or the snapshot about which companion is active.
+  const resolvedActiveReferenceId = profile ? activeReferenceIdOf(profile) : null
 
   return (
     <>
@@ -212,7 +225,9 @@ export function OwnedCompanionGrid({ sprite }: OwnedCompanionGridProps) {
               // state this surface does not read. Pass an xp later to show the evolved form.
               const resolvedSprite = definition ? resolveCompanionSprite(definition) : null
               const assignment = dressed.find((a) => a.referenceId === entry.referenceId)
-              const isActive = entry.companionId === profile?.activeCompanionId
+              // The ACQUISITION, not the species: two Pikachu entries share a
+              // companionId, and comparing on it lit up both tiles at once.
+              const isActive = entry.referenceId === resolvedActiveReferenceId
               return (
                 <li
                   key={entry.referenceId}
@@ -273,7 +288,12 @@ export function OwnedCompanionGrid({ sprite }: OwnedCompanionGridProps) {
                   ) : (
                     <button
                       type="button"
-                      onClick={() => makeActive(entry.companionId)}
+                      onClick={() =>
+                        makeActive({
+                          companionId: entry.companionId,
+                          referenceId: entry.referenceId,
+                        })
+                      }
                       className="ui-row font-data mt-2 px-2 py-1 text-[10px] uppercase tracking-wider border transition-opacity hover:opacity-80"
                       style={{ borderColor: 'var(--rule)', color: 'var(--ink)' }}
                     >

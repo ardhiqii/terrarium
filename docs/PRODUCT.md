@@ -624,6 +624,22 @@ Encounters are the main source of dopamine after the first companion.
    file types, note tags, links, and activity shape. No AI is required.
 5. The user may switch active companions at any time. Switching never deletes or
    transfers the previous companion’s XP.
+   **Active is tracked per acquisition, not per species.** The collection can
+   hold two entries with the same species — a starter carried over from a guest
+   profile plus another starter, say — and the species id alone cannot say which
+   one the user picked. The profile stores an `activeReferenceId` beside
+   `activeCompanionId`; XP and progression still follow the species (both Pikachu
+   share one ladder), while the badge, the House and the "make active" button
+   follow the acquisition. A profile written before that field existed resolves
+   to the first entry of its active species.
+   **Duplicate starters are folded, not collected.** A starter's reference is
+   `<guestId>:starter`, so merging a guest profile into an account produced two
+   "your first" companions of one species. Those are folded to one on migration,
+   on the local profile, and on every sync merge, keeping the entry the user made
+   active, then an assigned one, then the earliest. If both starters were dressed
+   onto repositories, one of those dressings is released rather than booking the
+   surviving companion twice. Encounter and history acquisitions are never
+   folded — those are real duplicates and bank Essence.
 6. A duplicate is allowed. It converts into Essence for that companion family,
    which can unlock optional family mastery or cosmetic rewards. Essence does
    not give XP, skip evolution, or act as a general currency.
