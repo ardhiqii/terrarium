@@ -256,6 +256,27 @@ describe('GET /api/creature: the garden asymmetry', () => {
       expect(itemIds).not.toContain(gardenId)
     }
   })
+
+  it('does not pin a degraded fallback in the cache for the full hour', async () => {
+    // A fallback is a guess, not an observation. It used to be cached with the same one-hour
+    // TTL as a real answer, so a single transient GitHub failure on a handle nobody had cached
+    // yet pinned "stage 1, 0 XP" for that handle for an hour, and every request inside it was
+    // served from cache without trying GitHub again: wrong data that could not heal itself.
+    const user = freshHandle()
+    const url = `http://localhost/api/creature?user=${user}`
+
+    mockFetch([userExistsRoute(), rateLimitedEventsRoute()])
+    const { GET } = await importRoute()
+    const first = await (await GET(new NextRequest(url))).json()
+    expect(first.degraded).toBe(true)
+
+    // GitHub recovers. The next request must reach it rather than serving the placeholder.
+    const healthy = mockFetch([userExistsRoute(), emptyEventsRoute()])
+    const second = await (await GET(new NextRequest(url))).json()
+
+    expect(healthy).toHaveBeenCalled()
+    expect(second.degraded).toBe(false)
+  })
 })
 
 describe('GET /api/creature: species assignment (T19)', () => {

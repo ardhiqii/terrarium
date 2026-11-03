@@ -83,6 +83,16 @@ const TOKEN = process.env.GITHUB_TOKEN
 
 const GARDEN_REPO_NAME = readGardenRepoName()
 
+/**
+ * A TTL that marks a value as STALE IMMEDIATELY.
+ *
+ * `cacheGetFresh` compares `Date.now() > freshUntil`, so a negative TTL can never satisfy a
+ * fresh read, while `cacheGetStale` still returns the value. That is exactly what a degraded
+ * fallback is: a reasonable thing to show when GitHub cannot be reached, and never a reason
+ * to skip trying GitHub again.
+ */
+const NEVER_FRESH_TTL_MS = -1
+
 interface CachedPayload {
   status: number
   body: Record<string, unknown>
@@ -277,6 +287,15 @@ async function buildRepoResponse(
  * response over the network failure; fall back to a stage-1, zero-XP
  * creature only when there is nothing cached at all. Always 200, always
  * `degraded: true`.
+ *
+ * WHY THE FALLBACK IS STORED BUT NEVER FRESH: a fallback is a guess ("GitHub was
+ * unreachable, show the starter"), not an observation. It used to be cached for the same hour
+ * as a real answer, so one transient failure on a handle nobody had cached yet pinned "stage
+ * 1, 0 XP" for that handle for a full hour — every request inside it an `X-Cache: HIT` on
+ * wrong data, with no self-healing. Storing it as immediately stale keeps it available to the
+ * outage path below (better than nothing) while never letting it answer a fresh request.
+ * The stale branch is NOT re-cached at all: it is already an old observation and must keep
+ * its original age.
  */
 async function degradedOrFallback(
   cacheKey: string,
@@ -289,7 +308,7 @@ async function degradedOrFallback(
 
   const fallback = buildFallback()
   const body = { ...fallback, degraded: true }
-  cacheSet(cacheKey, { status: 200, body }, CACHE_TTL_MS)
+  cacheSet(cacheKey, { status: 200, body }, NEVER_FRESH_TTL_MS)
   return { status: 200, body }
 }
 
