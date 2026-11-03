@@ -47,6 +47,7 @@ export function cacheSet<T>(key: string, value: T, ttlMs: number): void {
 export function cacheClearAll(): void {
   cacheStore.clear()
   rateLimitStore.clear()
+  lastSweepAt = 0
 }
 
 // ---------------------------------------------------------------------------
@@ -56,9 +57,52 @@ export function cacheClearAll(): void {
 interface RateWindow {
   count: number
   windowStart: number
+  /** When this window stops counting, so the entry can be dropped with it. */
+  expiresAt: number
 }
 
 const rateLimitStore = new Map<string, RateWindow>()
+
+/**
+ * Bound on how many windows are tracked at once.
+ *
+ * Without one, this map only ever grew: one entry per distinct key, kept forever, on an
+ * instance that stays warm for weeks. The key is a client address, so the memory the process
+ * holds was decided by inbound traffic rather than by anything this module controls.
+ */
+const RATE_LIMIT_MAX_KEYS = 10_000
+const RATE_LIMIT_SWEEP_INTERVAL_MS = 60_000
+let lastSweepAt = 0
+
+/**
+ * Drop expired windows, and if that is not enough, the oldest ones.
+ *
+ * Evicting a still-counting window fails OPEN (the caller gets a fresh allowance), which is
+ * the right direction for a first line of defense: refusing every request because the counter
+ * table is full would be a worse outage than the load it exists to absorb.
+ */
+function sweepRateLimits(now: number): void {
+  if (rateLimitStore.size < RATE_LIMIT_MAX_KEYS && now - lastSweepAt < RATE_LIMIT_SWEEP_INTERVAL_MS) {
+    return
+  }
+  lastSweepAt = now
+
+  for (const [key, window] of rateLimitStore) {
+    if (window.expiresAt <= now) rateLimitStore.delete(key)
+  }
+  if (rateLimitStore.size <= RATE_LIMIT_MAX_KEYS) return
+
+  const overflow = rateLimitStore.size - RATE_LIMIT_MAX_KEYS
+  const oldest = [...rateLimitStore.entries()]
+    .sort((left, right) => left[1].windowStart - right[1].windowStart)
+    .slice(0, overflow)
+  for (const [key] of oldest) rateLimitStore.delete(key)
+}
+
+/** Test/diagnostic only: how many windows this instance is currently holding. */
+export function rateLimitEntryCount(): number {
+  return rateLimitStore.size
+}
 
 export interface RateLimitResult {
   allowed: boolean
@@ -78,10 +122,11 @@ export function checkRateLimit(
   windowMs: number
 ): RateLimitResult {
   const now = Date.now()
+  sweepRateLimits(now)
   const existing = rateLimitStore.get(key)
 
   if (!existing || now - existing.windowStart >= windowMs) {
-    rateLimitStore.set(key, { count: 1, windowStart: now })
+    rateLimitStore.set(key, { count: 1, windowStart: now, expiresAt: now + windowMs })
     return { allowed: true, remaining: Math.max(0, limit - 1) }
   }
 
