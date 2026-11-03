@@ -39,16 +39,40 @@ export function isValidRepoName(repo: string): boolean {
   return REPO_NAME_RE.test(repo)
 }
 
+/**
+ * The client address used for rate limiting.
+ *
+ * WHY THE ORDER MATTERS, AND WHY THE LEFT-MOST X-Forwarded-For ENTRY IS NOT IT: this
+ * deployment sits behind a Cloudflare tunnel. A client can send any `X-Forwarded-For` it
+ * likes, and the proxy APPENDS the real address to whatever arrived, so the left-hand
+ * entries are caller-controlled and the last one is the proxy's own observation. Taking
+ * `split(',')[0]` let anyone rotate the header per request and never hit the limit — and
+ * equally, pin a chosen string to exhaust someone else's bucket.
+ *
+ * `CF-Connecting-IP` is set by Cloudflare's edge and overwrites any client-supplied value,
+ * so it is checked first. Each fallback is weaker than the one before it; `x-real-ip` is
+ * what a plain nginx `proxy_set_header` would produce.
+ *
+ * `'unknown'` is a single shared bucket, not a per-client one: with no proxy header at all
+ * every caller shares one limit. That is the fail-closed choice — it can only make the
+ * limiter stricter — and it is why this never returns a random or empty key.
+ */
 export function getClientIp(request: {
   headers: { get(name: string): string | null }
 }): string {
+  const cloudflare = request.headers.get('cf-connecting-ip')?.trim()
+  if (cloudflare) return cloudflare
+
   const forwarded = request.headers.get('x-forwarded-for')
   if (forwarded) {
-    const first = forwarded.split(',')[0]?.trim()
-    if (first) return first
+    const hops = forwarded.split(',').map((hop) => hop.trim()).filter(Boolean)
+    const observed = hops[hops.length - 1]
+    if (observed) return observed
   }
-  const real = request.headers.get('x-real-ip')
+
+  const real = request.headers.get('x-real-ip')?.trim()
   if (real) return real
+
   return 'unknown'
 }
 
