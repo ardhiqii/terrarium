@@ -3,6 +3,7 @@ import { asCompanionId, asEventId, acceptedLedgerEvents, totalXpOf, type Normali
 import { PROTOTYPE_COMPANION_CATALOG } from '../game/companion-catalog'
 import { advanceEncounter, createEncounterState } from '../game/encounters'
 import { createGuestProfile } from '../game/guest-profile'
+import { createCareState } from '../game/care/state'
 import { applyProductEvents, createProductState } from '../game/product-state'
 import {
   buildProductSnapshot,
@@ -53,10 +54,28 @@ function githubEvent(id: string): NormalizedEvent {
   }
 }
 
-function state(events: readonly NormalizedEvent[] = []) {
+function state(
+  events: readonly NormalizedEvent[] = [],
+  openedEggs: readonly { referenceId: string; companionId: string }[] = [],
+) {
   const profile = createGuestProfile({ guestId: 'guest-1', starterCompanionId: 'pikachu-family', now })
+  // An opened egg is not in `eggs`: hatching removes it and adds a collection entry whose
+  // reference id IS the draw id. Fixtures need that entry to model a hatch at all.
+  const withOpened = openedEggs.length
+    ? {
+        ...profile,
+        collection: [
+          ...profile.collection,
+          ...openedEggs.map((entry) => ({
+            ...entry,
+            acquiredAt: now,
+            acquisition: 'encounter' as const,
+          })),
+        ],
+      }
+    : profile
   return createProductState(
-    profile,
+    withOpened,
     { events },
     createEncounterState(),
     PROTOTYPE_COMPANION_CATALOG,
@@ -437,7 +456,7 @@ describe('product snapshot', () => {
       PROTOTYPE_COMPANION_CATALOG,
     )
     const snapshot = buildProductSnapshot(state, now)
-    const { eggs: _eggs, assignments: _assignments, ...legacy } = snapshot
+    const { eggs: _eggs, assignments: _assignments, condition: _condition, ...legacy } = snapshot
 
     expect(() => validateProductSnapshot(legacy)).not.toThrow()
 
@@ -448,6 +467,177 @@ describe('product snapshot', () => {
     )
     expect(restored.profile.eggs).toEqual([])
     expect(restored.profile.assignments).toEqual([])
+    // The care clock starts at the profile's own creation, not at the restore:
+    // anchoring it at "now" would refill hunger for free on the first sync.
+    expect(restored.profile.care?.startedAt).toBe(now)
+    expect(restored.profile.care?.mints).toEqual([])
+    })
+  })
+
+  describe('merging condition state', () => {
+    const now = '2026-08-28T10:00:00.000Z'
+    const earlier = '2026-08-25T10:00:00.000Z'
+
+    function snapshotWith(mutate: (profile: ReturnType<typeof createGuestProfile>) => ReturnType<typeof createGuestProfile>) {
+      const profile = mutate(
+        createGuestProfile({ guestId: 'guest-1', starterCompanionId: 'pikachu-family', now }),
+      )
+      const state = createProductState(profile, { events: [] }, createEncounterState(), PROTOTYPE_COMPANION_CATALOG)
+      return buildProductSnapshot(state, now)
+    }
+
+    it('keeps an unopened egg from either side', () => {
+      // The fields were built into the snapshot but never merged, so a sync
+      // silently dropped every egg. Nothing failed; they were simply gone.
+      const guest = snapshotWith((profile) => ({
+        ...profile,
+        eggs: [{ drawId: 'guest:a', companionId: 'ditto-like', laidAt: now }],
+      }))
+      const server = snapshotWith((profile) => ({
+        ...profile,
+        eggs: [{ drawId: 'guest:b', companionId: 'magikarp-line', laidAt: earlier }],
+      }))
+      const merged = mergeGuestWithServer(guest, server)
+      expect(new Set((merged.eggs ?? []).map((egg) => egg.drawId))).toEqual(
+        new Set(['guest:a', 'guest:b']),
+      )
+    })
+
+    it('keeps the newest assignment when two devices dressed the same repository', () => {
+      const guest = snapshotWith((profile) => ({
+        ...profile,
+        assignments: [
+          { repositoryId: '42', referenceId: 'guest-1:starter', companionId: 'pikachu-family', assignedAt: earlier },
+        ],
+      }))
+      const server = snapshotWith((profile) => ({
+        ...profile,
+        assignments: [
+          { repositoryId: '42', referenceId: 'guest-1:starter', companionId: 'ditto-like', assignedAt: now },
+          { repositoryId: '43', referenceId: 'guest-1:starter', companionId: 'pikachu-family', assignedAt: now },
+        ],
+      }))
+      const merged = mergeGuestWithServer(guest, server)
+      const byRepo = new Map((merged.assignments ?? []).map((entry) => [entry.repositoryId, entry]))
+      expect(byRepo.get('42')?.companionId).toBe('ditto-like')
+      expect(byRepo.get('43')?.companionId).toBe('pikachu-family')
+    })
+
+    it('merges condition per field, not per snapshot', () => {
+      // A laptop that fed the companion and a phone that let it rest: taking the
+      // newer snapshot whole would erase one of the two facts.
+      const guest = snapshotWith((profile) => ({
+        ...profile,
+        care: { ...createCareState(earlier), lastFedAt: earlier, updatedAt: now },
+      }))
+      const server = snapshotWith((profile) => ({
+        ...profile,
+        care: { ...createCareState(earlier), lastRestedAt: now, updatedAt: earlier },
+      }))
+      const merged = mergeGuestWithServer(guest, server)
+      expect(merged.condition?.lastFedAt).toBe(earlier)
+      expect(merged.condition?.lastRestedAt).toBe(now)
+      // The care clock keeps the EARLIER start, so a merge cannot make the
+      // companion younger and refill its needs.
+      expect(merged.condition?.startedAt).toBe(earlier)
+    })
+
+    it('does not let a snapshot without condition erase one that has it', () => {
+      const withCare = snapshotWith((profile) => ({
+        ...profile,
+        care: { ...createCareState(now), lastFedAt: now },
+      }))
+      const without = snapshotWith((profile) => profile)
+      expect(mergeGuestWithServer(without, withCare).condition?.lastFedAt).toBe(now)
+      expect(mergeGuestWithServer(withCare, without).condition?.lastFedAt).toBe(now)
+    })
+
+    it('carries the active acquisition through build, restore and merge', () => {
+      // Two Pikachu: the species id is identical, so only this field can say
+      // which one the user marked active.
+      const twoPikachu = snapshotWith((profile) => ({
+        ...profile,
+        collection: [
+          ...profile.collection,
+          {
+            referenceId: 'guest-2:starter',
+            companionId: 'pikachu-family',
+            acquiredAt: earlier,
+            acquisition: 'starter' as const,
+          },
+        ],
+        activeReferenceId: 'guest-2:starter',
+      }))
+      // The snapshot stores opaque references, so the pointer must name one of
+      // its own collection entries rather than the raw local id.
+      const collectionIds = twoPikachu.collection.map((reference) => reference.referenceId)
+      expect(collectionIds).toContain(twoPikachu.activeReferenceId)
+      expect(twoPikachu.activeReferenceId).not.toBe(collectionIds[0])
+
+      const restored = restoreProductStateFromSnapshot(
+        twoPikachu,
+        createGuestProfile({ guestId: 'other', starterCompanionId: 'pikachu-family', now }),
+        PROTOTYPE_COMPANION_CATALOG,
+      )
+      expect(restored.profile.activeReferenceId).toBe(twoPikachu.activeReferenceId)
+
+      const other = snapshotWith((profile) => ({
+        ...profile,
+        activeReferenceId: profile.collection[0].referenceId,
+      }))
+      // The guest (local) choice wins on each side, but only while it still
+      // exists in the merged collection — the same rule activeCompanionId uses.
+      expect(mergeGuestWithServer(twoPikachu, other).activeReferenceId).toBe(
+        twoPikachu.activeReferenceId,
+      )
+      expect(mergeGuestWithServer(other, twoPikachu).activeReferenceId).toBe(
+        other.activeReferenceId,
+      )
+    })
+
+    it('falls back to an owned entry when the pointer is not in the merged collection', () => {
+      const stale = snapshotWith((profile) => ({
+        ...profile,
+        activeReferenceId: 'gone:starter',
+      }))
+      const plain = snapshotWith((profile) => profile)
+      const merged = mergeGuestWithServer(stale, plain)
+      expect(merged.activeReferenceId).toBe(plain.collection[0].referenceId)
+    })
+
+    it('folds duplicate starters from both sides of the merge', () => {
+      // Two profiles' starters arriving in one collection: the union is what
+      // creates the duplicate, so the union is where it has to be folded.
+      const guest = snapshotWith((profile) => ({
+        ...profile,
+        collection: [
+          ...profile.collection,
+          {
+            referenceId: 'guest-2:starter',
+            companionId: 'pikachu-family',
+            acquiredAt: earlier,
+            acquisition: 'starter' as const,
+          },
+        ],
+      }))
+      const server = snapshotWith((profile) => ({
+        ...profile,
+        collection: [
+          ...profile.collection,
+          {
+            referenceId: 'guest-3:starter',
+            companionId: 'pikachu-family',
+            acquiredAt: now,
+            acquisition: 'starter' as const,
+          },
+        ],
+      }))
+
+      const merged = mergeGuestWithServer(guest, server)
+      expect(merged.collection.filter((entry) => entry.companionId === 'pikachu-family')).toHaveLength(1)
+      // The merged snapshot is validated inside mergeGuestWithServer, so this
+      // also proves the surviving assignment points at an entry that exists.
+      expect(validateProductSnapshot(merged)).toBeUndefined()
     })
   })
 })
@@ -584,10 +774,13 @@ describe('merging twice', () => {
   })
 
   it('does NOT resurrect an egg the user has already hatched', () => {
-    // Hatching removes the egg from the profile, so the newer side is authoritative for the
-    // list. A union here would hand back every egg the server had not heard about yet, and the
-    // user would hatch the same companion twice.
-    const hatched = buildProductSnapshot(state([event('guest-1')]), now)
+    // Hatching removes the egg from the list and adds a collection entry keyed by its draw id.
+    // A plain union therefore hands back every egg the server had not heard about yet, and the
+    // user opens the same companion twice.
+    const hatched = buildProductSnapshot(
+      state([event('guest-1')], [{ referenceId: 'guest:0', companionId: 'ditto-like' }]),
+      now,
+    )
     const server: ProductSnapshot = {
       ...buildProductSnapshot(state([event('server-1')]), now),
       eggs: [{ drawId: 'guest:0', companionId: 'ditto-like', laidAt: now }],

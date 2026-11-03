@@ -373,6 +373,12 @@ Progress never decays. During inactivity the companion may rest or become
 sleepy, and it may welcome the user when they return, but inactivity never
 removes XP, lowers a level, deletes a collection item, or creates a penalty.
 
+Amendment (2026-11-03), the two-layer rule. The promise above holds for
+**progression**: XP, stage, collection, Essence and achievements are permanent
+and only ever go up. A separate **condition** layer now sits beside it and does
+change daily — hunger, energy, health, cleanliness and diet. See §12. Inactivity
+never removes progression; it may lower condition, which is always recoverable.
+
 ### 4.4 Guest and account transitions
 
 Guest state is local and can be lost with browser storage, a cleared profile, or
@@ -649,6 +655,22 @@ Encounters are the main source of dopamine after the first companion.
    file types, note tags, links, and activity shape. No AI is required.
 5. The user may switch active companions at any time. Switching never deletes or
    transfers the previous companion’s XP.
+   **Active is tracked per acquisition, not per species.** The collection can
+   hold two entries with the same species — a starter carried over from a guest
+   profile plus another starter, say — and the species id alone cannot say which
+   one the user picked. The profile stores an `activeReferenceId` beside
+   `activeCompanionId`; XP and progression still follow the species (both Pikachu
+   share one ladder), while the badge, the House and the "make active" button
+   follow the acquisition. A profile written before that field existed resolves
+   to the first entry of its active species.
+   **Duplicate starters are folded, not collected.** A starter's reference is
+   `<guestId>:starter`, so merging a guest profile into an account produced two
+   "your first" companions of one species. Those are folded to one on migration,
+   on the local profile, and on every sync merge, keeping the entry the user made
+   active, then an assigned one, then the earliest. If both starters were dressed
+   onto repositories, one of those dressings is released rather than booking the
+   surviving companion twice. Encounter and history acquisitions are never
+   folded — those are real duplicates and bank Essence.
 6. A duplicate is allowed. It converts into Essence for that companion family,
    which can unlock optional family mastery or cosmetic rewards. Essence does
    not give XP, skip evolution, or act as a general currency.
@@ -890,3 +912,139 @@ the creature as the visual focal point. Semantics and visual emphasis may differ
 The home page opened with a nine-row XP ledger before saying what the product is. The
 ledger remains, first-class, behind a `<details>` whose summary carries the total: no
 state, no JavaScript, keyboard-operable.
+
+## 12. The condition layer and the House
+
+Progression answers "what has the companion earned". Condition answers "how is
+it doing right now". The two are separate on purpose: nothing in this section
+can change XP, a stage, Essence, achievements, or the collection.
+
+### 12.1 Needs are derived, never decremented
+
+Each need is a value `0..100`, computed on read from timestamps and ledger
+signals — `need = f(care timestamps, signals, now)`. There is no timer and no
+background job, so two devices agree without syncing anything but timestamps,
+and a week offline needs no replay. Implementation: `apps/web/src/lib/game/care/needs.ts`.
+
+| Need | Formula (playtest value) | Source signal |
+|---|---|---|
+| Hunger | `clamp(100 − 25 × daysSince(lastFed or last active day))` | feed action, qualifying active day |
+| Energy | `clamp(100 − 10 × lateNightSessions − 5 × max(0, streak − 5))`, counts measured since the last rest | work-session events, activity days |
+| Health | `100` green, `40` red, restored by medicine | default-branch CI status |
+| Cleanliness | `clamp(100 − 5 × staleOwnPrDays)` | open age of the user's own pull requests |
+| Diet | `25 × distinct activity kinds this week`, capped at 100 | ledger category mix over 7 days |
+
+**A need that has never been measured renders as `null`, not `100`.** Health and
+cleanliness need signals nothing produces yet (`github-events.ts` reports merged
+pull requests and green builds, not a failing default branch or PR open age).
+Showing "Health 100 of 100" for something the app never looked at would be a
+claim with no evidence, which §11.1 forbids. Those two meters read "not
+measured yet", and `heal` / `clean` refuse with `not-measured` rather than
+spending an item on a guess.
+
+Late nights and streaks use the viewer's local timezone
+(`-new Date().getTimezoneOffset()`). The account progress timezone required by
+§5 does not exist server-side yet; this is the documented limitation until it
+does.
+
+### 12.2 Mood
+
+Mood is derived from needs plus what just happened, and drives pose, dialogue
+and, later, the extension hover card. Priority order matters because only one
+face fits on the sprite, and the actionable states come first:
+
+`unwell` (health < 50) → `hungry` (hunger < 30) → `sleepy` (energy < 30) →
+`excited` (a reward in the last hour) → `resting` (a rest in the last two hours,
+or energy < 45) → `focused` (a work session in the last two hours) →
+`curious` (a note in the last six hours) → `idle`.
+
+### 12.3 Items: earning is separate from caring
+
+Work earns items; the user spends them on the companion. Items never give XP and
+caring never gives XP — XP stays work-only (§5).
+
+| Item | Earned from | Spent on |
+|---|---|---|
+| Food | active day, merged pull request, new note | `feed` |
+| Treat | published release | `feed` when no food is left; also lifts the mood |
+| Medicine | green build | `heal` |
+| Toy | one per local day, just for returning | `play` |
+| Soap | closing a linked issue | `clean` |
+
+Rules that hold in code (`care/items.ts`, `care/state.ts`):
+
+- grants deduplicate by ledger event id, so a re-read, a reload or a replayed
+  snapshot mints nothing — and a re-read of the same ledger returns the *same*
+  state object, because the House persists whenever the minted state changes
+  identity (a non-idempotent mint is a save loop, not a cosmetic bug);
+- each item is capped per local day, and the plan is deterministic (earliest
+  events first) so two devices grant the same items. The cap is applied when
+  minting, and a grant beyond the cap is recorded as seen-but-not-granted, so a
+  timezone change cannot re-plan it as a fresh grant on another day;
+- the inventory reads a **lifetime granted counter minus a lifetime spent
+  counter**, never the mint log: the log is bounded, and counting its records
+  emptied the cupboard of the users who had played longest;
+- the inventory has a per-item maximum, and a grant that would exceed it is
+  recorded as seen but not granted. Without that, a full cupboard would hide an
+  unbounded backlog and a month of hunger would be free;
+- a timestamp more than five minutes in the future is treated as a broken clock
+  and ignored when deriving needs and moods. One device set a year ahead would
+  otherwise pin hunger and mood on every device it syncs to.
+
+### 12.4 Actions
+
+Six actions, deliberately small enough for three buttons on a future device:
+`feed`, `play`, `clean`, `heal`, `sleep`, `pet`.
+
+A refused action never partially applies. The refusal reason is specific —
+`dormant`, `no-item`, `not-measured`, `not-needed` — and the need is checked
+before the item, so a full companion is told "nothing to do" rather than "you
+have no food".
+
+### 12.5 Neglect: recoverable dormancy
+
+No death, no lost progression. When every measured need is at zero and nothing
+has been eaten or done for seven days, the companion becomes **dormant**: it
+sleeps in the House, the sprite greys out, and the room says it is resting until
+you are back. One day of real work wakes it. Dormancy never touches XP, stage,
+or collection.
+
+KNOWN TUNING GAP: with the energy formula above, activity only ever *lowers*
+energy, so a companion that is simply idle keeps energy at 100 and dormancy is
+reachable only after roughly ten late-night sessions on top of a week of
+neglect. The rule is implemented as specified; the formula needs an inactivity
+term before dormancy behaves as §12.5 describes. That is a product decision, not
+a bug fix.
+
+### 12.6 The House
+
+`/companions` opens with the House: the companion, a floor with one object per
+action (food bowl, toy, bed, bath, medicine shelf), a window that follows the
+real day/night cycle, labelled meters, the cupboard, and this week's activity
+summary. Every object is a real `<button>` with a label, every target is at
+least 44 px, needs are shown as meters whose text says what they measure, and
+nothing animates — so reduced motion needs no special case.
+
+The current render is a flat elevation. `PLAN-living-companion.md` §4.1 asks for
+2.5D isometric pixel art; the renderer is kept replaceable (§4.4) and the room
+will move to isometric art in a visual pass. The logic does not change.
+
+### 12.7 Condition in sync
+
+Condition state is stored in the guest profile (`care`, optional so every older
+profile still loads) and in the product snapshot (`condition`). Merge rule:
+**newest timestamp wins per need**, unlike progression's monotonic max. Two
+exceptions, both deliberate: `startedAt` takes the *earlier* value (taking the
+later one would make a merged companion younger and refill every need for free),
+and `spent` takes the maximum per item (summing would charge one spend twice and
+invent a debt, while max can at worst hand back a cosmetic item).
+
+A malformed `care` block is dropped on read rather than allowed to invalidate the
+profile: the condition layer is recoverable, the collection beside it is not.
+Losing a whole guest profile to one bad counter would have broken the one rule
+this section exists to keep.
+
+Syncing also now unions `eggs` and `assignments`. Both were built into the
+snapshot but were missing from `mergeGuestWithServer`, so every sync silently
+dropped unopened eggs and repository assignments. Assignments resolve a
+same-repository conflict by the newest `assignedAt`.

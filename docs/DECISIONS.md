@@ -105,6 +105,11 @@ resting or sleepy mood and welcome the user when they return, but inactivity
 never removes XP, lowers a level, deletes a collection item, or punishes the
 user.
 
+Amendment (2026-11-03): this holds for progression only. A separate condition
+layer (hunger, energy, health, cleanliness, diet) changes daily and can drop, and
+is always recoverable. Inactivity never removes progression; it may lower
+condition. See `PRODUCT.md` §12 and the "Living companion" decision below.
+
 ## GitHub access follows user approval and repository visibility
 
 GitHub is the primary developer source. Terrarium may read public repositories,
@@ -541,3 +546,41 @@ complexity prematurely:
 These are product tuning questions. They do not block the basic promise:
 start immediately, bring the tools you already use, earn explainable progress,
 and collect companions that reflect the work you actually do.
+
+## The living companion: two layers, and a recoverable condition (2026-11-03)
+
+Decided while implementing `docs-plan/PLAN-living-companion.md` §2, §3 and §4.
+
+**Two layers.** Progression (XP, stage, collection, Essence, achievements) stays
+permanent and monotonic. A new condition layer (hunger, energy, health,
+cleanliness, diet) changes daily and can drop. The reason for the split is that
+"progress never decays" and "a creature you look after" are both wanted and are
+strictly incompatible in one number: if neglect lowers a meter that XP depends
+on, progress decays; if nothing ever drops, there is nothing to look after. Two
+layers keep both promises, and the boundary is enforced by the code shape — the
+condition layer has no access to XP at all, not even a read.
+
+**Neglect outcome.** Recoverable dormancy, no death (D2). All measured needs at
+zero for seven days puts the companion to sleep with a note that it is resting
+until the user returns. One qualifying active day wakes it. Nothing earned is
+removed. Hardcore mode, where a companion can leave permanently, remains out of
+scope.
+
+**Unmeasured is not perfect.** Health and cleanliness depend on signals nothing
+produces yet (default-branch CI status, own-PR open age). They render as "not
+measured yet" rather than as 100, and their actions refuse instead of spending an
+item on an unknown. The alternative — a full bar with nothing behind it — violates
+§11.1 of `PRODUCT.md`, which is the rule that a number must name what it counts
+and be able to prove it.
+
+**Condition merges per field, not per snapshot.** Newest timestamp wins per need,
+so a laptop that fed the companion and a phone that let it rest both survive.
+`startedAt` takes the earlier value (the opposite rule, because it is a decay
+floor rather than an event), and `spent` takes the maximum per item (max can
+hand back a cosmetic item; summing invents a debt).
+
+Still open, and deliberately not decided here: per-repository XP routing (D3),
+the desktop shell (D4, D5), server-side Markdown reads for a git-backed vault
+(D6), and replaying maturity promotions (D7). The energy formula also needs an
+inactivity term before dormancy behaves as specified — recorded in
+`PRODUCT.md` §12.5.

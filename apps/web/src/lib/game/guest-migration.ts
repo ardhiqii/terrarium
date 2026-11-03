@@ -23,6 +23,7 @@
  * site rather than hidden inside this module.
  */
 
+import { collapseDuplicateStarters } from './guest-profile'
 import type { GuestProfile } from './guest-profile'
 import type { GuestCollectionReference } from './guest-profile'
 
@@ -77,24 +78,37 @@ export function planGuestMigration(
   const activeCompanionId = guestActiveSurvives
     ? guest.activeCompanionId
     : account.activeCompanionId
+  // The guest's chosen INSTANCE, when it survived the union. Two profiles can each
+  // hold a starter of the same species, so falling back to the species alone would
+  // let the badge land on the account's copy instead of the one just clicked.
+  const activeReferenceId = guest.activeReferenceId
+    ? collection.find((entry) => entry.referenceId === guest.activeReferenceId)?.referenceId
+    : undefined
+  const resolvedActiveReferenceId =
+    activeReferenceId ??
+    collection.find((entry) => entry.companionId === activeCompanionId)?.referenceId
 
   return {
-    profile: {
-      ...account,
-      // The guest identity is adopted, not the account's: the product route refuses an
-      // upload whose guest id does not match the row it is writing to, so continuing the
-      // guest identity is what lets the merged copy sync at all.
-      guestId: guest.guestId,
-      updatedAt: new Date().toISOString(),
-      activeCompanionId,
-      collection,
-      eggs,
-      assignments,
-      // Baselines stay the account's. They are the "what have I already counted" marks
-      // for the sources; taking the guest's would re-baseline the account's repos and
-      // award their history a second time.
-      sourceBaselines: account.sourceBaselines,
-    },
+    profile: collapseDuplicateStarters(
+      {
+        ...account,
+        // The guest identity is adopted, not the account's: the product route refuses an
+        // upload whose guest id does not match the row it is writing to, so continuing the
+        // guest identity is what lets the merged copy sync at all.
+        guestId: guest.guestId,
+        updatedAt: new Date().toISOString(),
+        activeCompanionId,
+        ...(resolvedActiveReferenceId ? { activeReferenceId: resolvedActiveReferenceId } : {}),
+        collection,
+        eggs,
+        assignments,
+        // Baselines stay the account's. They are the "what have I already counted" marks
+        // for the sources; taking the guest's would re-baseline the account's repos and
+        // award their history a second time.
+        sourceBaselines: account.sourceBaselines,
+      },
+      new Date().toISOString(),
+    ),
     clearGuest: true,
     activeCompanionChanged: activeCompanionId !== account.activeCompanionId,
   }
@@ -126,6 +140,10 @@ function addsNothing(guest: GuestProfile, account: GuestProfile): boolean {
  * Keyed on `referenceId`, which is unique per acquisition, so two draws of the same
  * species stay two entries and a duplicate is never silently folded away. Duplicates
  * are what bank Essence, and dropping one would lose it.
+ *
+ * The one exception is applied by the caller: two STARTERS of the same species are
+ * not collected duplicates but the same grant arriving from two profiles, and
+ * `collapseDuplicateStarters` folds those before the plan is returned.
  */
 function unionCollection(
   account: readonly GuestCollectionReference[],

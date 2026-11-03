@@ -48,6 +48,40 @@ weighted by transparent work signals. Duplicates become family-specific Essence.
 - New product engine tests pass: 640 tests across 56 files.
 - `npm run build` succeeds.
 
+### Living companion, first slice (2026-11-03)
+
+Implemented from `docs-plan/PLAN-living-companion.md`, phases P1 (partly), P2
+and P3. The plan itself remains a draft; the parts that shipped are recorded in
+`PRODUCT.md` §12 and `DECISIONS.md`.
+
+- **Care core** (`apps/web/src/lib/game/care/`): `needs`, `mood`, `items`,
+  `actions`, `scene`, `state`, all pure and client-safe, with 87 tests covering
+  the 0/100 boundaries, a clock that goes backwards or runs ahead, corrupt
+  timestamps, per-day item caps across a timezone shift, replay safety, the
+  inventory maximum, and cross-device merging.
+- **Red-team pass**, folded back in as `care/red-team-regressions.test.ts`. Two
+  findings mattered: the cupboard was derived from a bounded mint log, so the
+  longest-playing users' inventory emptied itself (now a lifetime granted/spent
+  counter); and minting was not idempotent past that bound, which turned the
+  House's "persist when the minted state changed" effect into a save loop. Also
+  fixed: a timezone change could re-mint a day's surplus, one malformed ledger
+  record crashed the sort, a future timestamp on one device pinned hunger and
+  mood on all of them, and a corrupt care counter discarded the whole profile.
+- **Condition in sync**: `care` on the guest profile, `condition` on the product
+  snapshot, merged newest-timestamp-per-need (with `startedAt` keeping the
+  earlier value). The snapshot also now unions `eggs` and `assignments`, which
+  `mergeGuestWithServer` was silently dropping.
+- **The House** on `/companions`: the companion, one object per action, a
+  day/night window, labelled meters, the cupboard, and this week's activity.
+- **Known gaps, stated rather than hidden**: health and cleanliness have no
+  producer yet and read "not measured yet"; the room is a flat elevation, not
+  the planned 2.5D isometric art; dormancy is implemented as specified but is
+  nearly unreachable under the current energy formula (`PRODUCT.md` §12.5).
+- **Not attempted**: P1's server-side assignment rendering in
+  `/api/creature` / `/api/creature.svg`, per-repo XP routing (D3), and all of
+  P4/P5/P6 (Tauri desktop shell, background sync and local git watch, notes
+  source v2).
+
 ### New product loop shipped
 
 - Companions arrive as **eggs**. A draw used to land straight in the collection and
