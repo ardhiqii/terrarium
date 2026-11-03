@@ -8,6 +8,14 @@ const CONTENT_ROOT = path.join(process.cwd(), 'apps', 'web', 'content')
 const COLLECTIONS = ['notes', 'projects'] as const
 type Collection = (typeof COLLECTIONS)[number]
 
+/**
+ * What a content slug may look like: one path segment, no separators, no traversal.
+ *
+ * Content filenames are author-chosen and live in `content/<collection>/<slug>.mdx`, so the
+ * only legitimate slugs are those. Anything else reaching `getContentItem` came from a URL.
+ */
+const SAFE_SLUG = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+
 function getCollection(collection: Collection): string {
   return path.join(CONTENT_ROOT, collection)
 }
@@ -50,6 +58,17 @@ function getFilePaths(collection: Collection): string[] {
     .map((f) => path.join(dir, f))
 }
 
+/**
+ * Newest first.
+ *
+ * `new Date(undefined).getTime()` is NaN, and a comparator returning NaN leaves the order to
+ * the engine, so one note saved without a `date` silently reshuffles the whole index. An
+ * undated item sorts last instead.
+ */
+function byNewestFirst(left: ContentMeta, right: ContentMeta): number {
+  return (Date.parse(right.date) || 0) - (Date.parse(left.date) || 0)
+}
+
 /** Get all content metadata (no raw content) sorted by date desc */
 export function getAllContent(): ContentMeta[] {
   const items: ContentMeta[] = []
@@ -58,16 +77,14 @@ export function getAllContent(): ContentMeta[] {
       items.push(readFileMeta(filePath, collection))
     }
   }
-  return items.sort(
-    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-  )
+  return items.sort(byNewestFirst)
 }
 
 /** Get all content from a specific collection */
 export function getCollectionContent(collection: Collection): ContentMeta[] {
   return getFilePaths(collection)
     .map((fp) => readFileMeta(fp, collection))
-    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+    .sort(byNewestFirst)
 }
 
 /** Get a single content item by collection + slug */
@@ -75,6 +92,10 @@ export function getContentItem(
   collection: Collection,
   slug: string
 ): ContentItem | null {
+  // `slug` comes straight from the `[slug]` URL segment. Without this guard the path join
+  // resolved `../../something` relative to the collection directory, so a crafted segment read
+  // any `.mdx` file on disk that the process can reach — not just this collection's.
+  if (!SAFE_SLUG.test(slug)) return null
   const filePath = path.join(getCollection(collection), `${slug}.mdx`)
   if (!fs.existsSync(filePath)) return null
   return readFileItem(filePath, collection)
