@@ -197,11 +197,15 @@ function migrateEncounterStateIntoAccount(profileKey: string): void {
  * import here means it runs once, from wherever the user lands, before any reader can
  * look in the wrong place.
  *
- * WHY IT IS IDEMPOTENT: the guest key is removed after a successful write, so the next
- * call finds nothing to import. A failed write leaves the guest key in place, which is
- * the safe direction: the next visit retries rather than losing the data.
+ * WHY IT IS IDEMPOTENT: the guest key is removed after the import, so a later call finds
+ * nothing to import. A failed write leaves the guest key in place, which is the safe
+ * direction: the next visit retries rather than losing the data.
+ *
+ * Exported for tests: this is the only function that performs BOTH destructive writes,
+ * and the partial-failure path (profile written, cleanup not yet done) is the one that can
+ * strand two live profiles. A test has to be able to drive it twice.
  */
-function migrateGuestProfileIntoAccount(profileKey: string): void {
+export function migrateGuestProfileIntoAccount(profileKey: string): void {
   if (typeof window === 'undefined') return
   // Signed out: there is no account to import into, and clearing the guest key would
   // throw the user's progress away.
@@ -220,10 +224,17 @@ function migrateGuestProfileIntoAccount(profileKey: string): void {
     } else {
       const plan = planGuestMigration(guestProfile, accountProfile)
       if (!plan) {
-        // Same identity: the account key already holds this profile, so the profile
-        // needs no move. The encounter state still might, if a previous visit died
-        // between the two writes.
+        // Same identity: the account key already holds this profile, so there is no
+        // profile to move. The encounter state still might need moving, and the guest key
+        // must STILL be cleared — because "the account already holds this identity" is
+        // also exactly what a half-finished migration leaves behind: the profile was
+        // written, then the process died or `removeItem` threw before the cleanup. This
+        // branch is the only thing that can ever finish that job, and returning here
+        // without removing left two live profiles, so the next sign-out read the stale
+        // one. That is the failure this whole module exists to prevent.
         migrateEncounterStateIntoAccount(profileKey)
+        storage.removeItem(GUEST_PROFILE_STORAGE_KEY)
+        window.dispatchEvent(new Event('terrarium:guest-profile-updated'))
         return
       }
       saveGuestProfile(storage, plan.profile, profileKey)

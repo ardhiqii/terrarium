@@ -15,33 +15,16 @@ function read(rel: string) {
  * stage. Nothing on screen said the fraction was XP WITHIN the stage, so a reader holding two
  * unexplained numbers concludes one of them is broken. Naming the stage costs one word.
  *
- * These tests pin the attribution AND the call sites, because the fix is worthless if a fifth
- * XpBar is added later without it.
+ * WHAT IS TESTED HERE, AND WHAT IS NOT: the rendered label is asserted in
+ * `xp-bar.render.test.tsx`, by mounting the component. What remains here is the one claim a
+ * render cannot make — that every call site PASSES the stage name, including the fifth one
+ * somebody adds later. That is a property of the source, so it is checked in the source.
  */
 const XP_BAR = 'apps/web/src/components/game/XpBar.tsx'
 
-describe('XpBar states which stage its numbers are inside', () => {
-  it('takes the stage name as a prop', () => {
-    const src = read(XP_BAR)
-    expect(src).toContain('stageName?: string')
-  })
-
-  it('renders the visible label with the stage named', () => {
-    const src = read(XP_BAR)
-    expect(src).toContain('xp into ${target}')
-  })
-
-  it('no longer renders a bare "x / y xp" fraction', () => {
-    const src = read(XP_BAR)
-    expect(src).not.toContain('${xpIntoStage} / ${xpForNextStage} xp')
-    expect(src).not.toContain('`${xpIntoStage} /')
-  })
-
-  it('names the stage in the accessible name too', () => {
-    const src = read(XP_BAR)
-    expect(src).toContain('${xpIntoStage} of ${xpForNextStage} xp into ${target}')
-    // "Progress to next stage" described the bar without saying which stage it was inside.
-    expect(src).toContain('aria-label="Progress into this stage"')
+describe('the XpBar contract', () => {
+  it('still takes the stage name as an optional prop', () => {
+    expect(read(XP_BAR)).toContain('stageName?: string')
   })
 })
 

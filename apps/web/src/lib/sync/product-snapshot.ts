@@ -11,6 +11,7 @@
 import {
   asCompanionId,
   asEventId,
+  isIsoTimestamp,
   sumXpPerCompanion,
   type EventCategory,
   type EventLedger,
@@ -221,7 +222,11 @@ function assertFiniteNonNegative(value: unknown, field: string): asserts value i
 
 function assertTimestamp(value: unknown, field: string): asserts value is string {
   assertNonEmptyString(value, field)
-  if (Number.isNaN(Date.parse(value))) throw new TypeError(`${field} must be a timestamp`)
+  // `Date.parse` alone is not a check: it accepts `garbage-0` as 2000-01-01, so a
+  // malformed event used to pass the wire gate and then buy itself a budget day.
+  if (!isIsoTimestamp(value) || Number.isNaN(Date.parse(value))) {
+    throw new TypeError(`${field} must be an ISO-8601 timestamp`)
+  }
 }
 
 function assertExactKeys(
@@ -308,11 +313,43 @@ export function productSnapshotEvent(
     category: event.category,
     occurredAt: event.occurredAt,
     ...(trustedVerified && verifiedProof ? { verifiedProof } : {}),
-    ...(event.cap
-      ? { cap: { key: opaqueId(event.cap.key, 'cap'), limit: event.cap.limit } }
-      : {}),
+    ...(event.cap ? { cap: capForSync(event.cap, event.provenance) } : {}),
     ...(safeMetadata(event.metadata) ? { metadata: safeMetadata(event.metadata) } : {}),
   }
+}
+
+const DAY_SUFFIX = /@(\d{4}-\d{2}-\d{2})$/u
+const LAST_DAY_IN_KEY = /(\d{4}-\d{2}-\d{2})(?!.*\d{4}-\d{2}-\d{2})/u
+
+/**
+ * A cap key as it crosses the sync boundary.
+ *
+ * The key is hashed because it can name a source (a GitHub login), and the hash is what
+ * keeps the value stable across devices. The DAY is appended rather than swallowed.
+ *
+ * WHY THAT MATTERS: `budgetDayOf` charges an event to the day carried by its cap key,
+ * precisely because a local note's `occurredAt` is the file mtime, which the caps
+ * stopped trusting. Hashing the whole key hid the day, so every synced and every
+ * restored event fell back to its own timestamp — reopening the mtime-scatter bypass
+ * for exactly the events that had been protected from it. Measured before this change:
+ * sixty backdated notes synced and re-read as 1,500 XP against a 300 XP budget.
+ *
+ * A VERIFIED EVENT'S CAP IS SIGNED (`productEventProofPayload` covers `cap` whole), so
+ * its encoding must not change or every stored receipt stops verifying and the trust
+ * boundary drops the account's GitHub history. Verified events keep the bare hash.
+ */
+function capForSync(cap: { readonly key: string; readonly limit: number }, provenance: Provenance): {
+  key: string
+  limit: number
+} {
+  // Already annotated (a restore -> rebuild round trip): keep the day, re-hash the base.
+  const annotated = DAY_SUFFIX.exec(cap.key)
+  const base = annotated ? cap.key.slice(0, annotated.index) : cap.key
+  const hashed = opaqueId(base, 'cap')
+  if (annotated) return { key: `${hashed}@${annotated[1]}`, limit: cap.limit }
+  if (provenance === 'verified') return { key: hashed, limit: cap.limit }
+  const day = LAST_DAY_IN_KEY.exec(cap.key)?.[1]
+  return day ? { key: `${hashed}@${day}`, limit: cap.limit } : { key: hashed, limit: cap.limit }
 }
 
 function snapshotCompanion(companion: ProductCompanionState): ProductSnapshotCompanion {
@@ -842,6 +879,21 @@ export function mergeGuestWithServer(guest: ProductSnapshot, server: ProductSnap
       ? server.activeCompanionId
       : collection[0]?.companionId ?? guest.activeCompanionId
   const sourceBaselines = unionById(guest.sourceBaselines, server.sourceBaselines, (baseline) => baseline.sourceIdHash)
+  /**
+   * Unopened eggs and repository assignments: the NEWER side wins, they are not unioned.
+   *
+   * They used to be left out of this object entirely, so every upload that merged with an
+   * existing row silently discarded them — `restoreProductStateFromSnapshot` reads
+   * `?? []`, so "absent" meant "empty".
+   *
+   * NOT A UNION, because both lists are current state rather than history: hatching an egg
+   * removes it, and a union would resurrect every egg the user had already opened as soon as
+   * the server copy was one upload behind. `collection` is unioned for the opposite reason —
+   * losing a companion is unacceptable, so it only ever grows.
+   */
+  const incomingWins = guest.updatedAt >= server.updatedAt
+  const eggs = [...(incomingWins ? guest.eggs ?? [] : server.eggs ?? [])]
+  const assignments = [...(incomingWins ? guest.assignments ?? [] : server.assignments ?? [])]
   const recoverabilityWarning = guest.recoverabilityWarning.updatedAt >= server.recoverabilityWarning.updatedAt
     ? guest.recoverabilityWarning
     : server.recoverabilityWarning
@@ -854,6 +906,8 @@ export function mergeGuestWithServer(guest: ProductSnapshot, server: ProductSnap
     activeCompanionId,
     companions,
     collection,
+    eggs,
+    assignments,
     sourceBaselines,
     recoverabilityWarning,
     events,

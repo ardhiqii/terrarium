@@ -26,6 +26,7 @@
 
 import { NextRequest } from 'next/server'
 import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
+import { dayOf } from '@/lib/game/events'
 import { createGuestProfile } from '@/lib/game/guest-profile'
 import { getGithubAccountStore } from '@/lib/sync/github-account-store'
 import { getSessionProvider } from '@/lib/sync/session'
@@ -195,6 +196,107 @@ function unownedCompanionIds(snapshot: ProductSnapshot): string[] {
   return [...referenced].filter((id) => !owned.has(id)).sort()
 }
 
+/**
+ * How far back an uploaded local event may date its own budget day.
+ *
+ * A local event's cap key carries the day the ledger charges it to, and the browser
+ * chooses that key. Without a bound, a client could spread one upload across as many
+ * days as it liked and take a fresh 300 XP allowance for each — measured at 900 XP
+ * from twelve future-dated keys before this existed.
+ *
+ * Seven days covers the one honest reason to carry an older day (a tab or a device
+ * that scanned offline and uploaded later) and nothing else. A day outside the window
+ * is charged to today, which is where a live session actually is.
+ */
+const BUDGET_DAY_WINDOW_DAYS = 7
+const DAY_SUFFIX = /@(\d{4}-\d{2}-\d{2})$/u
+
+/** Keep the time-of-day when only the date has to change, so ordering stays stable. */
+function timePartOf(timestamp: string): string {
+  const match = /^\d{4}-\d{2}-\d{2}(T.*)?$/u.exec(timestamp)
+  return match?.[1] && match[1].length > 1 ? match[1] : 'T00:00:00.000Z'
+}
+
+/**
+ * Rewrite a local event's budget day into the trusted window.
+ * TWO LEVERS, because an event has two ways to name a day:
+ *
+ *   - With a cap, the day rides on the cap key (`...@YYYY-MM-DD`), which is where the ledger
+ *     reads it. The timestamp is left alone: for a local note it is the file's mtime, and an
+ *     old mtime on a backdated note is the truth, not a forgery.
+ *   - Without a cap there is no key to carry a day, so the ledger falls back to
+ *     `occurredAt` — and that is the bypass a cap-only clamp left open. Sixty uncapped
+ *     events dated across 2099 measured 1,500 XP against a 300 budget. Here the timestamp is
+ *     the only lever, so an out-of-window date is rewritten and the time kept.
+ *
+ * Only non-verified events are touched: a verified event's fields are covered by the receipt
+ * this route re-checks, so rewriting one would invalidate it.
+ */
+export function clampBudgetDays(snapshot: ProductSnapshot, now: Date): ProductSnapshot {
+  const today = dayOf(now.toISOString())
+  const floor = dayOf(new Date(now.getTime() - BUDGET_DAY_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString())
+  const clamp = (day: string): string => (day < floor || day > today ? today : day)
+
+  let changed = false
+  const events = snapshot.events.map((event) => {
+    if (event.provenance === 'verified') return event
+
+    if (event.cap) {
+      const annotated = DAY_SUFFIX.exec(event.cap.key)
+      const base = annotated ? event.cap.key.slice(0, annotated.index) : event.cap.key
+      // An unannotated key (stored before the day was carried) or an unparseable timestamp
+      // both resolve to today, which is the fail-closed answer.
+      const claimed = annotated ? annotated[1] : dayOf(event.occurredAt)
+      const day = clamp(claimed)
+      if (annotated && day === claimed) return event
+      changed = true
+      return { ...event, cap: { ...event.cap, key: `${base}@${day}` } }
+    }
+
+    const claimed = dayOf(event.occurredAt)
+    const day = clamp(claimed)
+    if (day === claimed) return event
+    changed = true
+    // `claimed` is the undated sentinel when the timestamp is unparseable, so the whole value
+    // is replaced rather than stitched.
+    const occurredAt = claimed === '0000-00-00'
+      ? `${day}T00:00:00.000Z`
+      : `${day}${timePartOf(event.occurredAt)}`
+    return { ...event, occurredAt }
+  })
+
+  return changed ? { ...snapshot, events } : snapshot
+}
+
+/**
+ * Keep a snapshot's own clock fields at or before now.
+ *
+ * The merge resolves "who has the newer state" by comparing `updatedAt`, and the browser
+ * supplies it. One upload claiming 2099 pins the stored copy for good: every later upload from
+ * an honest device compares as older, so the account's unopened eggs and assignments would be
+ * decided by the 2099 row forever. Clamping at the write boundary keeps the comparison
+ * meaningful without rewinding an honest, slightly-early timestamp.
+ */
+export function clampSnapshotClock(snapshot: ProductSnapshot, now: Date): ProductSnapshot {
+  const ceiling = now.getTime()
+  const notAfter = (value: string): string =>
+    Number.isFinite(Date.parse(value)) && Date.parse(value) > ceiling ? now.toISOString() : value
+
+  const createdAt = notAfter(snapshot.createdAt)
+  const updated = notAfter(snapshot.updatedAt)
+  const updatedAt = Date.parse(updated) < Date.parse(createdAt) ? createdAt : updated
+  return {
+    ...snapshot,
+    createdAt,
+    updatedAt,
+    generatedAt: notAfter(snapshot.generatedAt),
+    recoverabilityWarning: {
+      ...snapshot.recoverabilityWarning,
+      updatedAt: notAfter(snapshot.recoverabilityWarning.updatedAt),
+    },
+  }
+}
+
 function canonicalizeDerivedSnapshot(snapshot: ProductSnapshot): ProductSnapshot {
   const fallbackProfile = createGuestProfile({
     guestId: snapshot.guestId,
@@ -346,7 +448,11 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   const store = getProductStore()
   const handle = session.handle.toLowerCase()
-  const canonicalIncoming = canonicalizeDerivedSnapshot(incoming)
+  // Clamp before rebuilding derived fields, so the XP that gets stored is the XP the
+  // ledger accepts for a day inside the window rather than a day the client invented.
+  const canonicalIncoming = canonicalizeDerivedSnapshot(
+    clampBudgetDays(clampSnapshotClock(incoming, new Date()), new Date()),
+  )
 
   // Retry a short optimistic-concurrency window. This keeps two tabs/devices
   // from silently replacing one another's event history while preserving the

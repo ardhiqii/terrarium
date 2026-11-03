@@ -396,6 +396,17 @@ When a guest signs in:
 - Keep the selected active companion when it still exists; otherwise ask the
   user to choose one.
 - Make the server snapshot authoritative after the merge.
+- **Finish the move even if it was interrupted.** The import writes the merged
+  profile under the account key and then removes the guest key. If the second
+  step fails (a storage error, a closed tab), the next visit finds two profiles
+  carrying the same guest id; that is the half-migrated state, and the resolver
+  completes the cleanup rather than treating "same identity" as "nothing to do".
+  Leaving it unfinished meant two live profiles, and the next sign-out read the
+  stale one.
+- **Preserve unopened eggs and repository assignments across a merge.** They are
+  unioned by draw id and reference id. A merge that omitted them did not fail
+  loudly: the restore reads them as empty, so every upload silently discarded
+  the account's unopened eggs.
 
 Sync conflicts deliberately separate progression from preferences. XP,
 evolution, Essence, collection membership, and persisted encounters merge
@@ -518,11 +529,31 @@ The caps are deliberately hardened against the inputs a user controls:
   time is settable (`touch -t`, archive extraction, a crafted mount), so
   bucketing by it let a single scan spread its work across a year of days and
   earn a year of allowance at once. A scan is charged to the real day it ran.
+- **The day survives the sync boundary.** The ledger charges an event to the day
+  carried by its cap key, and the sync contract hashes that key. Hashing the
+  whole key hid the day, so every synced and restored event fell back to its own
+  timestamp — the file mtime the caps distrust — and sixty backdated notes
+  re-read as 1,500 XP against a 300 budget. The key is still hashed for privacy,
+  and the day is appended to it (`cap-<hash>@YYYY-MM-DD`) so the engine can
+  charge the event to the same day on every device. A `verified` event's cap is
+  part of what the server receipt signs, so its encoding is unchanged.
+- **The server clamps the day it is given.** A local event's cap key is written
+  by the browser, so the upload path rewrites any day outside the last seven
+  days into today before it recomputes XP. Without that, one hand-written body
+  with twelve future-dated keys bought twelve allowances (measured at 900 XP).
+- **A timestamp that is not a real ISO date is charged to one shared day.** The
+  parser behind this used `Date.parse`, which reads `garbage-0` as 2000-01-01:
+  forty invented strings became forty days and forty allowances (1,000 XP). Only
+  ISO-8601 counts, and anything else lands in a single un-dated bucket.
 - **The allowance is not per folder.** Keying the cap by the mounted folder's
   name meant copying a vault, or renaming it, minted a fresh allowance for
   identical content. Every mounted folder now shares one daily budget.
 - **`new-note` is keyed to the note's content, not its path,** so moving or
   renaming a file does not re-earn the bonus for a note that already paid.
+- **The budget meter and the ledger agree on the day.** The activity log's
+  "Today's xp budget" reads the same day function the ledger charges against. It
+  used to count by the event timestamp, so a scan of twenty backdated notes
+  showed 0 of 300 on a day the engine considered fully spent.
 
 These caps apply per **day**, across all mounted folders. Reaching a cap is
 visible: the activity log lists the events a cap rejected with zero XP and the

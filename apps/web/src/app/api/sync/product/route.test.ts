@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { asCompanionId, asEventId, type NormalizedEvent } from '@/lib/game/events'
+import { asCompanionId, asEventId, GLOBAL_DAILY_XP_BUDGET, type NormalizedEvent } from '@/lib/game/events'
 import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
 import { createEncounterState } from '@/lib/game/encounters'
 import { createGuestProfile } from '@/lib/game/guest-profile'
@@ -133,6 +133,78 @@ describe('POST/GET/DELETE /api/sync/product', () => {
       { 'content-type': 'application/json' },
     ))).status).toBe(204)
     expect((await GET()).status).toBe(404)
+  })
+
+  it('clamps an invented budget day, so one upload cannot buy an allowance per day', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST } = await import('./route')
+    const now = '2026-10-01T12:00:00.000Z'
+    const profile = createGuestProfile({ guestId: 'guest-1', starterCompanionId: 'pikachu-family', now })
+    // Sixty notes, each claiming a different day in 2099: 1,500 XP intended, 300 allowed.
+    // Reachable by anyone who posts a body by hand; no receipt covers a local event.
+    const events: NormalizedEvent[] = Array.from({ length: 60 }, (_, i) => ({
+      eventId: asEventId(`future-${i}`),
+      companionId: asCompanionId('pikachu-family'),
+      source: 'mounted-markdown',
+      sourceId: 'vault:42',
+      provenance: 'local',
+      category: 'new-note',
+      occurredAt: now,
+      cap: { key: `mounted-markdown:2099-${String(1 + (i % 12)).padStart(2, '0')}-01:new-note`, limit: 60 },
+    }))
+    const value = buildProductSnapshot(
+      createProductState(profile, { events }, createEncounterState(), PROTOTYPE_COMPANION_CATALOG),
+      now,
+    )
+
+    const response = await POST(request('POST', JSON.stringify(value)))
+
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body.companions[0].xp).toBe(GLOBAL_DAILY_XP_BUDGET)
+  })
+
+  it('clamps an invented timestamp on an UNCAPPED local event too', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST } = await import('./route')
+    const now = '2026-10-01T12:00:00.000Z'
+    const profile = createGuestProfile({ guestId: 'guest-1', starterCompanionId: 'pikachu-family', now })
+    // The hole left by the first clamp: a local event with NO cap has no key to carry a day,
+    // so its budget day is its own `occurredAt`. Sixty of them dated across 2099 is sixty
+    // allowances. The fix has to reach the timestamp, not just the cap key.
+    const events: NormalizedEvent[] = Array.from({ length: 60 }, (_, i) => ({
+      eventId: asEventId(`uncapped-${i}`),
+      companionId: asCompanionId('pikachu-family'),
+      source: 'mounted-markdown',
+      sourceId: 'vault:42',
+      provenance: 'local',
+      category: 'new-note',
+      occurredAt: `2099-${String(1 + (i % 12)).padStart(2, '0')}-01T10:00:00.000Z`,
+    }))
+    const value = buildProductSnapshot(
+      createProductState(profile, { events }, createEncounterState(), PROTOTYPE_COMPANION_CATALOG),
+      now,
+    )
+
+    const response = await POST(request('POST', JSON.stringify(value)))
+
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body.companions[0].xp).toBe(GLOBAL_DAILY_XP_BUDGET)
+  })
+
+  it('clamps a 2099 updatedAt, so one upload cannot win every future merge', async () => {
+    vi.stubEnv('STUB_SESSION_HANDLE', 'octocat')
+    const { POST, GET } = await import('./route')
+    // The merge decides "who has the newer eggs and assignments" by comparing updatedAt, and
+    // the browser supplies it. A stored 2099 makes every honest device look stale forever.
+    const value: ProductSnapshot = { ...snapshot(['event-1']), updatedAt: '2099-01-01T00:00:00.000Z' }
+
+    const response = await POST(request('POST', JSON.stringify(value)))
+    expect(response.status).toBe(200)
+
+    const stored = await (await GET()).json()
+    expect(Date.parse(stored.updatedAt)).toBeLessThanOrEqual(Date.now())
   })
 
   it('recomputes derived XP before the first snapshot is stored', async () => {

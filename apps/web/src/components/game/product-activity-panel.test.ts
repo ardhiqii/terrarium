@@ -41,7 +41,12 @@ describe('ProductActivityPanel attributes each ladder', () => {
 
   it('labels the companion XP as the companion\'s, not the viewer\'s', () => {
     expect(PANEL).toContain('Companion XP')
-    expect(PANEL).toContain('<dd className="font-data mt-1 text-sm">\n            {(activeCompanion?.xp ?? 0).toLocaleString()} xp')
+    // Whitespace-insensitive on purpose: the value used to be asserted with the JSX's own
+    // indentation inside the literal, so reindenting the file failed the test while a wrong
+    // number rendered happily.
+    expect(PANEL).toMatch(
+      /<dd className="font-data mt-1 text-sm">\s*\{\(activeCompanion\?\.xp \?\? 0\)\.toLocaleString\(\)\} xp/u,
+    )
   })
 
   it('says the form progress belongs to this companion', () => {

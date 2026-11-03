@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { asCompanionId, asEventId, type NormalizedEvent } from '../game/events'
+import { asCompanionId, asEventId, acceptedLedgerEvents, totalXpOf, type NormalizedEvent } from '../game/events'
 import { PROTOTYPE_COMPANION_CATALOG } from '../game/companion-catalog'
 import { advanceEncounter, createEncounterState } from '../game/encounters'
 import { createGuestProfile } from '../game/guest-profile'
@@ -449,5 +449,155 @@ describe('product snapshot', () => {
     expect(restored.profile.eggs).toEqual([])
     expect(restored.profile.assignments).toEqual([])
     })
+  })
+})
+
+/**
+ * The daily budget is enforced on the day carried by a cap key, and the sync contract
+ * hashes that key. These tests exist because the hash swallowed the day: every event that
+ * crossed the boundary fell back to its own timestamp, and a local note's timestamp is the
+ * file mtime the caps stopped trusting.
+ */
+describe('the daily budget survives the sync contract', () => {
+  const scanDay = '2026-10-01'
+
+  function cappedNotes(count: number): NormalizedEvent[] {
+    return Array.from({ length: count }, (_, i) => ({
+      ...event(`note-${i}`),
+      occurredAt: `2019-03-${String(1 + (i % 28)).padStart(2, '0')}T09:00:00.000Z`,
+      cap: { key: `mounted-markdown:${scanDay}:new-note`, limit: count },
+    }))
+  }
+
+  function restoredXp(snapshot: ProductSnapshot): number {
+    const restored = restoreProductStateFromSnapshot(
+      snapshot,
+      createGuestProfile({ guestId: 'guest-1', starterCompanionId: 'pikachu-family', now }),
+      PROTOTYPE_COMPANION_CATALOG,
+    )
+    return totalXpOf(acceptedLedgerEvents(restored.ledger))
+  }
+
+  it('still costs one day after build -> serialize -> restore, not one day per mtime', () => {
+    // Sixty notes at 25 XP is 1,500. The budget allows 300. Before the day was carried
+    // through the wire format this returned 1,500: the hashed key hid the day, so each
+    // forged mtime became its own budget.
+    const built = buildProductSnapshot(state(cappedNotes(60)), now)
+    expect(built.events[0].cap?.key).toMatch(/^cap-[0-9a-f]{8}-[0-9a-f]{8}@2026-10-01$/u)
+
+    const serialized = serializeProductSnapshot(built)
+    const parsed = deserializeProductSnapshot(serialized)
+    expect(parsed).not.toBeNull()
+
+    expect(restoredXp(parsed as ProductSnapshot)).toBe(300)
+  })
+
+  it('keeps the cap key opaque apart from the day', () => {
+    // The source identity inside a cap key is still hashed: the annotation is a date, not
+    // a folder or repository name.
+    const built = buildProductSnapshot(state(cappedNotes(1)), now)
+    const key = built.events[0].cap?.key ?? ''
+
+    expect(key).not.toContain('mounted-markdown')
+    expect(key.slice(0, key.indexOf('@'))).toMatch(/^cap-[0-9a-f]{8}-[0-9a-f]{8}$/u)
+  })
+
+  it('does not annotate a VERIFIED event, because its cap is inside the receipt payload', () => {
+    // `productEventProofPayload` covers `cap` whole, so changing this encoding would make
+    // every stored receipt stop verifying and the trust boundary would drop the account's
+    // GitHub history.
+    const verified: NormalizedEvent = {
+      ...githubEvent('github:42:work-session:2026-08-28-04'),
+      cap: { key: 'github:account:2026-08-28:work-session', limit: 2 },
+    }
+    const built = buildProductSnapshot(state([verified]), now)
+
+    expect(built.events[0].cap?.key).toMatch(/^cap-[0-9a-f]{8}-[0-9a-f]{8}$/u)
+    expect(built.events[0].cap?.key).not.toContain('@')
+  })
+
+  it('reproduces the same ids and caps when a restored snapshot is rebuilt', () => {
+    // Two devices must derive the same wire form, or the merge sees two copies of one
+    // event and the receipt/cap strings stop matching between them.
+    const built = buildProductSnapshot(state(cappedNotes(3)), now)
+    const restored = deserializeProductSnapshot(serializeProductSnapshot(built)) as ProductSnapshot
+    const rebuilt = buildProductSnapshot(
+      restoreProductStateFromSnapshot(
+        restored,
+        createGuestProfile({ guestId: 'guest-1', starterCompanionId: 'pikachu-family', now }),
+        PROTOTYPE_COMPANION_CATALOG,
+      ),
+      now,
+    )
+
+    expect(rebuilt.events.map((e) => [e.eventId, e.cap?.key])).toEqual(
+      built.events.map((e) => [e.eventId, e.cap?.key]),
+    )
+  })
+})
+
+describe('merging twice', () => {
+  it('is idempotent, so a retried upload cannot add XP or duplicate entries', () => {
+    const guest = buildProductSnapshot(state([event('guest-1')]), now)
+    const server = buildProductSnapshot(state([event('server-1')]), now)
+
+    const merged = mergeGuestWithServer(guest, server)
+    const again = mergeGuestWithServer(merged, server)
+
+    expect(again).toEqual(merged)
+    expect(mergeGuestWithServer(merged, merged)).toEqual(merged)
+    expect(again.events).toHaveLength(2)
+  })
+
+  it('does not lose an egg or a collection entry when the same merge runs again', () => {
+    const guest = buildProductSnapshot(state([event('guest-1')]), now)
+    const server = buildProductSnapshot(state([event('server-1')]), now)
+    const withEggs: ProductSnapshot = {
+      ...guest,
+      eggs: [{ drawId: 'guest:0', companionId: 'ditto-like', laidAt: now }],
+    }
+
+    const merged = mergeGuestWithServer(withEggs, server)
+    const again = mergeGuestWithServer(merged, server)
+
+    expect(again.eggs?.map((egg) => egg.drawId)).toEqual(['guest:0'])
+    expect(again.collection.map((entry) => entry.referenceId)).toEqual(
+      merged.collection.map((entry) => entry.referenceId),
+    )
+  })
+
+  it('keeps an unopened egg the server has when this browser has not seen it', () => {
+    // A client that has not fetched since the egg was laid: its profile is stale, so the
+    // server's list is the newer one and the egg survives.
+    const stale = buildProductSnapshot(state([event('guest-1')]), now)
+    const server: ProductSnapshot = {
+      ...buildProductSnapshot(state([event('server-1')]), now),
+      eggs: [{ drawId: 'server:0', companionId: 'ditto-like', laidAt: now }],
+    }
+
+    const merged = mergeGuestWithServer(
+      { ...stale, eggs: [], updatedAt: '2026-08-01T00:00:00.000Z' },
+      server,
+    )
+
+    expect(merged.eggs?.map((egg) => egg.drawId)).toEqual(['server:0'])
+  })
+
+  it('does NOT resurrect an egg the user has already hatched', () => {
+    // Hatching removes the egg from the profile, so the newer side is authoritative for the
+    // list. A union here would hand back every egg the server had not heard about yet, and the
+    // user would hatch the same companion twice.
+    const hatched = buildProductSnapshot(state([event('guest-1')]), now)
+    const server: ProductSnapshot = {
+      ...buildProductSnapshot(state([event('server-1')]), now),
+      eggs: [{ drawId: 'guest:0', companionId: 'ditto-like', laidAt: now }],
+    }
+
+    const merged = mergeGuestWithServer(
+      { ...hatched, eggs: [], updatedAt: '2026-08-28T11:00:00.000Z' },
+      server,
+    )
+
+    expect(merged.eggs).toEqual([])
   })
 })

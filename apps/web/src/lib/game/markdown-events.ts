@@ -10,7 +10,7 @@
  * `MarkdownFileSummary` (see `scan-summary-store.ts`), and this function cannot
  * read an old note's text even in principle.
  */
-import { asCompanionId, makeEventId, type CompanionId, type EventCap, type NormalizedEvent } from './events'
+import { asCompanionId, isIsoTimestamp, makeEventId, type CompanionId, type EventCap, type NormalizedEvent } from './events'
 import type { MarkdownFileSummary } from './scan-summary-store'
 import type { Maturity } from './types'
 
@@ -48,9 +48,11 @@ function normalizePath(value: string): string {
 }
 
 function iso(value: string): string {
-  const parsed = new Date(value)
-  if (!Number.isFinite(parsed.getTime())) throw new TypeError(`Invalid Markdown timestamp: ${value}`)
-  return parsed.toISOString()
+  // Strict, not `new Date(value)`: V8 reads `garbage-0` as 2000-01-01, so a lenient
+  // parse let an unparseable mtime or scan clock through and minted a fresh daily cap
+  // bucket per invented string.
+  if (!isIsoTimestamp(value)) throw new TypeError(`Invalid Markdown timestamp: ${value}`)
+  return new Date(value).toISOString()
 }
 
 function wordCount(content: string): number {

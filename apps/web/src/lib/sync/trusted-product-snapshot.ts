@@ -26,6 +26,16 @@ export function trustStoredProductSnapshot(
   githubId: number,
 ): ProductSnapshot {
   let changed = false
+  /**
+   * True only when an EVENT was removed, not merely when the shape was repaired.
+   *
+   * The encounter reset below has to be gated on this, not on `changed`. `changed` also
+   * goes true for reasons that involve no untrusted activity at all — an active
+   * companion that is not owned, a companion id that left the catalog — and resetting
+   * every draw, meter, and essence balance for those would destroy a real account's egg
+   * history over a bookkeeping mismatch.
+   */
+  let droppedEvents = false
   const catalogFallback = PROTOTYPE_COMPANION_CATALOG.list()[0]?.id ?? 'pikachu-family'
   const safeCollection = snapshot.collection.filter((reference) => (
     Boolean(PROTOTYPE_COMPANION_CATALOG.get(reference.companionId))
@@ -50,6 +60,7 @@ export function trustStoredProductSnapshot(
   const events = snapshot.events.flatMap((event): ProductSnapshotEvent[] => {
     if (!PROTOTYPE_COMPANION_CATALOG.get(event.companionId) || !ownedCompanionIds.has(event.companionId)) {
       changed = true
+      droppedEvents = true
       return []
     }
     const trustedGithub = event.source === 'github' &&
@@ -62,10 +73,12 @@ export function trustStoredProductSnapshot(
     // the receipt boundary through the companion totals.
     if (event.source === 'github') {
       changed = true
+      droppedEvents = true
       return []
     }
     if (event.provenance !== 'verified') return [event]
     changed = true
+    droppedEvents = true
     // Verified provenance is meaningful only for server-issued GitHub
     // receipts. Remove malformed legacy records from every other source too.
     return []
@@ -90,15 +103,17 @@ export function trustStoredProductSnapshot(
               acquiredAt: snapshot.createdAt,
               acquisition: 'starter' as const,
             }],
-        encounters: {
-          ...snapshot.encounters,
-          meter: 0,
-          totalProgress: 0,
-          nextSequence: 0,
-          draws: [],
-          processedTriggerIds: [],
-          essenceByFamily: {},
-        },
+        encounters: droppedEvents
+          ? {
+              ...snapshot.encounters,
+              meter: 0,
+              totalProgress: 0,
+              nextSequence: 0,
+              draws: [],
+              processedTriggerIds: [],
+              essenceByFamily: {},
+            }
+          : snapshot.encounters,
       }
     : snapshot
   const fallbackProfile = createGuestProfile({

@@ -54,9 +54,9 @@ export function ActivityLogList({ ledger, companionId, limit = 12 }: ActivityLog
   // The budget meter, so a user sees WHY they stopped earning without having to
   // find a rejected row and read the reason. Uses `dayXp`, not `totalXp`: the
   // budget is one day wide and spans every companion, while `totalXp` is this
-  // companion's lifetime, so the lifetime figure rendered "1,800 / 250".
+  // companion's lifetime, so the lifetime figure rendered "1,800 / 300".
   // Only shown once it is close enough to matter: the honest ceiling for both
-  // current sources is 221, so showing "30 / 250" every day would read as noise.
+  // current sources is 221, so showing "30 / 300" every day would read as noise.
   const budgetUsed = log.dayXp
   const budgetPct = Math.min(1, budgetUsed / GLOBAL_DAILY_XP_BUDGET)
   const showBudget = budgetPct >= 0.5

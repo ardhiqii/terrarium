@@ -43,18 +43,23 @@ export interface MigrationPlan {
 /**
  * Merge a signed-out guest profile into an account profile.
  *
- * Returns `null` when there is nothing to do: no guest profile, or a guest profile
- * that is already the one in use (same guest id), which is the normal case for a
- * browser that has only ever used one.
+ * Returns `null` only when there is nothing to add: no guest profile, or a guest profile
+ * whose every reference, egg, and assignment is already under the account key. `null` is
+ * what tells the caller the guest copy is redundant and may be removed.
+ *
+ * WHY A SHARED GUEST ID IS NOT AUTOMATICALLY "NOTHING TO DO": the account adopts the guest
+ * id on the first import, so every later sign-in compares two profiles with the SAME id. If
+ * the user signed out, played, and signed back in, the guest copy holds that offline
+ * progress and the account copy does not. Treating equal ids as "already migrated" discarded
+ * it — the profile needs a union whenever the guest side has something the account lacks.
  */
 export function planGuestMigration(
   guest: GuestProfile | null,
   account: GuestProfile,
 ): MigrationPlan | null {
   if (!guest) return null
-  // Same identity: the account key already holds this guest's profile, so there is
-  // nothing to import and clearing the source would be destructive for no reason.
-  if (guest.guestId === account.guestId) return null
+  const sameIdentity = guest.guestId === account.guestId
+  if (sameIdentity && addsNothing(guest, account)) return null
 
   const collection = unionCollection(account.collection, guest.collection)
   const eggs = unionById(account.eggs ?? [], guest.eggs ?? [], (egg) => egg.drawId)
@@ -77,8 +82,8 @@ export function planGuestMigration(
     profile: {
       ...account,
       // The guest identity is adopted, not the account's: the product route refuses an
-      // upload whose guest id does not match the row it is writing to, so continuing
-      // the guest identity is what lets the merged copy sync at all.
+      // upload whose guest id does not match the row it is writing to, so continuing the
+      // guest identity is what lets the merged copy sync at all.
       guestId: guest.guestId,
       updatedAt: new Date().toISOString(),
       activeCompanionId,
@@ -93,6 +98,26 @@ export function planGuestMigration(
     clearGuest: true,
     activeCompanionChanged: activeCompanionId !== account.activeCompanionId,
   }
+}
+
+/**
+ * True when every entry the guest holds is already in the account copy AND both agree on the
+ * active companion.
+ *
+ * Compared by the same identities the unions use, so "already there" means the merge would be
+ * a no-op rather than "the lists happen to look similar". The active companion counts as
+ * something to add: the guest was the profile on screen a moment ago, and its choice is what
+ * `activeCompanionChanged` exists to surface.
+ */
+function addsNothing(guest: GuestProfile, account: GuestProfile): boolean {
+  const references = new Set(account.collection.map((entry) => entry.referenceId))
+  const eggIds = new Set((account.eggs ?? []).map((egg) => egg.drawId))
+  const assignmentIds = new Set((account.assignments ?? []).map((assignment) => assignment.referenceId))
+
+  return guest.activeCompanionId === account.activeCompanionId &&
+    guest.collection.every((entry) => references.has(entry.referenceId)) &&
+    (guest.eggs ?? []).every((egg) => eggIds.has(egg.drawId)) &&
+    (guest.assignments ?? []).every((assignment) => assignmentIds.has(assignment.referenceId))
 }
 
 /**
