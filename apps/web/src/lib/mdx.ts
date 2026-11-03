@@ -4,7 +4,7 @@ import rehypePrettyCode from 'rehype-pretty-code'
 import rehypeSlug from 'rehype-slug'
 import rehypeAutolinkHeadings from 'rehype-autolink-headings'
 import { buildWikilinkMap } from './backlinks'
-import { WIKILINK_REGEX, parseWikilink, slugify } from './utils'
+import { WIKILINK_REGEX, parseWikilink, slugify, splitWikilinkTarget } from './utils'
 import { visit } from 'unist-util-visit'
 import type { ReactElement } from 'react'
 
@@ -15,13 +15,28 @@ export interface TocEntry {
 }
 
 /**
+ * The href a `[[wikilink]]` resolves to.
+ *
+ * Exported so the resolution rule can be tested without building an mdast tree: this is where
+ * an anchored link used to break. `[[Note#Heading]]` is a page plus a section, so the lookup
+ * has to use the page and the anchor has to survive onto the end of the resolved href. An
+ * unresolved link keeps its old behaviour (an in-page `#slug`) with the anchor dropped, rather
+ * than producing `#slug#anchor`.
+ */
+export function wikilinkHrefFor(target: string, lookup: Map<string, string>): string {
+  const { target: page, anchor } = splitWikilinkTarget(target)
+  const resolved = lookup.get(page.toLowerCase())
+  if (!resolved) return `#${slugify(page)}`
+  return anchor ? `${resolved}#${anchor}` : resolved
+}
+
+/**
  * Custom remark plugin to transform [[Title]] into markdown links.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function remarkWikilinks(): (tree: any) => void {
   const wikilinkMap = buildWikilinkMap()
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (tree: any) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     visit(tree, 'text', (node: any, index: number | undefined, parent: any) => {
@@ -37,7 +52,7 @@ function remarkWikilinks(): (tree: any) => void {
       while ((match = regex.exec(text)) !== null) {
         // Supports both [[Title]] and [[Title|display text]].
         const { target, label } = parseWikilink(match[1])
-        const href = wikilinkMap.get(target.toLowerCase()) ?? `#${slugify(target)}`
+        const href = wikilinkHrefFor(target, wikilinkMap)
 
         if (match.index > lastIndex) {
           parts.push({ type: 'text', value: text.slice(lastIndex, match.index) })

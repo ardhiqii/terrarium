@@ -40,8 +40,30 @@ export function parseWikilink(raw: string): ParsedWikilink {
 }
 
 /**
+ * Splits a wikilink target into the page it names and an optional `#anchor`.
+ *
+ * WHY THIS EXISTS: `[[Note#Heading]]` is one page plus a section heading. The XP resolver
+ * (`markdown-events.ts`) already trims the anchor before matching a note, but the backlink and
+ * statistic paths did not, so an anchored link earned XP while resolving to nothing for
+ * backlinks, `resolvedWikilinks`, and the cluster map — and the MDX renderer linked it to
+ * `#note-heading`, an in-page anchor that does not exist.
+ *
+ * DELIBERATELY NOT DONE IN `parseWikilink`: the editor stores `target` verbatim on its node and
+ * re-serialises it, so trimming there would silently drop the anchor the next time the user
+ * opens and saves the note.
+ */
+export function splitWikilinkTarget(raw: string): { target: string; anchor: string } {
+  const hashIndex = raw.indexOf('#')
+  if (hashIndex === -1) return { target: raw.trim(), anchor: '' }
+  return {
+    target: raw.slice(0, hashIndex).trim(),
+    anchor: raw.slice(hashIndex + 1).trim(),
+  }
+}
+
+/**
  * Extracts all [[wikilink]] targets from raw MDX content.
- * Returns an array of titles (not slugs), with `|alias` suffixes stripped.
+ * Returns page names (not slugs), with `|alias` and `#anchor` suffixes stripped.
  */
 export function extractWikilinks(content: string): string[] {
   const links: string[] = []
@@ -49,7 +71,8 @@ export function extractWikilinks(content: string): string[] {
   WIKILINK_REGEX.lastIndex = 0
   while ((match = WIKILINK_REGEX.exec(content)) !== null) {
     const { target } = parseWikilink(match[1])
-    if (target) links.push(target)
+    const { target: page } = splitWikilinkTarget(target)
+    if (page) links.push(page)
   }
   return links
 }
