@@ -155,6 +155,22 @@ Then:
 npm run dev
 ```
 
+### `DISABLE_CAP` (debug switch)
+
+`DISABLE_CAP=true` skips every XP cap and the daily 300 XP budget, so the pipeline can be watched end to end — every GitHub event counted, nothing clipped — while tuning the rates. Leave it unset (or `false`) for normal play.
+
+```bash
+DISABLE_CAP=true   # debug only: no caps, no budget
+```
+
+Three notes on how it behaves:
+
+- It only changes *which events count*. It does not touch provenance or receipts: a `verified` event still needs a receipt the server can verify, and the product route still re-derives XP from the ledger.
+- `true` and `1` are on; anything else (`false`, `0`, `yes`, `True`) is off, so a typo cannot silently disable the caps.
+- In the browser build, use `NEXT_PUBLIC_DISABLE_CAP` instead: Next only inlines `NEXT_PUBLIC_*` into client bundles. Without it the server accepts uncapped events while the page still displays capped ones. `disable_cap` (lowercase) is also accepted, because `.env` lines are hand-written and env names are case-sensitive on Linux.
+
+The switch logs a warning once per process when it is on.
+
 Open [http://localhost:3000](http://localhost:3000).
 
 ### Opening it from your phone, or showing someone else

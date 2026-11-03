@@ -240,6 +240,41 @@ function budgetDayOf(event: NormalizedEvent): string {
 }
 
 /**
+ * True when the caps are deliberately switched off, via `DISABLE_CAP`.
+ *
+ * DEBUG SWITCH, NOT A FEATURE. It exists so the XP pipeline can be watched end to end — every
+ * GitHub event counted, nothing clipped — while the caps are being tuned. Normal use leaves it
+ * unset.
+ *
+ * WHAT IT DOES NOT DO: it does not touch provenance or receipts. A `verified` event still has
+ * to arrive with a receipt the server can check, and the product route still re-derives XP from
+ * the ledger. Only the caps and the daily budget are skipped.
+ *
+ * THREE NAMES, DELIBERATELY. `DISABLE_CAP` is the documented one; `disable_cap` is accepted
+ * because `.env` files are hand-written and Linux env names are case-sensitive, so the obvious
+ * lowercase spelling would otherwise silently do nothing — the worst possible outcome for a
+ * debug flag. `NEXT_PUBLIC_DISABLE_CAP` exists because Next only inlines `NEXT_PUBLIC_*` into
+ * the client bundle: without it the server would accept uncapped events while the page still
+ * displayed capped ones, which is the two-definitions-of-one-number problem this module exists
+ * to avoid.
+ */
+let capsDisabledWarned = false
+
+export function isCapDisabled(): boolean {
+  const env = typeof process === 'undefined' ? undefined : process.env
+  // Any of the accepted spellings being on is enough: an empty `DISABLE_CAP=` (the compose
+  // default when the variable is unset) must not shadow a `disable_cap=true` beside it.
+  const disabled = [env?.DISABLE_CAP, env?.disable_cap, env?.NEXT_PUBLIC_DISABLE_CAP]
+    .some((value) => value === 'true' || value === '1')
+  if (disabled && !capsDisabledWarned) {
+    capsDisabledWarned = true
+    // Loud on purpose: a deployment left in this state earns XP without limits.
+    console.warn('[terrarium] DISABLE_CAP is on: XP caps and the daily budget are SKIPPED. Debug setting only.')
+  }
+  return disabled
+}
+
+/**
  * Resolves which events count, and why the rest do not.
  *
  * TWO PASSES, IN ORDER. Per-source caps first, then the global daily budget
@@ -254,10 +289,16 @@ function budgetDayOf(event: NormalizedEvent): string {
  * guest owns their local state and can edit it, so the local side was never
  * tamper-proof and is not claimed to be. The `verified` side is what the server
  * signs.
+ *
+ * `DISABLE_CAP` short-circuits all of it (see `isCapDisabled`). Everything is accepted and
+ * nothing is rejected, which is why the empty map is returned rather than a populated one:
+ * a caller reading `rejected` must see "nothing was refused", not "everything was refused".
  */
 export function explainLedgerAcceptance(ledger: EventLedger): LedgerAcceptance {
   const events = uniqueEvents(ledger.events)
   const rejected = new Map<string, LedgerRejectionReason>()
+  if (isCapDisabled()) return { accepted: events, rejected }
+
   const candidates: NormalizedEvent[] = []
 
   // Pass 1: the per-source caps, unchanged.

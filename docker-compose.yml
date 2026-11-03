@@ -17,6 +17,9 @@ services:
       - SESSION_SECRET=${SESSION_SECRET:-}
       - AUTH_BASE_URL=${AUTH_BASE_URL:-}
       - SYNC_STORE=${SYNC_STORE:-sqlite}
+      # DEBUG ONLY: skips every XP cap and the daily budget so the pipeline can be watched
+      # end to end. Unset (or false) in normal use; it does not affect receipts.
+      - DISABLE_CAP=${DISABLE_CAP:-false}
       - SUPABASE_URL=${SUPABASE_URL:-}
       - SUPABASE_SECRET_KEY=${SUPABASE_SECRET_KEY:-}
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
