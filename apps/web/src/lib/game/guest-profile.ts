@@ -7,6 +7,9 @@
  * makes the eventual account-sync format explicit.
  */
 
+import type { CareState } from './care/state'
+import { createCareState, validateCareState } from './care/state'
+
 export const GUEST_PROFILE_SCHEMA_VERSION = 1
 export const GUEST_PROFILE_STORAGE_KEY = 'terrarium:guest-profile'
 const LEGACY_GUEST_PROFILE_STORAGE_KEY = 'digital-garden:guest-profile'
@@ -94,6 +97,18 @@ export interface GuestProfile {
    * for every existing user and silently reset them to a fresh starter.
    */
   assignments?: readonly RepoAssignmentRecord[]
+  /**
+   * The condition layer: care timestamps, the item mint log, and what has been
+   * spent.
+   *
+   * OPTIONAL, and read as `createCareState(profile.createdAt)`, for the same
+   * reason as `eggs` and `assignments`: every profile written before the care
+   * layer existed has no such field, and requiring it would fail validation and
+   * silently reset the user to a fresh starter. A profile without it is treated
+   * as a companion that has just started being looked after — which is exactly
+   * true, because nothing had looked after it before.
+   */
+  care?: CareState
   recoverabilityWarning: GuestRecoverabilityWarning
 }
 
@@ -156,6 +171,7 @@ export function createGuestProfile({
     ],
     eggs: [],
     assignments: [],
+    care: createCareState(now),
     recoverabilityWarning: {
       status: 'unseen',
       lastShownAt: null,
@@ -266,6 +282,20 @@ function validateGuestProfile(value: unknown): void {
   validateWarning(value.recoverabilityWarning)
   validateEggs(value.eggs, referenceIds)
   validateAssignments(value.assignments, referenceIds)
+  // A MALFORMED CONDITION MUST NOT COST THE USER THEIR PROGRESSION. This field
+  // is optional and entirely recoverable, but the profile around it holds the
+  // collection, the active companion and every assignment. Letting a bad care
+  // counter throw here made `deserializeGuestProfile` return null, which the
+  // runtime treats as "no profile" and answers by minting a fresh guest: XP,
+  // stage and collection gone because one number was negative. Strip the
+  // condition layer and keep the profile.
+  if (value.care !== undefined) {
+    try {
+      validateCareState(value.care)
+    } catch {
+      delete value.care
+    }
+  }
 }
 
 /**

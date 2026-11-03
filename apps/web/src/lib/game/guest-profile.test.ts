@@ -11,6 +11,7 @@ import {
   serializeGuestProfile,
   type GuestProfile,
 } from './guest-profile'
+import { createCareState } from './care/state'
 
 const now = '2026-08-28T09:00:00.000Z'
 
@@ -168,5 +169,24 @@ describe('guest profile', () => {
       duplicateReference.collection[0],
     ]
     expect(() => serializeGuestProfile(duplicateReference)).toThrow()
+  })
+
+  it('drops a corrupt condition layer instead of the whole profile', () => {
+    // The care layer is optional and entirely recoverable; the profile around it
+    // is not. Letting a bad care counter throw here made deserialization return
+    // null, which the runtime answers by minting a new guest — XP, stage and
+    // collection gone because one number was negative.
+    const corrupted = {
+      ...profile(),
+      care: {
+        ...createCareState(now),
+        spent: { food: -5, treat: 0, medicine: 0, toy: 0, soap: 0 },
+      },
+    }
+    const restored = deserializeGuestProfile(JSON.stringify(corrupted))
+    expect(restored).not.toBeNull()
+    expect(restored?.guestId).toBe('guest-123')
+    expect(restored?.collection).toHaveLength(profile().collection.length)
+    expect(restored?.care).toBeUndefined()
   })
 })
