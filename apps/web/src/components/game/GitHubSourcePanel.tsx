@@ -1171,7 +1171,7 @@ export function GitHubSourcePanel() {
             cloudVersion: cloudRead?.version ?? null,
             checkpoint,
           }
-          cloudNote += ' Choose how to continue in the box above.'
+          cloudNote += ' Choose how to continue in the box below.'
         }
       }
       // A successful upload clears any earlier choice; a new conflict replaces
@@ -1405,9 +1405,16 @@ export function GitHubSourcePanel() {
         // The server has the valid projection; retain the full local state and
         // its blocked overlay rather than adopting a response that would hide
         // the unrecoverable browser events or encounters.
+        //
+        // `blocked` is a SUPERSET of `targets`: it also carries events blocked by
+        // an earlier repair, so `targets.length - blocked.size` can go negative.
+        // Counting what actually left the blocked set is the only honest number,
+        // and this surface is where the user decides whether the checkpoint is
+        // safe, so a "-1 repaired" headline is not cosmetic.
+        const repaired = targets.filter((target) => !blocked.has(target.eventId)).length
         setLastSyncSummary(
-          `${targets.length - blocked.size} repaired and backed up · ${blocked.size} still blocked.`,
-          `${targets.length - blocked.size} receipt${targets.length - blocked.size === 1 ? '' : 's'} repaired and valid progress backed up. ${blocked.size} event${blocked.size === 1 ? '' : 's'} remain blocked; the last successful checkpoint was not advanced.`,
+          `${repaired} repaired and backed up · ${blocked.size} still blocked.`,
+          `${repaired} receipt${repaired === 1 ? '' : 's'} repaired and valid progress backed up. ${blocked.size} event${blocked.size === 1 ? '' : 's'} remain blocked; the last successful checkpoint was not advanced.`,
           'warn',
         )
         return
@@ -2188,10 +2195,20 @@ export function GitHubSourcePanel() {
                 </span>
               )}
             </div>
+            </div>
+          </details>
 
+          {/*
+            The browser is a SIBLING of the picker fold, not a child of it.
+            Nesting it inside `Tracked repos` meant that once a user tracked a
+            repo the fold collapsed by default and took the search box, the
+            filters and every tile with it, behind a summary that says
+            "Tracked repos" and describes the opposite of what was inside.
+            DESIGN.md §7 keeps the two folds separate.
+          */}
           <section aria-label="Repository browser" className="mt-8">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-              <h3 className="font-ui text-lg font-semibold tracking-tight">Find a repo</h3>
+              <h2 className="font-ui text-lg font-semibold tracking-tight">Find a repo</h2>
               <div className="flex flex-wrap items-center gap-3 sm:justify-end">
                 {listFreshnessLabel && (
                   <p
@@ -2346,8 +2363,6 @@ export function GitHubSourcePanel() {
               </p>
             )}
           </section>
-            </div>
-          </details>
 
           {/*
             Rare actions, folded (DESIGN.md §7). Disconnect keeps its full
