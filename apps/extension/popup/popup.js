@@ -196,7 +196,11 @@
       const row = document.createElement('div')
       row.className = 'gc-repo-row'
 
-      const url = GC.spriteUrl(state.stage && state.stage.id, line.id)
+      // A dressed repo shows the owner's own companion instead of the line.
+      const display = GC.creatureDisplay(state)
+      const url = display.dressed
+        ? display.spriteUrl
+        : GC.spriteUrl(state.stage && state.stage.id, line.id)
       const img = document.createElement('img')
       img.className = 'gc-repo-sprite'
       img.alt = ''
@@ -209,8 +213,13 @@
 
       const stage = document.createElement('span')
       stage.className = 'gc-repo-stage mono'
-      stage.title = `${repo.language || 'unlabeled'} · ${line.id}`
-      stage.textContent = `L${state.stage.index}`
+      if (display.dressed) {
+        stage.title = display.title
+        stage.textContent = display.label
+      } else {
+        stage.title = `${repo.language || 'unlabeled'} · ${line.id}`
+        stage.textContent = `L${state.stage.index}`
+      }
 
       row.appendChild(img)
       row.appendChild(name)

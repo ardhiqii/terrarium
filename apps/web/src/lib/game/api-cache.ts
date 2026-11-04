@@ -43,6 +43,19 @@ export function cacheSet<T>(key: string, value: T, ttlMs: number): void {
   cacheStore.set(key, { value, freshUntil: Date.now() + ttlMs })
 }
 
+/**
+ * Forget an entry entirely.
+ *
+ * WHY THIS EXISTS: a repository that turns private 404s on the next metadata
+ * fetch, and a 404 used to leave the old entry — cached as `isPrivate: false` —
+ * in place, so the dressed badge kept publishing a private repo's companion for
+ * as long as the entry lived. A negative result has to erase the positive one,
+ * not merely fail to refresh it.
+ */
+export function cacheDelete(key: string): void {
+  cacheStore.delete(key)
+}
+
 /** Test-only: reset all in-process state between test cases. */
 export function cacheClearAll(): void {
   cacheStore.clear()

@@ -244,6 +244,48 @@ describe('cache TTL', () => {
     expect(sendMessage).not.toHaveBeenCalled()
   })
 
+  it('a repo entry is discarded after the five-minute dressed window, not an hour', async () => {
+    // A repo response can carry `dressed`, and the owner can opt out at any time.
+    // Holding that answer for an hour contradicts PRODUCT §6.3, so repo entries
+    // use the badge's own window. User-level entries keep the long TTL.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+
+    const sendMessage = vi.fn((message, callback) => {
+      callback({ ok: true, data: { stage: { id: 'sporeling' }, dressed: { companionId: 'pikachu-family' } } })
+    })
+    installChromeMock({ sendMessage })
+
+    const user = 'cache-repo-user'
+    const repo = 'site'
+    await GC.getCreature(user, repo)
+    expect(sendMessage).toHaveBeenCalledTimes(1)
+
+    vi.setSystemTime(new Date(Date.now() + GC.REPO_CACHE_TTL_MS + 1))
+
+    const second = await GC.getCreature(user, repo)
+    expect(second.fromCache).toBe(false)
+    expect(sendMessage).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps a user-level entry for the full hour', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+
+    const sendMessage = vi.fn((message, callback) => {
+      callback({ ok: true, data: { stage: { id: 'sporeling' } } })
+    })
+    installChromeMock({ sendMessage })
+
+    const user = 'cache-user-level-user'
+    await GC.getCreature(user)
+    vi.setSystemTime(new Date(Date.now() + GC.REPO_CACHE_TTL_MS + 60 * 1000))
+
+    const second = await GC.getCreature(user)
+    expect(second.fromCache).toBe(true)
+    expect(sendMessage).toHaveBeenCalledTimes(1)
+  })
+
   it('an entry older than CACHE_TTL_MS is treated as a miss and refetches', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
@@ -683,5 +725,55 @@ describe('resolveVariant matches the site implementation', () => {
       maturityCounts: { seedling: 10, budding: 10, evergreen: 40 },
     })
     expect(GC.resolveVariant(huge, null)).toBe('deep')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Dressed repositories (docs-plan/PLAN-dressed-repo-creature.md)
+// ---------------------------------------------------------------------------
+
+describe('creatureDisplay', () => {
+  const automatic = { stage: { id: 'mossling', name: 'Mossling', index: 2 }, speciesLineId: 'grass' }
+  const dressed = {
+    companionId: 'pikachu-family',
+    name: 'Pikachu',
+    step: { id: 'evolved', name: 'Charged', index: 2, count: 2 },
+    spriteUrl: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/25.gif',
+    stillUrl: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/25.png',
+  }
+
+  it('keeps the automatic creature when nothing is dressed', () => {
+    const display = GC.creatureDisplay(automatic)
+    expect(display.dressed).toBe(false)
+    expect(display.spriteUrl).toBe(GC.spriteUrl('mossling', 'grass'))
+    expect(display.spriteUrl).toMatch(/\/43\.gif$/)
+    expect(display.label).toBe('Mossling L2')
+  })
+
+  it('shows the dressed companion when the response carries one', () => {
+    const display = GC.creatureDisplay({ ...automatic, dressed })
+    expect(display).toMatchObject({
+      dressed: true,
+      spriteUrl: dressed.spriteUrl,
+      stillUrl: dressed.stillUrl,
+      label: 'Pikachu L2',
+    })
+    expect(display.title).toContain('Charged')
+  })
+
+  it('refuses a dressed sprite from anywhere but the PokeAPI sprites repo', () => {
+    const display = GC.creatureDisplay({
+      ...automatic,
+      dressed: { ...dressed, spriteUrl: 'https://evil.example/x.gif' },
+    })
+    expect(display.dressed).toBe(false)
+    expect(display.spriteUrl).toBe(GC.spriteUrl('mossling', 'grass'))
+  })
+
+  it('falls back on a malformed dressed object instead of throwing', () => {
+    for (const bad of [null, 'pikachu', [], {}, { ...dressed, step: null }, { ...dressed, name: '' }]) {
+      expect(GC.creatureDisplay({ ...automatic, dressed: bad }).dressed).toBe(false)
+    }
+    expect(GC.creatureDisplay(null).label).toBe('?')
   })
 })

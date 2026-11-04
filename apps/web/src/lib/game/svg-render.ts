@@ -262,6 +262,83 @@ export function renderCreatureBadgeSvg(params: CreatureBadgeParams): string {
 }
 
 // ---------------------------------------------------------------------------
+// Dressed-repo badge: the companion the owner dressed onto this repository.
+//
+// A dressed companion is a catalog entry with a PokeAPI sprite, not one of the
+// code-generated pixel lines above, so it cannot reuse `renderSpriteGroup`. The
+// sprite arrives as a `data:` URI the route already fetched and checked: an SVG
+// shown through an <img> (which is how GitHub renders a README badge) is not
+// allowed to load an external image, so a plain URL would render an empty box.
+// ---------------------------------------------------------------------------
+
+export interface DressedBadgeParams {
+  /** Catalog display name, e.g. "Pikachu". */
+  name: string
+  stepName: string
+  stepIndex: number
+  stepCount: number
+  xp: number
+  xpIntoStep: number
+  xpForNextStep: number | null
+  progress: number
+  /** `data:image/png;base64,...`, or null to draw the empty mount. */
+  spriteDataUri: string | null
+  handle: string
+  repo: string
+  theme: BadgeTheme
+}
+
+/** Only a base64 PNG data URI is ever embedded; anything else draws the empty mount. */
+const PNG_DATA_URI = /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/
+
+export function renderDressedBadgeSvg(params: DressedBadgeParams): string {
+  const colors = THEME_COLORS[params.theme]
+  const width = BADGE_WIDTH
+  const height = BADGE_HEIGHT
+
+  const name = escapeXml(truncate(params.name, 24))
+  const stepLabel = escapeXml(
+    truncate(`${params.stepName} · Stage ${params.stepIndex} of ${params.stepCount}`, 40),
+  )
+  const identity = escapeXml(truncate(`${params.handle}/${params.repo}`, 34))
+
+  const barX = 124
+  const barY = 78
+  const barWidth = 264
+  const barHeight = 10
+  const progress = Number.isFinite(params.progress) ? params.progress : 0
+  const fillWidth = Math.max(2, barWidth * Math.max(0, Math.min(1, progress)))
+
+  const xpLabel =
+    params.xpForNextStep === null
+      ? `${params.xp} XP (final stage)`
+      : `${params.xpIntoStep} / ${params.xpForNextStep} XP`
+
+  const sprite =
+    params.spriteDataUri && PNG_DATA_URI.test(params.spriteDataUri)
+      ? `<image xmlns:xlink="http://www.w3.org/1999/xlink" x="${SPRITE_BOX_X}" y="${SPRITE_BOX_Y}" width="${SPRITE_BOX}" height="${SPRITE_BOX}" preserveAspectRatio="xMidYMid meet" style="image-rendering:pixelated" href="${params.spriteDataUri}" xlink:href="${params.spriteDataUri}" />`
+      : ''
+
+  return [
+    xmlHeader(),
+    svgOpen(width, height),
+    `<title>${escapeXml(`${params.name}, ${params.stepName}, dressed on ${params.handle}/${params.repo}`)}</title>`,
+    panelRect(colors, width, height),
+    `<rect x="${SPRITE_BOX_X}" y="${SPRITE_BOX_Y}" width="${SPRITE_BOX}" height="${SPRITE_BOX}" rx="8" fill="${colors.spriteMountBg}" />`,
+    sprite,
+    `<text x="${barX}" y="34" font-family="ui-sans-serif, system-ui, sans-serif" font-size="19" font-weight="600" fill="${colors.ink}">${name}</text>`,
+    `<text x="${barX}" y="54" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" fill="${colors.inkMuted}">${stepLabel}</text>`,
+    `<rect x="${barX}" y="${barY}" width="${barWidth}" height="${barHeight}" rx="5" fill="${colors.accentSoft}" />`,
+    `<rect x="${barX}" y="${barY}" width="${fillWidth.toFixed(2)}" height="${barHeight}" rx="5" fill="${colors.accent}" />`,
+    `<text x="${barX}" y="106" font-family="ui-monospace, 'Geist Mono', monospace" font-size="11" fill="${colors.inkMuted}">${escapeXml(xpLabel)}</text>`,
+    `<text x="${barX}" y="120" font-family="ui-monospace, 'Geist Mono', monospace" font-size="10" fill="${colors.inkMuted}">@${identity}</text>`,
+    '</svg>',
+  ]
+    .filter(Boolean)
+    .join('')
+}
+
+// ---------------------------------------------------------------------------
 // Compact message badge, for every failure case in the T7 failure table.
 // Always a renderable SVG, never JSON, never a 500.
 // ---------------------------------------------------------------------------

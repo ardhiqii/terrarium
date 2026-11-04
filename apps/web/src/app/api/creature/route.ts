@@ -68,7 +68,12 @@ import {
   fetchRepoMeta,
   diskCachePathFor,
   readGardenRepoName,
+  freshRepoMeta,
 } from '@/lib/game/creature-route-shared'
+import {
+  DRESSED_S_MAXAGE_SECONDS,
+  lookupDressedCompanion,
+} from '@/lib/game/dressed-repo-lookup'
 
 // Route handlers default to dynamic in this Next version (see
 // node_modules/next/dist/docs/.../route.md, "Version History"). Made
@@ -115,20 +120,30 @@ export async function GET(request: NextRequest): Promise<Response> {
   // Cache check happens before anything that could touch the network. A
   // fresh hit returns here; no GitHub call is made anywhere below this line.
   const fresh = cacheGetFresh<CachedPayload>(cacheKey)
-  if (fresh) {
-    return jsonResponse(fresh.body, fresh.status, {
-      ...cacheHeaders(fresh.status),
-      'X-Cache': 'HIT',
-    })
+  const result = fresh
+    ? fresh
+    : repoParam
+      ? await buildRepoResponse(userParam, repoParam, cacheKey)
+      : await buildUserResponse(userParam, cacheKey)
+
+  // DRESSED REPOS. Laid over the cached body rather than stored inside it, so the
+  // one-hour creature cache never pins an old dressing (see dressed-repo-lookup.ts).
+  // Only repo creatures, only successful bodies, and the repo id comes from the
+  // metadata the miss already cached: a fresh hit still makes no GitHub call.
+  let body = result.body
+  let optedIn = false
+  if (repoParam && result.status === 200) {
+    // `freshRepoMeta`, not `cachedRepoMeta`: this decision is a privacy one, so
+    // it may not rest on repository metadata up to a day old.
+    const meta = await freshRepoMeta(userParam, repoParam, TOKEN, 'terrarium-creature-api')
+    const lookup = await lookupDressedCompanion(meta, userParam)
+    optedIn = lookup.optedIn
+    if (lookup.dressed) body = { ...body, dressed: lookup.dressed }
   }
 
-  const result = repoParam
-    ? await buildRepoResponse(userParam, repoParam, cacheKey)
-    : await buildUserResponse(userParam, cacheKey)
-
-  return jsonResponse(result.body, result.status, {
-    ...cacheHeaders(result.status),
-    'X-Cache': 'MISS',
+  return jsonResponse(body, result.status, {
+    ...cacheHeaders(result.status, optedIn),
+    'X-Cache': fresh ? 'HIT' : 'MISS',
   })
 }
 
@@ -312,12 +327,17 @@ async function checkRepoExists(owner: string, repo: string) {
 // Small helpers
 // ---------------------------------------------------------------------------
 
-function cacheHeaders(status: number): Record<string, string> {
+function cacheHeaders(status: number, optedIn = false): Record<string, string> {
+  // An owner who opted in to dressed badges gets a five-minute CDN window, so a
+  // change of dressing (or opting out) reaches visitors quickly. Everyone else
+  // keeps the hour. The window depends on the opt-in only, never on whether this
+  // repo is dressed.
+  const maxAge = optedIn ? DRESSED_S_MAXAGE_SECONDS : 3600
   return {
     ...corsHeaders(),
     'Cache-Control':
       status === 200
-        ? 'public, s-maxage=3600, stale-while-revalidate=86400'
+        ? `public, s-maxage=${maxAge}, stale-while-revalidate=${optedIn ? maxAge : 86400}`
         : 'no-store',
   }
 }

@@ -29,6 +29,15 @@
   /** Cache TTL for creature responses. At least an hour per the spec. */
   const CACHE_TTL_MS = 60 * 60 * 1000
 
+  /**
+   * Repo responses can carry a dressed companion, and the owner can opt out at
+   * any moment. They are cached for the badge's own five-minute window instead of
+   * an hour, so an opt-out clears from the page badge and popup as fast as it
+   * clears from the badge image. User-level responses never carry `dressed` and
+   * keep the long TTL.
+   */
+  const REPO_CACHE_TTL_MS = 5 * 60 * 1000
+
   /** Never fetch more repos than a single GitHub list/grid page can show. */
   const MAX_REPOS_PER_PASS = 30
 
@@ -237,6 +246,58 @@
     const id = line.stages[stageId]
     if (!id) return null
     return `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/${id}.gif`
+  }
+
+  // -------------------------------------------------------------------------
+  // Dressed repositories
+  //
+  // When a repo's owner has dressed it with one of their companions and opted
+  // in, `/api/creature?repo=` carries a `dressed` object alongside the usual
+  // automatic pick (docs-plan/PLAN-dressed-repo-creature.md). The content badge
+  // and the popup both go through `creatureDisplay` so they cannot disagree on
+  // which one wins. A missing or malformed `dressed` falls back to the
+  // automatic species line, exactly as before.
+  // -------------------------------------------------------------------------
+
+  const DRESSED_SPRITE_PREFIX = 'https://raw.githubusercontent.com/PokeAPI/sprites/'
+
+  function dressedSpriteUrl(value) {
+    return typeof value === 'string' && value.startsWith(DRESSED_SPRITE_PREFIX) ? value : null
+  }
+
+  /**
+   * What to draw for a creature response: `{ dressed, spriteUrl, stillUrl, label, title }`.
+   * `dressed` is true only when the response carries a usable dressed companion.
+   */
+  function creatureDisplay(state) {
+    const dressed = state && isRecord(state.dressed) ? state.dressed : null
+    if (dressed) {
+      const spriteUrlValue = dressedSpriteUrl(dressed.spriteUrl)
+      const name = firstString(dressed.name)
+      const step = isRecord(dressed.step) ? dressed.step : null
+      const stepName = step ? firstString(step.name) : null
+      const stepIndex = step && Number.isInteger(step.index) ? step.index : null
+      if (spriteUrlValue && name && stepName && stepIndex !== null) {
+        return {
+          dressed: true,
+          spriteUrl: spriteUrlValue,
+          stillUrl: dressedSpriteUrl(dressed.stillUrl) || spriteUrlValue,
+          label: `${name} L${stepIndex}`,
+          title: `${name}, ${stepName}. Dressed by the owner.`,
+        }
+      }
+    }
+
+    const stage = state && isRecord(state.stage) ? state.stage : null
+    const lineId = state && typeof state.speciesLineId === 'string' ? state.speciesLineId : undefined
+    const url = stage ? spriteUrl(stage.id, lineId) : null
+    return {
+      dressed: false,
+      spriteUrl: url,
+      stillUrl: url,
+      label: stage ? `${stage.name} L${stage.index}` : '?',
+      title: stage ? `${stage.name}, stage ${stage.index}` : '',
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -538,7 +599,9 @@
       const result = await storageGet(key)
       const entry = result[key]
       if (!entry || typeof entry.fetchedAt !== 'number') return null
-      if (Date.now() - entry.fetchedAt > CACHE_TTL_MS) return null
+      const isRepoEntry = key.slice(STORAGE_KEYS.cachePrefix.length).includes('/')
+      const ttl = isRepoEntry ? REPO_CACHE_TTL_MS : CACHE_TTL_MS
+      if (Date.now() - entry.fetchedAt > ttl) return null
       return entry
     } catch {
       return null
@@ -694,11 +757,13 @@
   global.GardenCreatures = {
     DEFAULT_API_BASE,
     CACHE_TTL_MS,
+    REPO_CACHE_TTL_MS,
     SPECIES_LINES,
     DEFAULT_SPECIES_LINE_ID,
     getSpeciesLine,
     assignSpeciesLine,
     spriteUrl,
+    creatureDisplay,
     normalizePublicCompanionPayload,
     resolveVariant,
     getSettings,

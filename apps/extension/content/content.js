@@ -340,7 +340,13 @@
     // lookup, no extra fetch, just a field on data GC.getCreature already
     // has. Falls back to the default line for older cached responses that
     // predate this field.
-    const url = GC.spriteUrl(state.stage && state.stage.id, state.speciesLineId)
+    //
+    // A DRESSED repo (the owner put one of their companions on it and opted in)
+    // carries `state.dressed`; `creatureDisplay` picks that over the automatic
+    // line and falls back to it for anything missing or malformed.
+    const display = GC.creatureDisplay(state)
+    if (display.dressed) badge.title = display.title
+    const url = reducedMotion ? display.stillUrl : display.spriteUrl
     if (url) {
       const img = new Image()
       img.className = `${CLASS_PREFIX}sprite`
@@ -359,10 +365,12 @@
 
     const label = document.createElement('span')
     label.className = `${CLASS_PREFIX}stage`
-    label.textContent = stageAbbrev(state)
+    label.textContent = display.dressed ? display.label : stageAbbrev(state)
     badge.appendChild(label)
 
-    const suffix = variantSuffix(state)
+    // The variant describes the automatic creature's stats; a dressed companion
+    // is the owner's own, so it gets no variant suffix.
+    const suffix = display.dressed ? '' : variantSuffix(state)
     if (suffix) {
       const variantLabel = document.createElement('span')
       variantLabel.className = `${CLASS_PREFIX}variant`

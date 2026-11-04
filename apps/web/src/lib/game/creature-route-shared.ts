@@ -16,7 +16,7 @@
 import { mkdirSync, readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { cacheGetFresh, cacheSet } from '@/lib/game/api-cache'
+import { cacheDelete, cacheGetFresh, cacheGetStale, cacheSet } from '@/lib/game/api-cache'
 
 // GitHub handle rules: 1-39 chars, alphanumeric or single hyphens, cannot
 // start with a hyphen, no consecutive hyphens.
@@ -171,17 +171,106 @@ export interface RepoMeta {
   createdAt: string | null
   pushedAt: string | null
   sizeKb: number | null
+  /**
+   * GitHub's numeric repository id, as a string (the form `RepoAssignment`
+   * stores). Stable across renames, so a dressed repo survives one.
+   */
+  id?: string | null
+  /**
+   * The owning account's immutable numeric id. The dressed-repo lookup keys on
+   * this, never the handle in the URL, so a renamed or reused login cannot
+   * borrow someone else's opt-in, and a transferred repo stops showing the
+   * previous owner's companion.
+   */
+  ownerId?: number | null
+  /** True for a private repository. A private repo never shows a dressed companion. */
+  isPrivate?: boolean | null
+  /**
+   * The owning account's login AT THE TIME OF THIS FETCH.
+   *
+   * The dressed-repo overlay compares it with the login in the URL. Without that
+   * comparison, a cached `repometa:alice/site` entry (keyed on a mutable login)
+   * could still be answered after `alice` renamed and the login was reclaimed by
+   * someone else, publishing the first account's companion on the second
+   * account's repository.
+   */
+  ownerLogin?: string | null
+  /** When this metadata was fetched, in epoch ms. The dressed overlay has a freshness bound. */
+  fetchedAt?: number
+}
+
+/**
+ * How old repository metadata may be before it stops being allowed to decide
+ * whether a companion is shown. Matches `DRESSED_S_MAXAGE_SECONDS`: the badge
+ * promises a five-minute window, so the fact behind it must not be older.
+ */
+export const DRESSED_META_MAX_AGE_MS = 5 * 60 * 1000
+
+/**
+ * Repository metadata that is recent enough to decide a privacy question.
+ *
+ * `cachedRepoMeta` (below) is deliberately allowed to serve stale values — ids do
+ * not change, and the creature routes answer a cache hit with no GitHub call.
+ * That is fine for the automatic species pick and wrong for the dressed overlay:
+ * a repo that turned private, or a login that was reused, would keep its old
+ * answer. So the overlay revalidates once the entry is older than
+ * `DRESSED_META_MAX_AGE_MS`, which costs at most one GitHub call per repo per
+ * five minutes and never on a request that is already fresh.
+ *
+ * A null answer means "not dressed": the caller falls back to the automatic
+ * creature rather than to a remembered one.
+ */
+export async function freshRepoMeta(
+  owner: string,
+  repo: string,
+  token: string | undefined,
+  userAgent: string,
+): Promise<RepoMeta | null> {
+  const cacheKey = `repometa:${owner.toLowerCase()}/${repo.toLowerCase()}`
+  const cached = cacheGetFresh<RepoMeta>(cacheKey)
+  if (cached && typeof cached.fetchedAt === 'number' && Date.now() - cached.fetchedAt <= DRESSED_META_MAX_AGE_MS) {
+    return cached
+  }
+  return fetchRepoMeta(owner, repo, token, userAgent, { force: true })
+}
+
+/**
+ * The repo metadata `fetchRepoMeta` already cached, without any network call.
+ *
+ * The creature routes answer a fresh cache hit with ZERO GitHub calls (that is
+ * the whole point of their cache). The dressed-repo overlay still needs the
+ * repository's numeric id on that path, so it reads whatever the miss that
+ * filled the cache stored. Stale is fine: ids do not change.
+ */
+export function cachedRepoMeta(owner: string, repo: string): RepoMeta | null {
+  return cacheGetStale<RepoMeta>(`repometa:${owner.toLowerCase()}/${repo.toLowerCase()}`) ?? null
+}
+
+function ownerIdOf(owner: unknown): number | null {
+  if (typeof owner !== 'object' || owner === null) return null
+  const id = (owner as Record<string, unknown>).id
+  return typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? id : null
+}
+
+/** The owner's login as GitHub reports it for this repo, not as the URL spelled it. */
+function ownerLoginOf(owner: unknown): string | null {
+  if (typeof owner !== 'object' || owner === null) return null
+  const login = (owner as Record<string, unknown>).login
+  return typeof login === 'string' && login.trim().length > 0 ? login : null
 }
 
 export async function fetchRepoMeta(
   owner: string,
   repo: string,
   token: string | undefined,
-  userAgent: string
+  userAgent: string,
+  options: { readonly force?: boolean } = {},
 ): Promise<RepoMeta | null> {
   const cacheKey = `repometa:${owner.toLowerCase()}/${repo.toLowerCase()}`
-  const cached = cacheGetFresh<RepoMeta>(cacheKey)
-  if (cached) return cached
+  if (!options.force) {
+    const cached = cacheGetFresh<RepoMeta>(cacheKey)
+    if (cached) return cached
+  }
 
   const headers: Record<string, string> = {
     Accept: 'application/vnd.github+json',
@@ -197,13 +286,24 @@ export async function fetchRepoMeta(
       `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
       { headers, signal: controller.signal }
     )
-    if (!response.ok) return null
+    if (!response.ok) {
+      // A repo that turned private (or was deleted, or changed hands) 404s here.
+      // Leaving the old entry would let its last-known `isPrivate: false` keep
+      // deciding the dressed overlay, so the negative answer replaces it.
+      cacheDelete(cacheKey)
+      return null
+    }
     const json = (await response.json()) as Record<string, unknown>
     const meta: RepoMeta = {
       language: typeof json.language === 'string' ? json.language : null,
       createdAt: typeof json.created_at === 'string' ? json.created_at : null,
       pushedAt: typeof json.pushed_at === 'string' ? json.pushed_at : null,
       sizeKb: typeof json.size === 'number' ? json.size : null,
+      id: typeof json.id === 'number' && Number.isSafeInteger(json.id) ? String(json.id) : null,
+      ownerId: ownerIdOf(json.owner),
+      ownerLogin: ownerLoginOf(json.owner),
+      isPrivate: typeof json.private === 'boolean' ? json.private : null,
+      fetchedAt: Date.now(),
     }
     cacheSet(cacheKey, meta, EXISTS_TTL_MS)
     return meta

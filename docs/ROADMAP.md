@@ -344,6 +344,20 @@ The plan and the remaining phases are in `docs-plan/PLAN-calmer-ui.md`.
 - `calmer-ui.test.ts` checks that every guide anchor exists and that no `/guide#…`
   link is broken.
 
+### Dressed repositories on GitHub (2026-11-04, in review)
+
+- `/api/creature?repo=` adds a `dressed` object, and `/api/creature.svg?repo=`
+  draws the dressed companion (sprite embedded as a PNG data URI), for a public
+  repository whose owner opted in. Otherwise both are unchanged.
+- New opt-in: *Show dressed companions on GitHub* on `/repos`
+  (`/api/profile/repo-badges`, table `repo_badge_display`), with a Copy badge
+  button per dressed public repo.
+- The extension's page badge and popup show the dressed companion through one
+  shared `creatureDisplay` helper.
+- Opted-in owners get a five-minute CDN window instead of an hour.
+- Known gap, not fixed here: a restored profile's assignments keep the raw
+  reference while its collection holds hashed ones (`PRODUCT.md` §6.3).
+
 ## Delivery order
 
 | Phase | Goal | Status |

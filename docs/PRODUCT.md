@@ -702,9 +702,25 @@ carries.
   first back.
 - **The rule is enforced on read, not only on write.** The profile is user-writable
   local storage; an invariant enforced only on the write path is decorative.
-- **Deferred:** the assigned companion is not yet rendered by the badge or device
-  endpoints, which still select a species automatically. The intended end state is
-  that they show **the assigned** companion.
+- **Shown publicly only on opt-in.** With *Show dressed companions on GitHub* on
+  (default off, stored per account by GitHub id), `/api/creature?repo=`,
+  `/api/creature.svg?repo=` and the browser extension show **the assigned**
+  companion, its stage and its XP for a dressed **public** repository. Nothing else
+  from the collection is published. With the setting off, for a repository that
+  is not dressed, or for a private one, they keep the automatic species pick.
+- **The owner is the repository's owner.** The lookup keys on the GitHub
+  `owner.id` of the repository, not the handle in the URL, so a renamed or reused
+  login cannot borrow another account's opt-in, and a transferred repository
+  stops showing the previous owner's companion.
+- **Freshness.** An opted-in owner's creature responses are cached for five
+  minutes at the CDN instead of an hour, so a change shows within about ten
+  minutes after the next sync. GitHub's own README image proxy can hold a badge
+  longer; changing the `v` query parameter forces a refetch.
+- **Known gap:** the sync snapshot copies `assignments[].referenceId` verbatim
+  while `collection[].referenceId` is hashed, so after a restore on another
+  device a local assignment can stop matching its collection entry. The public
+  lookup compares both in hashed form and is unaffected; the local picker is not
+  yet. See `ROADMAP.md`.
 
 Evolution is controlled by work XP only. When a companion reaches a progression
 threshold, it advances through the valid provider-defined evolution path. A
@@ -811,7 +827,8 @@ without changing XP, encounters, collection, or sync.
   compact, can be dismissed or moved, and link to the full profile. It can
   react from browsing context through dialogue and optional skin animation, but
   never awards XP directly.
-- **README badge:** static fallback for a public profile or selected companion.
+- **README badge:** static fallback for a public profile, or, for a dressed public
+  repository whose owner opted in, the companion dressed on it (section 6.3).
 - **Desktop viewer:** optional future companion display, not a prerequisite.
 
 Game UI stays off reading pages except for a quiet optional footer strip.

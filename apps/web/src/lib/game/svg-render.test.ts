@@ -25,6 +25,7 @@ import { describe, it, expect } from 'vitest'
 import {
   renderCreatureBadgeSvg,
   renderMessageSvg,
+  renderDressedBadgeSvg,
   escapeXml,
   resolveTheme,
   BADGE_WIDTH,
@@ -573,5 +574,82 @@ describe('parseXml (self-test)', () => {
     expect(root.attrs.x).toBe('1 & 2')
     expect(root.children[0].tag).toBe('b')
     expect(root.text).toBe('hi <there>')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Dressed-repo badge (docs-plan/PLAN-dressed-repo-creature.md)
+// ---------------------------------------------------------------------------
+
+describe('renderDressedBadgeSvg', () => {
+  const DATA_URI = 'data:image/png;base64,iVBORw0KGgo='
+  const dressedParams = (
+    overrides: Partial<Parameters<typeof renderDressedBadgeSvg>[0]> = {},
+  ): Parameters<typeof renderDressedBadgeSvg>[0] => ({
+    name: 'Pikachu',
+    stepName: 'Charged',
+    stepIndex: 2,
+    stepCount: 2,
+    xp: 140,
+    xpIntoStep: 40,
+    xpForNextStep: null,
+    progress: 1,
+    spriteDataUri: DATA_URI,
+    handle: 'octo',
+    repo: 'site',
+    theme: 'light',
+    ...overrides,
+  })
+
+  it('is well-formed in both themes, with and without a sprite', () => {
+    for (const theme of ['light', 'dark'] as const) {
+      for (const spriteDataUri of [DATA_URI, null]) {
+        const root = parseXml(renderDressedBadgeSvg(dressedParams({ theme, spriteDataUri })))
+        expect(root.tag).toBe('svg')
+      }
+    }
+  })
+
+  it('embeds only the inline PNG, never an external URL', () => {
+    const root = parseXml(renderDressedBadgeSvg(dressedParams()))
+    const images = allElements(root).filter((el) => el.tag === 'image')
+    expect(images).toHaveLength(1)
+    expect(images[0].attrs.href).toBe(DATA_URI)
+    for (const el of allElements(root)) {
+      for (const [name, value] of Object.entries(el.attrs)) {
+        if (name.startsWith('xmlns')) continue
+        expect(value).not.toMatch(/^https?:\/\//)
+      }
+    }
+  })
+
+  it('draws the empty mount instead of embedding anything that is not a base64 PNG', () => {
+    for (const bad of [
+      'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/25.png',
+      'data:image/svg+xml;base64,PHN2Zz4=',
+      'data:image/png;base64,abc" onload="x',
+    ]) {
+      const svg = renderDressedBadgeSvg(dressedParams({ spriteDataUri: bad }))
+      expect(svg).not.toContain('<image')
+    }
+  })
+
+  it('states the stage and the final-stage XP', () => {
+    const svg = renderDressedBadgeSvg(dressedParams())
+    expect(svg).toContain('Charged · Stage 2 of 2')
+    expect(svg).toContain('140 XP (final stage)')
+    expect(renderDressedBadgeSvg(dressedParams({ xpForNextStep: 100, xpIntoStep: 40, progress: 0.4 }))).toContain(
+      '40 / 100 XP',
+    )
+  })
+
+  it('escapes every text field', () => {
+    const svg = renderDressedBadgeSvg(dressedParams({ name: '<b>&', handle: 'a"b', repo: "r'<" }))
+    expect(() => parseXml(svg)).not.toThrow()
+    expect(svg).not.toContain('<b>')
+  })
+
+  it('survives a NaN progress', () => {
+    expect(() => parseXml(renderDressedBadgeSvg(dressedParams({ progress: Number.NaN })))).not.toThrow()
   })
 })
