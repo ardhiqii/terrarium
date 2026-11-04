@@ -35,6 +35,7 @@ export const GUIDE_ANCHORS = {
   githubSync: 'github-sync',
   privacy: 'privacy',
   leaderboard: 'leaderboard',
+  dressing: 'dressing-a-repo',
 } as const
 
 export type GuideAnchor = (typeof GUIDE_ANCHORS)[keyof typeof GUIDE_ANCHORS]

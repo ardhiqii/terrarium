@@ -33,6 +33,15 @@ import {
   type AssignmentRefusal,
 } from '@/lib/game/repo-assignments'
 import type { GithubRepository } from '@/lib/sync/github-repositories'
+import { InfoDisclosure } from '@/components/ui/InfoDisclosure'
+import { GUIDE_ANCHORS } from '@/lib/copy'
+
+/**
+ * Whether dressed companions show on GitHub (`/api/profile/repo-badges`).
+ * `unavailable` covers signed out and a failed read: the toggle is not shown,
+ * because a guest's dressing never leaves the browser anyway.
+ */
+type BadgeSetting = 'loading' | 'unavailable' | 'on' | 'off'
 
 /** Human wording for each refusal, so the user is told which rule they hit. */
 const REFUSAL_TEXT: Readonly<Record<AssignmentRefusal, string>> = {
@@ -60,6 +69,51 @@ export function CompanionPicker({ repositories }: CompanionPickerProps) {
   const [message, setMessage] = useState<string | null>(null)
   const [fetched, setFetched] = useState<readonly GithubRepository[]>([])
   const profileKey = useViewerProfileKey()
+  const [badges, setBadges] = useState<BadgeSetting>('loading')
+  const [copied, setCopied] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const response = await fetch('/api/profile/repo-badges', { cache: 'no-store' })
+        const body = response.ok ? ((await response.json()) as { enabled?: unknown }) : null
+        if (!cancelled) setBadges(body ? (body.enabled === true ? 'on' : 'off') : 'unavailable')
+      } catch {
+        if (!cancelled) setBadges('unavailable')
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const setBadgeSetting = useCallback(async (enabled: boolean) => {
+    const previous: BadgeSetting = enabled ? 'off' : 'on'
+    setBadges(enabled ? 'on' : 'off')
+    try {
+      const response = await fetch('/api/profile/repo-badges', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      })
+      if (!response.ok) throw new Error(String(response.status))
+    } catch {
+      setBadges(previous)
+      setMessage('Could not save that setting. Try again.')
+    }
+  }, [])
+
+  const copyBadge = useCallback(async (repo: GithubRepository) => {
+    const params = new URLSearchParams({ user: repo.ownerLogin, repo: repo.name })
+    const markdown = `![${repo.name} companion](${window.location.origin}/api/creature.svg?${params.toString()})`
+    try {
+      await navigator.clipboard.writeText(markdown)
+      setCopied(repo.id)
+    } catch {
+      setMessage('Could not copy. Your browser blocked the clipboard.')
+    }
+  }, [])
 
   const read = useCallback(() => {
     // Wait for the viewer's key. Assuming the signed-out one read a different
@@ -154,6 +208,24 @@ export function CompanionPicker({ repositories }: CompanionPickerProps) {
         {profile.collection.length - remaining} in use
       </p>
 
+      {(badges === 'on' || badges === 'off') && (
+        <div className="mb-5">
+          <label className="font-ui flex min-h-11 cursor-pointer items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={badges === 'on'}
+              onChange={(event) => void setBadgeSetting(event.target.checked)}
+            />
+            Show dressed companions on GitHub
+          </label>
+          <InfoDisclosure label="What this shows" guide={GUIDE_ANCHORS.dressing}>
+            Each dressed public repo shows its companion, stage and XP on the README badge and in
+            the browser extension. Nothing else from your collection. Private repos never show.
+            Changes appear after your next sync, within about ten minutes.
+          </InfoDisclosure>
+        </div>
+      )}
+
       {message && (
         <p
           role="status"
@@ -181,20 +253,34 @@ export function CompanionPicker({ repositories }: CompanionPickerProps) {
                 <p className="font-ui text-sm font-medium">{repo.fullName}</p>
                 <p className="font-data mt-1 text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>
                   {assignment
-                    ? `dressed by ${definition?.name ?? assignment.companionId}`
+                    ? `dressed by ${definition?.name ?? assignment.companionId}${
+                        badges === 'on' ? (repo.private ? ' · private, not shown' : ' · shown on GitHub') : ''
+                      }`
                     : 'no companion'}
                 </p>
               </div>
 
               {assignment ? (
-                <button
-                  type="button"
-                  onClick={() => release(repo.id)}
-                  className="ui-row font-ui text-xs px-3 py-2 border transition-opacity hover:opacity-80"
-                  style={{ borderColor: 'var(--rule)', color: 'var(--ink)' }}
-                >
-                  Take it back
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  {badges === 'on' && !repo.private && (
+                    <button
+                      type="button"
+                      onClick={() => void copyBadge(repo)}
+                      className="ui-row font-ui text-xs px-3 py-2 border transition-opacity hover:opacity-80"
+                      style={{ borderColor: 'var(--rule)', color: 'var(--ink)' }}
+                    >
+                      {copied === repo.id ? 'Copied' : 'Copy badge'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => release(repo.id)}
+                    className="ui-row font-ui text-xs px-3 py-2 border transition-opacity hover:opacity-80"
+                    style={{ borderColor: 'var(--rule)', color: 'var(--ink)' }}
+                  >
+                    Take it back
+                  </button>
+                </div>
               ) : (
                 <label className="flex items-center gap-2 text-xs">
                   <span className="font-data uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>

@@ -46,6 +46,7 @@ const TOC_ENTRIES: TocEntry[] = [
   { id: GUIDE_ANCHORS.githubSync, text: 'GitHub sync', level: 2 },
   { id: GUIDE_ANCHORS.privacy, text: 'Privacy', level: 2 },
   { id: GUIDE_ANCHORS.leaderboard, text: 'Leaderboard', level: 2 },
+  { id: GUIDE_ANCHORS.dressing, text: 'Dressing a repo', level: 2 },
 ]
 
 /**
@@ -443,7 +444,7 @@ export default async function GuidePage() {
             </ul>
           </section>
 
-          <section id={GUIDE_ANCHORS.leaderboard} className="scroll-mt-20">
+          <section id={GUIDE_ANCHORS.leaderboard} className="mb-14 scroll-mt-20">
             <h2 className="font-ui text-xl font-semibold tracking-tighter mb-4">
               Leaderboard
             </h2>
@@ -452,6 +453,28 @@ export default async function GuidePage() {
               garden here. It is never a global ranking: a public board over public commit
               data would be farmed within a week, and friend scope removes the incentive
               instead of trying to police it.
+            </p>
+          </section>
+
+          <section id={GUIDE_ANCHORS.dressing} className="scroll-mt-20">
+            <h2 className="font-ui text-xl font-semibold tracking-tighter mb-4">
+              Dressing a repo
+            </h2>
+            <p className="max-w-[65ch] font-prose text-base leading-relaxed mb-4" style={{ color: 'var(--ink)' }}>
+              On Repos you can put one of your companions on a repository. Each companion
+              goes on one repo, and you can dress as many repos as you own companions.
+            </p>
+            <p className="max-w-[65ch] font-prose text-base leading-relaxed mb-4" style={{ color: 'var(--ink)' }}>
+              Turn on <em>Show dressed companions on GitHub</em> to show them publicly. The
+              README badge and the browser extension then show that companion, its stage and
+              its XP for each dressed public repo. Nothing else from your collection is shown,
+              and private repos never are. With the setting off, or for a repo you have not
+              dressed, the badge shows a creature picked from the repo itself.
+            </p>
+            <p className="max-w-[65ch] font-prose text-base leading-relaxed" style={{ color: 'var(--ink)' }}>
+              Changes appear after your next sync, usually within ten minutes. GitHub keeps its
+              own copy of README images; if a badge looks stuck, add <code>&amp;v=2</code> (any
+              new value) to the end of its URL.
             </p>
           </section>
         </article>
