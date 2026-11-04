@@ -92,6 +92,9 @@ import { SyncProgress } from './SyncProgress'
 import { EncounterReveal } from './EncounterReveal'
 import { ProductActivityPanel } from './ProductActivityPanel'
 import { GitHubRewardGuide } from './GitHubRewardGuide'
+import { InfoDisclosure } from '@/components/ui/InfoDisclosure'
+import { StatusNote } from '@/components/ui/StatusNote'
+import { GUIDE_ANCHORS } from '@/lib/copy'
 
 interface GithubSettings {
   trackedRepositoryIds: readonly string[]
@@ -650,7 +653,21 @@ export function GitHubSourcePanel() {
   const [readingPhase, setReadingPhase] = useState(false)
   const syncAbortRef = useRef<AbortController | null>(null)
   const [savingSettings, setSavingSettings] = useState(false)
-  const [lastSyncSummary, setLastSyncSummary] = useState<string | null>(null)
+  // The latest sync outcome, as a short headline plus the detail that explains
+  // it (`DESIGN.md` §7, rule R4: the detail sits behind a "Details" disclosure).
+  // Every call site goes through `setLastSyncSummary`, so one that reports only
+  // a headline also clears a stale detail from the previous run.
+  const [syncReport, setSyncReport] = useState<{
+    title: string
+    detail: string | null
+    tone: 'ok' | 'warn'
+  } | null>(null)
+  const setLastSyncSummary = useCallback(
+    (title: string | null, detail: string | null = null, tone: 'ok' | 'warn' = 'ok') => {
+      setSyncReport(title === null ? null : { title, detail: detail || null, tone })
+    },
+    [],
+  )
   // Automatic-sync cadence. The default comes from the product docs (every 15
   // minutes) and the choice is per browser profile, because a schedule only runs
   // while this page is open.
@@ -928,6 +945,24 @@ export function GitHubSourcePanel() {
   const listControlsDisabled = sourceControlsDisabled || refreshingList
   const listFreshnessLabel = repositoryListFreshnessLabel(listFetchedAt, listStale)
 
+  // The repository picker is a disclosure (`DESIGN.md` §7): open while nothing
+  // is tracked yet, because choosing repos is then the only task on the page;
+  // folded once repos are tracked, so the steady state leads with sync status.
+  // Decided ONCE, from the saved choices when the list first loads. Deriving it
+  // on every render from the draft count would snap the picker shut the moment
+  // a user ticks their first repository.
+  const [reposOpen, setReposOpen] = useState<boolean | null>(null)
+  const savedTrackingSomething = settings !== null && (
+    settings.trackedRepositoryIds.length > 0 ||
+    settings.autoIncludePersonal ||
+    settings.autoIncludeOrganizations.length > 0
+  )
+  useEffect(() => {
+    if (status === 'ready' && settings && reposOpen === null) {
+      setReposOpen(!savedTrackingSomething || effectiveTrackedCount === 0)
+    }
+  }, [effectiveTrackedCount, reposOpen, savedTrackingSomething, settings, status])
+
   const saveSettings = useCallback(async (): Promise<boolean> => {
     if (savingSettings) return false
     setSavingSettings(true)
@@ -1142,12 +1177,31 @@ export function GitHubSourcePanel() {
       // A successful upload clears any earlier choice; a new conflict replaces
       // the displayed one with the state that just came back from the server.
       showGuestConflict(nextConflict)
+      // Headline: what happened, in a few words. Detail: limits, truncation, and
+      // the backup outcome. A failed backup is the one part a user must act on,
+      // so it is also named in the headline and raises the tone.
+      const repoWord = (n: number) => `${n} ${n === 1 ? 'repo' : 'repos'}`
+      const backupNote = upload.ok ? '' : ' Account backup failed.'
+      const partial = body.kind === 'partial' || body.syncStatus === 'partial'
+      const syncTone = upload.ok && !partial ? 'ok' : 'warn'
       if (body.kind === 'baseline') {
-        setLastSyncSummary(`Baseline recorded for ${baselineCount} ${baselineCount === 1 ? 'repository' : 'repositories'} · no old history awarded.${limitNote}${truncatedNote}${cloudNote}`)
-      } else if (body.kind === 'partial' || body.syncStatus === 'partial') {
-        setLastSyncSummary(`Checked ${count} tracked ${count === 1 ? 'repository' : 'repositories'} · ${eventCount} new verified events. Some activity could not be read completely; try again to catch up.${limitNote}${cloudNote}`)
+        setLastSyncSummary(
+          `Baseline set for ${repoWord(baselineCount)}. Old history isn't counted.${backupNote}`,
+          `${limitNote}${truncatedNote}${cloudNote}`.trim(),
+          syncTone,
+        )
+      } else if (partial) {
+        setLastSyncSummary(
+          `Synced ${repoWord(count)} · +${eventCount} events. Some activity couldn't be read; sync again.${backupNote}`,
+          `${limitNote}${cloudNote}`.trim(),
+          syncTone,
+        )
       } else {
-        setLastSyncSummary(`Checked ${count} tracked ${count === 1 ? 'repository' : 'repositories'} · ${eventCount} new verified events.${truncatedNote}${limitNote}${cloudNote}`)
+        setLastSyncSummary(
+          `Synced ${repoWord(count)} · +${eventCount} events.${backupNote}`,
+          `${truncatedNote}${limitNote}${cloudNote}`.trim(),
+          syncTone,
+        )
       }
       await loadRepositories()
     } catch (error) {
@@ -1224,7 +1278,11 @@ export function GitHubSourcePanel() {
       }),
     )
     if (!pending.checkpoint && Object.keys(legacyProofs).length !== targets.length) {
-      setLastSyncSummary('Receipt repair needs a fresh signed checkpoint or a preserved server receipt. Run Sync again to retry this local condition.')
+      setLastSyncSummary(
+        'Repair needs a fresh sync. Run Sync GitHub now.',
+        'Receipt repair needs a fresh signed checkpoint or a preserved server receipt.',
+        'warn',
+      )
       return
     }
 
@@ -1347,7 +1405,11 @@ export function GitHubSourcePanel() {
         // The server has the valid projection; retain the full local state and
         // its blocked overlay rather than adopting a response that would hide
         // the unrecoverable browser events or encounters.
-        setLastSyncSummary(`${targets.length - blocked.size} receipt${targets.length - blocked.size === 1 ? '' : 's'} repaired and valid progress backed up. ${blocked.size} event${blocked.size === 1 ? '' : 's'} remain blocked; the last successful checkpoint was not advanced.`)
+        setLastSyncSummary(
+          `${targets.length - blocked.size} repaired and backed up · ${blocked.size} still blocked.`,
+          `${targets.length - blocked.size} receipt${targets.length - blocked.size === 1 ? '' : 's'} repaired and valid progress backed up. ${blocked.size} event${blocked.size === 1 ? '' : 's'} remain blocked; the last successful checkpoint was not advanced.`,
+          'warn',
+        )
         return
       }
 
@@ -1355,7 +1417,10 @@ export function GitHubSourcePanel() {
       setRecoveryState(null)
       const uploaded = adoptUploadedSnapshot(upload.body, state.profile, namespace)
       if (uploaded) setProductState(uploaded)
-      setLastSyncSummary('Verified receipts repaired. Account backup committed successfully; the last successful checkpoint advanced.')
+      setLastSyncSummary(
+        'Receipts repaired and backed up.',
+        'Account backup committed successfully; the last successful checkpoint advanced.',
+      )
     } catch (error) {
       setLastSyncSummary(error instanceof Error ? error.message : 'Receipt repair could not be completed.')
     } finally {
@@ -1770,7 +1835,7 @@ export function GitHubSourcePanel() {
     <div className="mx-auto max-w-5xl px-4 pb-16 pt-8 sm:px-6">
       <section className="border-y py-8" style={{ borderColor: 'var(--rule)' }}>
         <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--accent)' }}>
-          GitHub · remote signal
+          GitHub
         </p>
         <div className="mt-3 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-2xl">
@@ -1778,8 +1843,25 @@ export function GitHubSourcePanel() {
               Let your work wake the companion.
             </h1>
             <p className="font-prose mt-4 max-w-xl text-base leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-              Choose the repositories Terrarium may read. GitHub activity is verified for you, while repository contents and code stay out of Terrarium.
+              Only the repos you pick. Never your code.
             </p>
+            {/*
+              The one home for what Terrarium reads from GitHub (DESIGN.md §7, R3).
+              It replaces the connect explainer, the three reassurance captions in the
+              status strip, and the "approved vs tracked" paragraph.
+            */}
+            <InfoDisclosure label="What Terrarium reads" guide={GUIDE_ANCHORS.githubSync} className="mt-2">
+              <p>
+                Terrarium asks GitHub for repository access so it can list your personal and
+                organization repositories. Approved means GitHub lets Terrarium read a repo.
+                Tracked means its future activity can move your companion. Only tracked repos
+                count, and repository contents and code are never read.
+              </p>
+              <p className="mt-2">
+                The first sync of a repo sets a baseline, so old history is not awarded.
+                Activity from private repos stays visible only to you.
+              </p>
+            </InfoDisclosure>
           </div>
           {status === 'ready' && (
             <div className="shrink-0 lg:w-72">
@@ -1812,36 +1894,18 @@ export function GitHubSourcePanel() {
                   requestsDone={progress?.requestsDone ?? 0}
                 />
               )}
-              <label
-                htmlFor="github-sync-schedule"
-                className="font-data mt-4 block text-[10px] uppercase tracking-wider"
-                style={{ color: 'var(--ink-muted)' }}
-              >
-                Automatic sync
-                <select
-                  id="github-sync-schedule"
-                  value={schedule}
-                  disabled={sourceControlsDisabled}
-                  onChange={(event) => changeSchedule(parseSyncSchedule(event.target.value))}
-                  className="font-ui mt-1.5 w-full border bg-[color:var(--paper)] px-2 py-2 text-xs"
-                  style={{ borderColor: 'var(--rule)', color: 'var(--ink)' }}
-                >
-                  {SYNC_SCHEDULE_OPTIONS.map((option) => (
-                    <option key={option} value={option}>{syncScheduleLabel(option)}</option>
-                  ))}
-                </select>
-              </label>
+              {/*
+                Only the live schedule status stays beside the button; the cadence
+                picker itself moved into Settings below. A pause notice is the one
+                schedule message a user may need to act on, so it is announced.
+              */}
               <p
                 role={scheduleNotice ? 'status' : undefined}
                 aria-live={scheduleNotice ? 'polite' : undefined}
-                className="font-prose mt-2 text-xs leading-relaxed"
+                className="font-data mt-2 text-xs"
                 style={{ color: 'var(--ink-muted)' }}
               >
-                {schedule === 'manual'
-                  ? 'Automatic sync is off. Use Sync GitHub now.'
-                  : scheduleNotice
-                    || nextSyncLabel
-                    || 'Runs while this page is open. It pauses before your hourly GitHub request limit is spent.'}
+                {schedule === 'manual' ? 'Auto-sync off' : scheduleNotice || nextSyncLabel}
               </p>
             </div>
           )}
@@ -1857,10 +1921,7 @@ export function GitHubSourcePanel() {
       {(status === 'signed-out' || status === 'disconnected') && (
         <section className="mt-6 border p-6" style={{ borderColor: 'var(--rule)', background: 'var(--paper-raised)' }}>
           <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Not connected</p>
-          <h2 className="font-ui mt-2 text-2xl font-semibold tracking-tight">Connect GitHub to choose a source.</h2>
-          <p className="font-prose mt-3 max-w-xl text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-            Terrarium asks GitHub for repository access so it can list personal and organization repositories. You approve the list; only tracked repositories affect progression.
-          </p>
+          <h2 className="font-ui mt-2 text-2xl font-semibold tracking-tight">Connect GitHub to pick your repos.</h2>
           {message && (
             <p role="status" aria-live="polite" className="font-prose mt-3 max-w-xl text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
               {message}
@@ -1890,20 +1951,32 @@ export function GitHubSourcePanel() {
           >
             <div className="bg-[color:var(--paper)] px-5 py-4">
               <p className="font-data text-[10px] uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Connection</p>
-              <p className="font-ui mt-1 text-sm font-medium">GitHub account linked</p>
-              <p className="font-prose mt-1 text-xs" style={{ color: 'var(--ink-muted)' }}>Private activity stays owner-only.</p>
+              <p className="font-ui mt-1 text-sm font-medium">Linked</p>
             </div>
             <div className="bg-[color:var(--paper)] px-5 py-4">
               <p className="font-data text-[10px] uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Tracking</p>
-              <p className="font-ui mt-1 text-sm font-medium">{effectiveTrackedCount} of {repositories.length} repositories</p>
-              <p className="font-prose mt-1 text-xs" style={{ color: 'var(--ink-muted)' }}>Only selected sources move XP.</p>
+              <p className="font-ui mt-1 text-sm font-medium">{effectiveTrackedCount} of {repositories.length} repos</p>
             </div>
             <div className="bg-[color:var(--paper)] px-5 py-4">
-              <p className="font-data text-[10px] uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Last checkpoint</p>
-              <p className="font-ui mt-1 text-sm font-medium">{settings.lastSyncedAt ? new Date(settings.lastSyncedAt).toLocaleDateString() : 'Not synced yet'}</p>
-              <p className="font-prose mt-1 text-xs" style={{ color: 'var(--ink-muted)' }}>Sync again when you want fresh receipts.</p>
+              <p className="font-data text-[10px] uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Last sync</p>
+              <p className="font-ui mt-1 text-sm font-medium">{settings.lastSyncedAt ? new Date(settings.lastSyncedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'Not synced yet'}</p>
             </div>
           </section>
+
+          {/*
+            The sync outcome sits directly under the status strip, where the eye
+            already is after pressing Sync. It used to render below the whole
+            repository list, which for a large account is several screens away.
+          */}
+          {message && <p role="alert" className="font-ui mt-6 text-sm" style={{ color: 'var(--accent)' }}>{message}</p>}
+          {syncReport && (
+            <StatusNote
+              className="mt-6"
+              tone={syncReport.tone}
+              title={syncReport.title}
+              details={syncReport.detail}
+            />
+          )}
 
           {/*
             The identity guard's 409 used to be a sentence in the summary and a
@@ -1916,15 +1989,12 @@ export function GitHubSourcePanel() {
               className="mt-6 border p-5 sm:p-6"
               style={{ borderColor: 'var(--accent)', background: 'var(--paper-raised)' }}
             >
-              <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--accent)' }}>Account backup recovery</p>
-              <h2 className="font-ui mt-2 text-2xl font-semibold tracking-tight">
-                {recovery.blockedEventIds.length > 0 ? 'Some verified activity is blocked' : 'Receipt repair is ready'}
-              </h2>
-              <p className="font-prose mt-2 max-w-2xl text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
+              <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--accent)' }}>Account backup</p>
+              <h2 className="font-ui mt-2 text-xl font-semibold tracking-tight">
                 {recovery.blockedEventIds.length > 0
-                  ? `${recovery.blockedEventIds.length} event${recovery.blockedEventIds.length === 1 ? '' : 's'} remain visible in this browser but could not be confirmed in the bounded GitHub repair window. Valid progress can still be backed up; the last successful checkpoint stays unchanged.`
-                  : `${recovery.failures.length || 'The'} verified receipt${recovery.failures.length === 1 ? '' : 's'} blocked the account backup. Your browser ledger and encounters are intact.`}
-              </p>
+                  ? `${recovery.blockedEventIds.length} event${recovery.blockedEventIds.length === 1 ? '' : 's'} couldn't be verified for backup`
+                  : 'Backup is blocked. Your progress here is safe.'}
+              </h2>
               <div className="mt-4 flex flex-wrap items-center gap-3">
                 <button
                   type="button"
@@ -1940,10 +2010,25 @@ export function GitHubSourcePanel() {
                   Attempted {new Date(recovery.attemptedAt).toLocaleString()}
                 </span>
               </div>
-              <p className="font-prose mt-3 text-xs leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-                Last successful checkpoint: {settings.lastSyncedAt ? new Date(settings.lastSyncedAt).toLocaleString() : 'not recorded'}.
-                {recovery.checkpoint ? ' The preserved signed checkpoint will be committed only after the repaired snapshot is stored.' : ' A fresh normal sync may be needed to issue a new checkpoint.'}
-              </p>
+              <details className="mt-3">
+                <summary
+                  className="font-data inline-flex min-h-11 cursor-pointer items-center text-xs uppercase tracking-widest"
+                  style={{ color: 'var(--ink-muted)' }}
+                >
+                  Details
+                </summary>
+                <div className="font-prose text-xs leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
+                  <p>
+                    {recovery.blockedEventIds.length > 0
+                      ? `${recovery.blockedEventIds.length} event${recovery.blockedEventIds.length === 1 ? '' : 's'} remain visible in this browser but could not be confirmed in the bounded GitHub repair window. Valid progress can still be backed up; the last successful checkpoint stays unchanged.`
+                      : `${recovery.failures.length || 'The'} verified receipt${recovery.failures.length === 1 ? '' : 's'} blocked the account backup. Your browser ledger and encounters are intact.`}
+                  </p>
+                  <p className="mt-2">
+                    Last successful checkpoint: {settings.lastSyncedAt ? new Date(settings.lastSyncedAt).toLocaleString() : 'not recorded'}.
+                    {recovery.checkpoint ? ' The preserved signed checkpoint will be committed only after the repaired snapshot is stored.' : ' A fresh normal sync may be needed to issue a new checkpoint.'}
+                  </p>
+                </div>
+              </details>
             </section>
           )}
 
@@ -1955,8 +2040,9 @@ export function GitHubSourcePanel() {
             >
               <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--accent)' }}>Cloud backup blocked</p>
               <h2 className="font-ui mt-2 text-2xl font-semibold tracking-tight">{guestConflict.view.headline}</h2>
+              {/* A destructive choice keeps its full wording (DESIGN.md §7, R7); only the preamble is shortened. */}
               <p className="font-prose mt-2 max-w-2xl text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-                This browser's progress is safe. The account guard stopped the upload because the two copies use different Terrarium identities; nothing is overwritten until you choose.
+                This browser's progress is safe. Nothing is overwritten until you choose.
               </p>
 
               <div className="mt-5 grid gap-px border sm:grid-cols-2" style={{ borderColor: 'var(--rule)', background: 'var(--rule)' }}>
@@ -2040,37 +2126,40 @@ export function GitHubSourcePanel() {
 
           {effectiveTrackedCount === 0 && (
             <section className="mt-6 border-l-2 px-5 py-4" style={{ borderColor: 'var(--accent)', background: 'var(--paper-raised)' }}>
-              <p className="font-ui text-sm font-medium">Choose a repository before your companion can follow GitHub work.</p>
-              <p className="font-prose mt-1 max-w-2xl text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-                Start with one project, or select all available repositories below. The first sync records a clean baseline; it will not award old history.
-              </p>
+              <p className="font-ui text-sm font-medium">Pick at least one repo to track.</p>
             </section>
           )}
 
-          <section className="mt-6 border p-5 sm:p-6" style={{ borderColor: 'var(--rule)' }}>
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Source settings</p>
-                <h2 className="font-ui mt-2 text-2xl font-semibold tracking-tight">Approved → tracked</h2>
-                <p className="font-prose mt-2 max-w-xl text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-                  Approved means GitHub lets Terrarium read the repository. Tracked means its future activity can move your companion. New repositories start with a clean baseline.
-                </p>
-              </div>
-              <div className="font-data text-xs sm:text-right" style={{ color: 'var(--ink-muted)' }}>
-                <div>{repositories.length} approved</div>
-                <div>{effectiveTrackedCount} selected</div>
-              </div>
-            </div>
+          {/*
+            The repository picker, folded once something is tracked (see
+            `reposOpen`). The summary keeps the count visible and flags unsaved
+            choices, so folding it can never hide work the user has not saved.
+          */}
+          <details
+            open={reposOpen ?? true}
+            onToggle={(event) => setReposOpen(event.currentTarget.open)}
+            className="group mt-6 border"
+            style={{ borderColor: 'var(--rule)' }}
+          >
+            <summary className="ui-row flex min-h-11 cursor-pointer flex-wrap items-center justify-between gap-3 px-5 py-4">
+              <h2 className="font-ui text-xl font-semibold tracking-tight">Tracked repos</h2>
+              <span className="font-data text-xs" style={{ color: settingsChanged ? 'var(--accent)' : 'var(--ink-muted)' }}>
+                {effectiveTrackedCount} of {repositories.length}
+                {settingsChanged ? ' · unsaved changes' : ''}
+                <span className="ml-3"><span aria-hidden="true" className="font-data text-lg leading-none group-open:hidden" style={{ color: 'var(--accent)' }}>+</span><span aria-hidden="true" className="font-data hidden text-lg leading-none group-open:inline" style={{ color: 'var(--accent)' }}>−</span></span>
+              </span>
+            </summary>
+            <div className="border-t p-5 sm:p-6" style={{ borderColor: 'var(--rule)' }}>
 
-            <div className="mt-6 grid gap-3 border-t pt-5 sm:grid-cols-2" style={{ borderColor: 'var(--rule)' }}>
+            <div className="grid gap-3 sm:grid-cols-2">
               <label className="flex items-start gap-3 text-sm">
                 <input type="checkbox" checked={draftAutoPersonal} disabled={sourceControlsDisabled} onChange={(event) => setDraftAutoPersonal(event.target.checked)} className="mt-1" />
-                <span><span className="font-ui block">Auto-include personal repos</span><span className="font-prose text-xs" style={{ color: 'var(--ink-muted)' }}>Future personal repositories get a fresh baseline.</span></span>
+                <span className="font-ui">Auto-include new personal repos</span>
               </label>
               {organizations.map((organization) => (
                 <label key={organization} className="flex items-start gap-3 text-sm">
                   <input type="checkbox" checked={draftOrganizations.includes(organization.toLowerCase())} disabled={sourceControlsDisabled} onChange={() => toggleOrganization(organization.toLowerCase())} className="mt-1" />
-                  <span><span className="font-ui block">Auto-include {organization}</span><span className="font-prose text-xs" style={{ color: 'var(--ink-muted)' }}>New repos in this approved organization start fresh.</span></span>
+                  <span className="font-ui">Auto-include new {organization} repos</span>
                 </label>
               ))}
             </div>
@@ -2100,69 +2189,9 @@ export function GitHubSourcePanel() {
               )}
             </div>
 
-            {/*
-              Disconnect lives here, visually separated from the selection
-              controls, because it is destructive in a different way: it drops
-              the credential and the sync baselines but keeps XP, the
-              companion, and these choices. Deleting synced data is a
-              different control on the account surface.
-            */}
-            <div className="mt-6 border-t pt-5" style={{ borderColor: 'var(--rule)' }}>
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                <div className="max-w-xl">
-                  <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Disconnect</p>
-                  <p className="font-prose mt-2 text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-                    Stops future tracking and removes the stored GitHub token. Earned XP, your companion, and the repository choices above are kept. Signing out is not disconnecting.
-                  </p>
-                </div>
-                {disconnectStage === 'idle' ? (
-                  <button
-                    type="button"
-                    onClick={() => setDisconnectStage('confirm')}
-                    disabled={sourceControlsDisabled || disconnecting}
-                    className="ui-row font-data shrink-0 border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50"
-                    style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}
-                  >
-                    Disconnect GitHub
-                  </button>
-                ) : (
-                  <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
-                    <p role="alert" className="font-prose max-w-sm text-xs leading-relaxed sm:text-right" style={{ color: 'var(--ink-muted)' }}>
-                      Future tracking stops and the token is removed. Earned XP and your repository choices stay. Deleting synced data remains a separate action.
-                    </p>
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void disconnectGitHub()}
-                        disabled={disconnecting}
-                        aria-busy={disconnecting}
-                        className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50"
-                        style={{ borderColor: 'var(--accent)', color: 'var(--ink)' }}
-                      >
-                        {disconnecting ? 'Disconnecting…' : 'Confirm disconnect'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setDisconnectStage('idle')}
-                        disabled={disconnecting}
-                        className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50"
-                        style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          </section>
-
           <section aria-label="Repository browser" className="mt-8">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-              <div>
-                <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Repository browser</p>
-                <h2 className="font-ui mt-2 text-2xl font-semibold tracking-tight">Find a source</h2>
-              </div>
+              <h3 className="font-ui text-lg font-semibold tracking-tight">Find a repo</h3>
               <div className="flex flex-wrap items-center gap-3 sm:justify-end">
                 {listFreshnessLabel && (
                   <p
@@ -2184,9 +2213,6 @@ export function GitHubSourcePanel() {
                 >
                   {refreshingList ? 'Refreshing…' : 'Refresh list'}
                 </button>
-                <p className="font-data text-xs" style={{ color: 'var(--ink-muted)' }}>
-                  {filteredRepositories.length} of {repositories.length} visible
-                </p>
               </div>
             </div>
 
@@ -2262,7 +2288,6 @@ export function GitHubSourcePanel() {
                   >
                     <span className="min-w-0">
                       <span id={`github-owner-${ownerKey}`} className="font-data block truncate text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>{owner}</span>
-                      <span className="font-prose mt-1 block text-sm" style={{ color: 'var(--ink-muted)' }}>Repository sources</span>
                     </span>
                     <span className="flex shrink-0 items-center gap-3">
                       <span className="font-data text-xs" style={{ color: 'var(--ink-muted)' }}>
@@ -2289,15 +2314,17 @@ export function GitHubSourcePanel() {
                             <span className="min-w-0 flex-1">
                               <span className="flex flex-wrap items-center gap-2">
                                 <span className="font-ui text-sm font-medium">{repository.name}</span>
-                                <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: checked ? 'var(--accent)' : 'var(--ink-muted)' }}>{checked ? 'tracking' : 'available'}</span>
-                                <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>{repository.private ? 'private' : 'public'}</span>
+                                {checked && <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: 'var(--accent)' }}>tracking</span>}
+                                {repository.private && <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>private</span>}
                                 {repository.archived && <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>archived</span>}
                               </span>
                               <span className="font-data mt-1 block truncate text-xs" style={{ color: 'var(--ink-muted)' }}>{repository.fullName}</span>
                             </span>
-                            <span className="font-data hidden shrink-0 text-right text-[10px] uppercase tracking-wider sm:block" style={{ color: repository.canRead ? 'var(--ink-muted)' : 'var(--accent)' }}>
-                              {repository.canRead ? 'readable' : 'access paused'}
-                            </span>
+                            {!repository.canRead && (
+                              <span className="font-data hidden shrink-0 text-right text-[10px] uppercase tracking-wider sm:block" style={{ color: 'var(--accent)' }}>
+                                access paused
+                              </span>
+                            )}
                           </label>
                         )
                       })}
@@ -2307,8 +2334,7 @@ export function GitHubSourcePanel() {
             })}
             {repositories.length > 0 && filteredRepositories.length === 0 && (
               <section className="border-l-2 px-5 py-4" style={{ borderColor: 'var(--accent)', background: 'var(--paper-raised)' }}>
-                <p className="font-ui text-sm font-medium">No repositories match this view.</p>
-                <p className="font-prose mt-1 text-sm" style={{ color: 'var(--ink-muted)' }}>Try a different name or source filter.</p>
+                <p className="font-ui text-sm font-medium">No repos match.</p>
                 <button type="button" onClick={() => { setRepositoryQuery(''); setRepositoryScope('all'); setCollapsedOwners([]) }} className="ui-row font-data mt-4 border px-3 py-2 text-xs uppercase tracking-wider" style={{ borderColor: 'var(--rule)' }}>
                   Show all repositories
                 </button>
@@ -2320,10 +2346,99 @@ export function GitHubSourcePanel() {
               </p>
             )}
           </section>
+            </div>
+          </details>
 
-          {message && <p role="alert" className="font-ui mt-5 text-sm" style={{ color: 'var(--accent)' }}>{message}</p>}
-          {lastSyncSummary && <p role="status" aria-live="polite" className="font-prose mt-5 border-l-2 pl-4 text-sm leading-relaxed" style={{ borderColor: 'var(--accent)', color: 'var(--ink-muted)' }}>{lastSyncSummary}</p>}
-          {settings.lastSyncedAt && !lastSyncSummary && <p className="font-data mt-5 text-xs" style={{ color: 'var(--ink-muted)' }}>Last checked {new Date(settings.lastSyncedAt).toLocaleString()}</p>}
+          {/*
+            Rare actions, folded (DESIGN.md §7). Disconnect keeps its full
+            confirmation text: it is destructive, so it is exempt from trimming.
+          */}
+          <details className="group mt-6 border" style={{ borderColor: 'var(--rule)' }}>
+            <summary className="ui-row flex min-h-11 cursor-pointer items-center justify-between px-5 py-4">
+              <h2 className="font-ui text-xl font-semibold tracking-tight">Settings</h2>
+              <span><span aria-hidden="true" className="font-data text-lg leading-none group-open:hidden" style={{ color: 'var(--accent)' }}>+</span><span aria-hidden="true" className="font-data hidden text-lg leading-none group-open:inline" style={{ color: 'var(--accent)' }}>−</span></span>
+            </summary>
+            <div className="border-t p-5 sm:p-6" style={{ borderColor: 'var(--rule)' }}>
+              <label
+                htmlFor="github-sync-schedule"
+                className="font-data block max-w-xs text-[10px] uppercase tracking-wider"
+                style={{ color: 'var(--ink-muted)' }}
+              >
+                Automatic sync
+                <select
+                  id="github-sync-schedule"
+                  value={schedule}
+                  disabled={sourceControlsDisabled}
+                  onChange={(event) => changeSchedule(parseSyncSchedule(event.target.value))}
+                  className="font-ui mt-1.5 w-full border bg-[color:var(--paper)] px-2 py-2 text-xs"
+                  style={{ borderColor: 'var(--rule)', color: 'var(--ink)' }}
+                >
+                  {SYNC_SCHEDULE_OPTIONS.map((option) => (
+                    <option key={option} value={option}>{syncScheduleLabel(option)}</option>
+                  ))}
+                </select>
+              </label>
+              <p className="font-prose mt-2 text-xs leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
+                Runs while this page is open, and pauses before your hourly GitHub request limit is spent.
+              </p>
+            {/*
+              Disconnect lives here, visually separated from the selection
+              controls, because it is destructive in a different way: it drops
+              the credential and the sync baselines but keeps XP, the
+              companion, and these choices. Deleting synced data is a
+              different control on the account surface.
+            */}
+            <div className="mt-6 border-t pt-5" style={{ borderColor: 'var(--rule)' }}>
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div className="max-w-xl">
+                  <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Disconnect</p>
+                  <p className="font-prose mt-2 text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
+                    Stops tracking and removes the GitHub token. Earned XP stays.
+                  </p>
+                </div>
+                {disconnectStage === 'idle' ? (
+                  <button
+                    type="button"
+                    onClick={() => setDisconnectStage('confirm')}
+                    disabled={sourceControlsDisabled || disconnecting}
+                    className="ui-row font-data shrink-0 border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50"
+                    style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}
+                  >
+                    Disconnect GitHub
+                  </button>
+                ) : (
+                  <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
+                    <p role="alert" className="font-prose max-w-sm text-xs leading-relaxed sm:text-right" style={{ color: 'var(--ink-muted)' }}>
+                      Future tracking stops and the token is removed. Earned XP and your repository choices stay. Deleting synced data remains a separate action.
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void disconnectGitHub()}
+                        disabled={disconnecting}
+                        aria-busy={disconnecting}
+                        className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50"
+                        style={{ borderColor: 'var(--accent)', color: 'var(--ink)' }}
+                      >
+                        {disconnecting ? 'Disconnecting…' : 'Confirm disconnect'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDisconnectStage('idle')}
+                        disabled={disconnecting}
+                        className="ui-row font-data border px-3 py-2 text-xs uppercase tracking-wider disabled:cursor-wait disabled:opacity-50"
+                        style={{ borderColor: 'var(--rule)', color: 'var(--ink-muted)' }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+            </div>
+          </details>
+
         </>
       )}
 
