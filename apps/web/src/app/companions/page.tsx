@@ -16,6 +16,8 @@ import { ItemDrawer } from '@/components/game/ItemDrawer'
 import { OwnedCompanionGrid } from '@/components/game/OwnedCompanionGrid'
 import { ProductActivityPanel } from '@/components/game/ProductActivityPanel'
 import { CareHouse } from '@/components/game/CareHouse'
+import { RelatedLinks } from '@/components/ui/RelatedLinks'
+import { StatusNote } from '@/components/ui/StatusNote'
 
 export const metadata: Metadata = {
   title: 'Companions',
@@ -135,34 +137,16 @@ export default async function CompanionsPage() {
           className="font-prose text-base leading-relaxed max-w-2xl"
           style={{ color: 'var(--ink-muted)' }}
         >
-          Every stage the creature can reach and every item it can carry,
-          documented whether or not the garden has gotten there yet. See the
-          full sprite set line by line in the{' '}
-          <Link
-            href="/species"
-            className="underline decoration-dotted underline-offset-2 hover:opacity-70 transition-opacity"
-            style={{ color: 'var(--accent)' }}
-          >
-            species gallery
-          </Link>
-          , or step through a single creature interactively in the{' '}
-          <Link
-            href="/preview"
-            className="underline decoration-dotted underline-offset-2 hover:opacity-70 transition-opacity"
-            style={{ color: 'var(--accent)' }}
-          >
-            preview
-          </Link>
-          . Your own rank and milestones live under{' '}
-          <Link
-            href="/progression"
-            className="underline decoration-dotted underline-offset-2 hover:opacity-70 transition-opacity"
-            style={{ color: 'var(--accent)' }}
-          >
-            progression
-          </Link>
-          .
+          Your companion, how it&apos;s doing, and everything it can become.
         </p>
+        <RelatedLinks
+          className="mt-2"
+          links={[
+            { href: '/species', label: 'Species' },
+            { href: '/preview', label: 'Preview' },
+            { href: '/progression', label: 'Progression' },
+          ]}
+        />
       </div>
 
       {/*
@@ -181,27 +165,22 @@ export default async function CompanionsPage() {
         </section>
       )}
       {accountIsSignedIn && !productState && (
-        <section
-          className="mb-10 border-l-2 px-5 py-4"
-          style={{ borderColor: 'var(--accent)', background: 'var(--paper-raised)' }}
-          aria-label="Synced product condition"
-        >
-          <p className="font-data text-xs uppercase tracking-widest" style={{ color: 'var(--accent)' }}>
-            Account condition
-          </p>
-          <h2 className="font-ui mt-2 text-xl font-semibold tracking-tight">
-            {accountProduct.status === 'missing' ? 'No synced condition yet' : 'Account condition unavailable'}
-          </h2>
-          <p className="font-prose mt-2 max-w-2xl text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-            {accountProduct.status === 'missing'
-              ? 'The garden archive below is local. Connect GitHub and complete a product sync before account XP appears here.'
-              : 'The account condition could not be read right now. The garden archive below is local and does not represent account XP.'}
-          </p>
-          {accountProduct.status === 'missing' && (
-            <Link href="/github" className="font-ui mt-4 inline-block text-sm underline underline-offset-2" style={{ color: 'var(--accent)' }}>
-              Open GitHub sync
-            </Link>
-          )}
+        <section className="mb-10" aria-label="Synced product condition">
+          <StatusNote
+            tone={accountProduct.status === 'missing' ? 'warn' : 'error'}
+            title={
+              accountProduct.status === 'missing'
+                ? 'Sync GitHub to see your account XP here.'
+                : 'Could not load your account XP. Try again later.'
+            }
+            action={
+              accountProduct.status === 'missing' ? (
+                <Link href="/github" className="font-ui text-sm underline underline-offset-2" style={{ color: 'var(--accent)' }}>
+                  Open GitHub sync
+                </Link>
+              ) : undefined
+            }
+          />
         </section>
       )}
 
@@ -238,16 +217,15 @@ export default async function CompanionsPage() {
             className="font-prose text-sm leading-relaxed mb-4 max-w-2xl"
             style={{ color: 'var(--ink-muted)' }}
           >
-            The figures on the home page are the site owner&apos;s garden, not yours. Connect
-            a folder under{' '}
+            Home shows the site owner&apos;s garden.{' '}
             <Link
               href="/write"
               className="underline decoration-dotted underline-offset-2 hover:opacity-70 transition-opacity"
               style={{ color: 'var(--accent)' }}
             >
-              Write
+              Connect a folder
             </Link>{' '}
-            to start your own.
+            to start yours.
           </p>
         )}
         <div
@@ -278,7 +256,7 @@ export default async function CompanionsPage() {
           <section className="mb-14">
             <h2 className="font-ui text-xl font-semibold tracking-tighter mb-1">Progression</h2>
             <p className="font-prose text-sm leading-relaxed mb-5 max-w-2xl" style={{ color: 'var(--ink-muted)' }}>
-              The first three stages are evolutions; the final stage is the family&apos;s mastery form ({slotLabel(STAGES[STAGES.length - 1])}).
+              The last stage is the mastery form ({slotLabel(STAGES[STAGES.length - 1])}).
             </p>
             <StageLine stages={STAGES} currentStageIndex={state.stage.index} sprites={stageSprites} />
           </section>
@@ -302,18 +280,9 @@ export default async function CompanionsPage() {
         actually owns.
       */}
       <section>
-        <h2 className="font-ui text-xl font-semibold tracking-tighter mb-2">
+        <h2 className="font-ui text-xl font-semibold tracking-tighter mb-5">
           Your companions
         </h2>
-        <p
-          className="font-prose text-sm leading-relaxed mb-5 max-w-2xl"
-          style={{ color: 'var(--ink-muted)' }}
-        >
-          One companion is granted when you first arrive, and another for every
-          day you come back. A companion can be dressed onto one of your
-          repositories, and each one is spent on exactly one. The repository
-          archive lives in <Link href="/repos" className="underline decoration-dotted underline-offset-2" style={{ color: 'var(--accent)' }}>Repos</Link>.
-        </p>
         <OwnedCompanionGrid sprite={await CreatureSprite({ stage: 'sporeling', scale: 2 })} />
       </section>
     </div>

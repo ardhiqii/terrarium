@@ -42,6 +42,7 @@ import { EggHatch } from '@/components/game/EggHatch'
 import RemoteSprite from '@/components/game/RemoteSprite'
 import { resolveCompanionSprite } from '@/lib/game/companion-sprite'
 import { EggShell } from '@/components/game/EggShell'
+import { COPY } from '@/lib/copy'
 
 export interface OwnedCompanionGridProps {
   /**
@@ -203,8 +204,7 @@ export function OwnedCompanionGrid({ sprite }: OwnedCompanionGridProps) {
 
       {collection.length === 0 ? (
         <p className="font-prose text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-          No companion yet. One is granted when you first arrive, and another every
-          day you come back.
+          No companion yet. {COPY.dailyCompanion}
         </p>
       ) : (
         <>
