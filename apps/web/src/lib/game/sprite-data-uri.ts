@@ -45,8 +45,8 @@ export async function fetchSpriteDataUri(url: string): Promise<string | null> {
       cacheSet(cacheKey, '', FAILURE_TTL_MS)
       return null
     }
-    const bytes = Buffer.from(await response.arrayBuffer())
-    if (bytes.length === 0 || bytes.length > MAX_SPRITE_BYTES) {
+    const bytes = await readCapped(response, MAX_SPRITE_BYTES)
+    if (!bytes || bytes.length === 0) {
       cacheSet(cacheKey, '', FAILURE_TTL_MS)
       return null
     }
@@ -59,4 +59,38 @@ export async function fetchSpriteDataUri(url: string): Promise<string | null> {
   } finally {
     clearTimeout(timeout)
   }
+}
+
+/**
+ * Read at most `limit` bytes, stopping the download the moment it grows past it.
+ *
+ * `arrayBuffer()` allocates the whole response before the size check can run, so
+ * a hostile or broken upstream could make the badge server hold megabytes it will
+ * only throw away. Reading the stream lets us hang up mid-download instead.
+ * Returns null when the body is too large or cannot be read.
+ */
+async function readCapped(response: Response, limit: number): Promise<Buffer | null> {
+  if (!response.body) {
+    const fallback = Buffer.from(await response.arrayBuffer())
+    return fallback.length > limit ? null : fallback
+  }
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value) continue
+      total += value.byteLength
+      if (total > limit) {
+        await reader.cancel().catch(() => {})
+        return null
+      }
+      chunks.push(value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total)
 }
