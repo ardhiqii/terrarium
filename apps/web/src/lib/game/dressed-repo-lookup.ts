@@ -8,9 +8,14 @@
  * NEVER THROWS, NEVER BLOCKS THE BADGE. Any store failure answers "not dressed",
  * so the route falls back to the automatic species pick it always showed.
  *
- * PRIVACY ORDER. Nothing about the owner's collection is read until three things
+ * PRIVACY ORDER. Nothing about the owner's collection is read until four things
  * hold: the repository is known to be PUBLIC (an unknown visibility counts as
- * private), its owner is an account with a numeric id, and that owner has opted in.
+ * private), the metadata says its owner is the login in the URL, that owner is an
+ * account with a numeric id, and they have opted in.
+ *
+ * FRESHNESS. Callers pass metadata from `freshRepoMeta`, never `cachedRepoMeta`:
+ * a repo that turned private and a login that changed hands both keep their old
+ * answer in the long-lived cache, and both are privacy questions.
  *
  * WHY ITS OWN SHORT CACHE: the creature response itself is cached for an hour,
  * because it costs GitHub API calls. This lookup costs only local store reads,
@@ -43,9 +48,17 @@ export const DRESSED_LOOKUP_TTL_MS = 60 * 1000
  */
 export const DRESSED_S_MAXAGE_SECONDS = 300
 
-export async function lookupDressedCompanion(meta: RepoMeta | null): Promise<DressedLookup> {
+export async function lookupDressedCompanion(meta: RepoMeta | null, expectedOwner: string): Promise<DressedLookup> {
   if (!meta) return NONE
   if (meta.isPrivate !== false) return NONE
+  // The repo in the URL must belong to the account in the URL. `repometa` is
+  // keyed on the login, which GitHub lets people change and others reclaim; a
+  // remembered entry otherwise lets account A's companion answer for a repo that
+  // now belongs to account B. GitHub's own answer for the owner settles it.
+  if (typeof expectedOwner !== 'string' || expectedOwner.length === 0) return NONE
+  if (typeof meta.ownerLogin !== 'string' || meta.ownerLogin.toLowerCase() !== expectedOwner.toLowerCase()) {
+    return NONE
+  }
   const repositoryId = meta.id
   const ownerId = meta.ownerId
   if (!repositoryId || typeof ownerId !== 'number' || !Number.isSafeInteger(ownerId)) return NONE

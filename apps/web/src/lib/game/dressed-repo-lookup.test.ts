@@ -35,12 +35,13 @@ const publicRepo: RepoMeta = {
   sizeKb: null,
   id: '555',
   ownerId: 42,
+  ownerLogin: 'octo',
   isPrivate: false,
 }
 
-async function lookup(meta: RepoMeta | null) {
+async function lookup(meta: RepoMeta | null, owner = 'octo') {
   const { lookupDressedCompanion } = await import('./dressed-repo-lookup')
-  return lookupDressedCompanion(meta)
+  return lookupDressedCompanion(meta, owner)
 }
 
 beforeEach(() => {
@@ -66,6 +67,17 @@ describe('lookupDressedCompanion', () => {
   it('reads nothing without a repository id or owner id', async () => {
     expect((await lookup({ ...publicRepo, id: null })).dressed).toBeNull()
     expect((await lookup({ ...publicRepo, ownerId: null })).dressed).toBeNull()
+    expect(badgeGet).not.toHaveBeenCalled()
+  })
+
+  it('reads nothing when the metadata owner is not the login in the URL', async () => {
+    // A renamed account, and the old login reclaimed by someone else: the
+    // remembered repo entry still names the first account.
+    expect(await lookup({ ...publicRepo, ownerLogin: 'someone-else' })).toEqual({
+      optedIn: false,
+      dressed: null,
+    })
+    expect(await lookup({ ...publicRepo, ownerLogin: null })).toEqual({ optedIn: false, dressed: null })
     expect(badgeGet).not.toHaveBeenCalled()
   })
 

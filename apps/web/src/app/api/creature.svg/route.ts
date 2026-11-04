@@ -67,7 +67,7 @@ import {
   checkRepoExists as checkRepoExistsShared,
   diskCachePathFor,
   readGardenRepoName,
-  cachedRepoMeta,
+  freshRepoMeta,
   fetchRepoMeta,
 } from '@/lib/game/creature-route-shared'
 
@@ -121,7 +121,8 @@ export async function GET(request: NextRequest): Promise<Response> {
     // still costs no GitHub call. Any failure in here falls through to the
     // automatic creature below.
     if (repoParam) {
-      const lookup = await lookupDressedCompanion(cachedRepoMeta(userParam, repoParam))
+      const meta = await freshRepoMeta(userParam, repoParam, TOKEN, 'terrarium-creature-svg')
+      const lookup = await lookupDressedCompanion(meta, userParam)
       if (lookup.dressed) {
         const dressed = lookup.dressed
         const svg = renderDressedBadgeSvg({

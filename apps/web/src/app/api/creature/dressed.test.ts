@@ -44,12 +44,21 @@ function jsonRes(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 }
 
-function mockGithub({ isPrivate = false, ownerId = OWNER_ID } = {}) {
+function mockGithub({ isPrivate = false, ownerId = OWNER_ID, ownerLogin }: { isPrivate?: boolean; ownerId?: number; ownerLogin?: string } = {}) {
   const fn = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
     const url = typeof input === 'string' ? input : input.toString()
     if (/api\.github\.com\/users\/[^/]+$/.test(url)) return jsonRes(200, { login: 'x', id: ownerId })
     if (/api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(url)) {
-      return jsonRes(200, { name: 'x', id: REPO_ID, private: isPrivate, owner: { id: ownerId }, language: 'TypeScript' })
+      // GitHub reports the owner of the repo, which is the login in the path
+      // unless the account was renamed or the login was reclaimed.
+      const loginInPath = decodeURIComponent(url.split('/repos/')[1].split('/')[0])
+      return jsonRes(200, {
+        name: 'x',
+        id: REPO_ID,
+        private: isPrivate,
+        owner: { id: ownerId, login: ownerLogin ?? loginInPath },
+        language: 'TypeScript',
+      })
     }
     if (/\/events\/public/.test(url)) return jsonRes(200, [])
     if (url.startsWith('https://raw.githubusercontent.com/PokeAPI/sprites/')) {
@@ -197,8 +206,9 @@ describe('GET /api/creature.svg?repo= with a dressed repository', () => {
       const url = typeof input === 'string' ? input : input.toString()
       if (url.startsWith('https://raw.githubusercontent.com/')) return new Response('nope', { status: 500 })
       if (/\/users\/[^/]+$/.test(url)) return jsonRes(200, { login: 'x' })
-      if (/\/repos\/[^/]+\/[^/]+$/.test(url)) {
-        return jsonRes(200, { id: REPO_ID, private: false, owner: { id: OWNER_ID } })
+      if (/\/(users|repos)\/[^/]+/.test(url)) {
+        const loginInPath = decodeURIComponent(url.split('/repos/')[1]?.split('/')[0] ?? 'site')
+        return jsonRes(200, { id: REPO_ID, private: false, owner: { id: OWNER_ID, login: loginInPath } })
       }
       return jsonRes(200, [])
     })

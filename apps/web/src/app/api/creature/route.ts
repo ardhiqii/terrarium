@@ -68,7 +68,7 @@ import {
   fetchRepoMeta,
   diskCachePathFor,
   readGardenRepoName,
-  cachedRepoMeta,
+  freshRepoMeta,
 } from '@/lib/game/creature-route-shared'
 import {
   DRESSED_S_MAXAGE_SECONDS,
@@ -133,7 +133,10 @@ export async function GET(request: NextRequest): Promise<Response> {
   let body = result.body
   let optedIn = false
   if (repoParam && result.status === 200) {
-    const lookup = await lookupDressedCompanion(cachedRepoMeta(userParam, repoParam))
+    // `freshRepoMeta`, not `cachedRepoMeta`: this decision is a privacy one, so
+    // it may not rest on repository metadata up to a day old.
+    const meta = await freshRepoMeta(userParam, repoParam, TOKEN, 'terrarium-creature-api')
+    const lookup = await lookupDressedCompanion(meta, userParam)
     optedIn = lookup.optedIn
     if (lookup.dressed) body = { ...body, dressed: lookup.dressed }
   }
