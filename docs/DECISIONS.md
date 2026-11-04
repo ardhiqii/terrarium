@@ -584,3 +584,24 @@ the desktop shell (D4, D5), server-side Markdown reads for a git-backed vault
 (D6), and replaying maturity promotions (D7). The energy formula also needs an
 inactivity term before dormancy behaves as specified — recorded in
 `PRODUCT.md` §12.5.
+
+## Dressed repositories on GitHub (2026-11-04)
+
+**A dressed companion is a separate, optional field, not a species line.** The
+automatic repo creature is a species line (`grass`, `ember`, …) with the T19
+stage ladder; a dressed companion is a catalog entry with its own progression.
+Neither maps onto the other, so `/api/creature?repo=` keeps `speciesLineId` and
+adds `dressed` when there is one. Older extension builds keep working.
+
+**Its own opt-in, default off.** Publishing which companion sits on a repository
+is new public data, and a README badge is not a public profile. The setting is
+stored separately from profile visibility (`repo_badge_display`), keyed by the
+immutable GitHub id, and the row exists only while it is on.
+
+**The stage shown is the companion's own XP**, not the repository's commit
+activity: it is the creature the user grew. XP is self-reported, like the rest of
+the snapshot.
+
+**Not shown:** nicknames, the rest of the collection, private repositories, and
+organisation-owned repositories (their owner id is an organisation, never an
+account).
