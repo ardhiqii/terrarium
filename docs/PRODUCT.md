@@ -991,7 +991,10 @@ a bug fix.
 action (food bowl, toy, bed, bath, medicine shelf), a window that follows the
 real day/night cycle, labelled meters, the cupboard, and this week's activity
 summary. Every object is a real `<button>` with a label, every target is at
-least 44 px, needs are shown as meters whose text says what they measure, and
+least 44 px, needs are shown as meters whose text says what they measure (`72 of
+100`, or `not measured`), and a meter shows a caption only when its need wants
+attention, saying what would help. How each need is measured is explained once,
+in a "How condition works" disclosure under the meters (`DESIGN.md` §7). And
 nothing animates — so reduced motion needs no special case.
 
 The current render is a flat elevation. `PLAN-living-companion.md` §4.1 asks for

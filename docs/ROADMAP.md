@@ -285,6 +285,65 @@ Two regressions are pinned by tests because both fail silently: `components/game
 (the label and every call site) and `lib/graph/filter.test.ts` (endpoint resolution still
 works after the force engine rewrites ids into objects).
 
+### Calmer UI, phase 1: copy trims (2026-11-04, in review)
+
+Users found the UI overwhelming because of how much text it showed. Phase 1 changes
+only wording, with no layout or logic changes. The rules are in `DESIGN.md` section 7.
+The plan and the remaining phases are in `docs-plan/PLAN-calmer-ui.md`.
+
+- Page intros cut to one line: `/companions`, `/repos`, `/leaderboard`, `/species`,
+  `/preview`, `/progression`, `/notes`.
+- `/companions` related pages are a link row instead of links inside a sentence.
+- "A new companion arrives each day you visit" now appears once (the companions grid
+  empty state), not three times.
+- Design rationale removed from the working surfaces: the leaderboard anti-farming
+  reasoning, sprite-source details, and the repo-creature versus companion explanation
+  repeated three times on `/repos`.
+- Empty states and profile notices shortened to what is missing plus one action.
+
+### Calmer UI, phase 2: disclosure patterns (2026-11-04, in review)
+
+- New shared components in `components/ui/`: `InfoDisclosure`, `StatusNote`, and
+  `RelatedLinks`, plus `lib/copy.ts` for sentences shared across surfaces.
+- The House: meter captions appear only when a need wants attention. The per-need
+  rules and the "condition never removes XP" guarantee moved into one "How condition
+  works" disclosure. Room objects no longer repeat their action verb, except to say
+  "unavailable". The caption logic is a pure module (`care-captions.ts`) with tests.
+- `/companions`: the related-pages row and the account-condition notice use the shared
+  components.
+- `/write` connect screen: the privacy paragraph is down to one line plus a
+  "How it works" disclosure. The unsupported-browser and expired-permission messages
+  are one line each.
+
+### Calmer UI, phase 3: the GitHub page (2026-11-04, in review)
+
+- The page leads with status: headline, one line, a "What Terrarium reads" disclosure,
+  the sync button, the status strip, then the latest sync outcome. The outcome used to
+  render below the entire repository list.
+- Sync results are a short headline (`Synced 4 repos · +12 events.`) with limits,
+  truncation, and the backup outcome under Details. A failed account backup is still
+  named in the headline.
+- The repository picker is a **Tracked repos** fold (open when nothing is tracked,
+  folded otherwise, with unsaved choices flagged on the summary). Automatic sync and
+  Disconnect moved into a **Settings** fold.
+- The three reassurance captions, the approved-versus-tracked paragraph, the
+  auto-include captions, the "Repository sources" line under each owner, and the
+  default tile labels (`available`, `public`, `readable`) are gone. Their content is
+  in the disclosure or in `/guide#github-sync`.
+- Recovery keeps its action and full explanation, now behind Details. The cloud-copy
+  chooser and disconnect confirmation keep their full wording.
+- The planned `Chip` component was not needed: removing the captions was enough.
+
+### Calmer UI, phase 4: the guide holds the explanations (2026-11-04, in review)
+
+- New `/guide` sections: Condition (a needs table), GitHub sync, Privacy, and
+  Leaderboard, plus the daily-companion and repo-dressing rules under Companions.
+- An inline contents list on small screens (the sidebar list is desktop-only).
+- The House, GitHub, and `/write` disclosures link to their guide section. The
+  leaderboard and the unverified-XP note link to theirs.
+- `calmer-ui.test.ts` checks that every guide anchor exists and that no `/guide#…`
+  link is broken.
+
 ## Delivery order
 
 | Phase | Goal | Status |

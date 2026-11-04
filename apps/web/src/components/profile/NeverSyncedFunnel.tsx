@@ -38,19 +38,15 @@ export async function NeverSyncedFunnel({ handle }: NeverSyncedFunnelProps) {
         className="font-prose text-base leading-relaxed mb-8 max-w-[52ch] mx-auto"
         style={{ color: 'var(--ink-muted)' }}
       >
-        Terrarium turns a folder of markdown notes into a creature that
-        grows as the writing does. Notes stay on the writer&apos;s own
-        device; only a small summary, stage, total XP, and companion count,
-        ever leaves it, and only once someone chooses to sync.
+        Terrarium turns your notes and commits into a creature that grows
+        with your work. Notes never leave your device.
       </p>
       <p
         className="font-prose text-sm leading-relaxed mb-10 max-w-[52ch] mx-auto"
         style={{ color: 'var(--ink-muted)' }}
       >
-        If @{handle}
-        {' '}sent you here, they just haven&apos;t synced a garden
-        under this handle yet. This page will show their creature the
-        moment they do.
+        @{handle}
+        {' '}hasn&apos;t synced yet. Their creature appears here once they do.
       </p>
 
       <div className="flex items-center justify-center gap-3 flex-wrap">

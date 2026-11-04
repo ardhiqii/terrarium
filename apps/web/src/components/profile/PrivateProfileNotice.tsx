@@ -41,8 +41,8 @@ export async function PrivateProfileNotice({ handle, isOwner = false }: PrivateP
         style={{ color: 'var(--ink-muted)' }}
       >
         {isOwner
-          ? 'Your companion is not public. Only you can see this page until you turn a public profile on.'
-          : 'They have synced a garden, but a public profile is opt-in here. Nothing about their companion, progress, or notes is shown.'}
+          ? 'Only you can see this page until you make your profile public.'
+          : 'Profiles are private unless their owner makes them public.'}
       </p>
 
       <div className="flex items-center justify-center gap-3 flex-wrap">

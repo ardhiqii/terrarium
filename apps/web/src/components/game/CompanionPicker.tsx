@@ -139,7 +139,7 @@ export function CompanionPicker({ repositories }: CompanionPickerProps) {
   if (repos.length === 0) {
     return (
       <p className="font-prose text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-        No tracked repositories yet. Choose one under GitHub and it can be dressed here.
+        No tracked repos yet. Pick some under GitHub.
       </p>
     )
   }

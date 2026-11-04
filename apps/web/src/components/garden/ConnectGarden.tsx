@@ -55,6 +55,8 @@ import RemoteSprite from '@/components/game/RemoteSprite'
 import { XpBar } from '@/components/game/XpBar'
 import { XpLedger } from '@/components/game/XpLedger'
 import { dispatchMarkdownScanDetail } from '@/lib/garden-fs/scan-dispatch'
+import { InfoDisclosure } from '@/components/ui/InfoDisclosure'
+import { COPY, GUIDE_ANCHORS } from '@/lib/copy'
 
 const connection = new FsaGardenConnection()
 
@@ -249,11 +251,16 @@ function Hero({ children }: { children: React.ReactNode }) {
           Connect a folder
         </h1>
         <p className="font-prose text-base leading-relaxed max-w-2xl" style={{ color: 'var(--ink-muted)' }}>
-          Your notes stay on your own disk. This page reads a folder you
-          choose, computes the same creature and companion logic this site
-          runs at build time, and renders it here, in this tab, with nothing
-          sent to any server.
+          {COPY.localOnly}
         </p>
+        <InfoDisclosure label="How it works" guide={GUIDE_ANCHORS.privacy} className="mt-2">
+          <p>
+            Pick a folder of Markdown: an Obsidian vault, a Logseq graph, or plain{' '}
+            <code className="font-data text-xs">.md</code> files. This tab reads it and
+            computes your creature with the same rules the site uses. No note text
+            is sent to any server.
+          </p>
+        </InfoDisclosure>
       </div>
       {children}
     </div>
@@ -402,12 +409,7 @@ export function ConnectGarden() {
       <Hero>
         <div className="mb-8">
           <p className="font-ui text-sm leading-relaxed max-w-xl" style={{ color: 'var(--ink-muted)' }}>
-            This browser does not support the File System Access API, which
-            today means anything outside Chromium (Chrome, Edge, Brave,
-            Opera). Reading a folder of your own notes needs that API, so
-            this page cannot show your Terrarium here. Open this page in a
-            Chromium browser to connect a folder, or visit the site&apos;s normal
-            build for the commit-driven view of the creature.
+            Connecting a folder needs Chrome, Edge, Brave, or Opera.
           </p>
         </div>
         <MiniCreature state={fallbackCreatureState(false)} />
@@ -419,10 +421,7 @@ export function ConnectGarden() {
     return (
       <Hero>
         <p className="font-ui text-sm leading-relaxed max-w-xl mb-6" style={{ color: 'var(--ink-muted)' }}>
-          Point this at a folder of Markdown on your own disk: an Obsidian
-          vault, a Logseq graph, or a plain folder of <code className="font-data text-xs">.md</code> files.
-          Everything is read and computed in this browser tab. Nothing
-          uploads.
+          Pick a folder of Markdown notes, like an Obsidian vault.
         </p>
         <button
           onClick={handleConnect}
@@ -439,10 +438,7 @@ export function ConnectGarden() {
     return (
       <Hero>
         <p className="font-ui text-sm leading-relaxed max-w-xl mb-6" style={{ color: 'var(--ink-muted)' }}>
-          This browser previously had access to a garden folder, but that
-          permission is no longer granted -- browsers can revoke folder
-          access at any time, including after a restart. Reconnect to pick
-          the folder again.
+          Folder access expired. Browsers can drop it, for example after a restart.
         </p>
         <button
           onClick={handleConnect}

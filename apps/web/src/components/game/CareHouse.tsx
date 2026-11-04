@@ -30,8 +30,6 @@ import {
   type CareActionKind,
   type CareDialogueKey,
   type CareItemKind,
-  type CareNeeds,
-  type CareScene,
 } from '@/lib/game/care'
 import { createCareState } from '@/lib/game/care'
 import {
@@ -49,6 +47,9 @@ import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
 import { resolveCompanionSprite } from '@/lib/game/companion-sprite'
 import { useViewerProfileKey } from '@/lib/sync/use-viewer-profile-key'
 import RemoteSprite from '@/components/game/RemoteSprite'
+import { InfoDisclosure } from '@/components/ui/InfoDisclosure'
+import { COPY, GUIDE_ANCHORS } from '@/lib/copy'
+import { meterCaptions } from '@/components/game/care-captions'
 
 /** The offset east of UTC, as the care layer expects it. */
 function viewerOffsetMinutes(): number {
@@ -90,7 +91,7 @@ const REFUSAL_COPY: Readonly<Record<string, string>> = {
   dormant: 'It is dormant. A day of real work will wake it.',
   'no-item': 'Nothing in the cupboard for that yet.',
   'not-measured': 'That is not measured yet, so there is nothing to fix.',
-  'not-needed': 'Nothing to do — that need is already full.',
+  'not-needed': 'That need is already full.',
 }
 
 const ACTION_COPY: Readonly<Record<CareActionKind, string>> = {
@@ -123,10 +124,12 @@ const ITEM_LABEL_PLURAL: Readonly<Record<CareItemKind, string>> = {
 /**
  * One meter.
  *
- * The caption is not decoration: `PRODUCT.md` §11.1 requires a number to name
- * what it counts, and "Health — 100" alone would be a claim with no evidence.
- * A `null` need renders as "not measured yet" instead of a full bar, because a
- * full bar is an assertion and there is nothing behind this one.
+ * The value label ("72 of 100") is what satisfies `PRODUCT.md` §11.1: the number
+ * names its scale. The caption is only for a need that wants attention, and it
+ * says what to do (`DESIGN.md` §7, rule R6). How each need is measured lives
+ * once, in the "How condition works" disclosure, instead of under every bar.
+ * A `null` need renders as "not measured" instead of a full bar, because a full
+ * bar is an assertion and there is nothing behind this one.
  */
 function Meter({
   label,
@@ -135,7 +138,7 @@ function Meter({
 }: {
   label: string
   value: number | null
-  caption: string
+  caption: string | null
 }) {
   const measured = value !== null
   return (
@@ -165,62 +168,13 @@ function Meter({
           }}
         />
       </div>
-      <p className="font-data mt-1 text-[11px]" style={{ color: 'var(--ink-muted)' }}>
-        {caption}
-      </p>
+      {caption && (
+        <p className="font-data mt-1 text-[11px]" style={{ color: 'var(--ink-muted)' }}>
+          {caption}
+        </p>
+      )}
     </div>
   )
-}
-
-function meterCaptions(
-  needs: CareNeeds,
-  scene: CareScene,
-): { label: string; value: number | null; caption: string }[] {
-  return [
-    {
-      label: 'Hunger',
-      value: needs.hunger,
-      caption:
-        needs.hunger === 100
-          ? 'Fed today, or worked today'
-          : needs.hunger === 0
-            ? 'Has not eaten in days'
-            : `${Math.round((100 - (needs.hunger ?? 0)) / 25)} days since the last meal`,
-    },
-    {
-      label: 'Energy',
-      value: needs.energy,
-      caption:
-        scene.mood === 'resting'
-          ? 'Recovering from a rest'
-          : 'Falls with late-night sessions and long streaks, resets after a rest',
-    },
-    {
-      label: 'Health',
-      value: needs.health,
-      caption:
-        needs.health === null
-          ? 'Waiting on a default-branch CI signal'
-          : needs.health >= 100
-            ? 'Default branch is green'
-            : 'Default branch is red — medicine restores it',
-    },
-    {
-      label: 'Cleanliness',
-      value: needs.cleanliness,
-      caption:
-        needs.cleanliness === null
-          ? 'Waiting on a pull-request open-age signal'
-          : needs.cleanliness >= 100
-            ? 'No stale pull requests'
-            : 'Your own pull requests are sitting open',
-    },
-    {
-      label: 'Diet',
-      value: needs.diet,
-      caption: 'A quarter per distinct kind of work this week, up to four',
-    },
-  ]
 }
 
 interface HouseState {
@@ -353,8 +307,7 @@ export function CareHouse() {
       >
         <h2 className="font-ui text-xl font-semibold tracking-tighter">The House</h2>
         <p className="font-prose mt-2 text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-          No companion lives here yet. One is granted when you first arrive, and another
-          every day you come back.
+          No companion lives here yet.
         </p>
       </section>
     )
@@ -464,10 +417,12 @@ export function CareHouse() {
                   }}
                 >
                   <span className="font-ui text-sm font-medium">{object.label}</span>
-                  <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>
-                    {object.hint}
-                    {usable ? '' : ' · unavailable'}
-                  </span>
+                  {/* The action verb is in the aria-label; visibly, only a disabled object explains itself. */}
+                  {!usable && (
+                    <span className="font-data text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>
+                      unavailable
+                    </span>
+                  )}
                 </button>
               )
             })}
@@ -491,8 +446,7 @@ export function CareHouse() {
           className="font-prose mt-3 border-l-2 px-3 py-2 text-sm"
           style={{ borderColor: 'var(--accent)', color: 'var(--ink)' }}
         >
-          Dormant: nothing has gone in for a week. One day of real work wakes it, and
-          nothing it earned has been taken away.
+          Dormant. One day of work wakes it.
         </p>
       )}
 
@@ -509,10 +463,16 @@ export function CareHouse() {
               <Meter key={meter.label} {...meter} />
             ))}
           </div>
-          <p className="font-prose mt-4 text-xs leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-            Condition changes daily and is always recoverable. It never removes XP, a
-            stage, or a companion: neglect changes how yours is doing, not what it earned.
-          </p>
+          <InfoDisclosure label="How condition works" guide={GUIDE_ANCHORS.condition} className="mt-3">
+            <p>{COPY.conditionIsRecoverable}</p>
+            <ul className="mt-2 list-disc pl-4">
+              <li>Hunger: a meal or a day of work fills it. It drops a quarter a day without either.</li>
+              <li>Energy: late-night sessions and long streaks lower it. A rest resets it.</li>
+              <li>Health: follows your default branch CI. Red needs medicine.</li>
+              <li>Cleanliness: drops while your own pull requests sit open.</li>
+              <li>Diet: a quarter for each kind of work this week, up to four.</li>
+            </ul>
+          </InfoDisclosure>
         </div>
 
         <div>

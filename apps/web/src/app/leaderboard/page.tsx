@@ -32,10 +32,14 @@ function Shell({ children }: { children: React.ReactNode }) {
           Leaderboard
         </h1>
         <p className="font-prose text-base leading-relaxed max-w-[52ch]" style={{ color: 'var(--ink-muted)' }}>
-          Scoped to people you follow on GitHub who have also synced a
-          garden here. Never a global ranking: a public board over public
-          commit data would be farmed within a week, and friend scope
-          removes the incentive instead of trying to police it.
+          People you follow on GitHub who have synced a garden here.{' '}
+          <Link
+            href="/guide#leaderboard"
+            className="underline decoration-dotted underline-offset-2 hover:opacity-70 transition-opacity"
+            style={{ color: 'var(--accent)' }}
+          >
+            Why friends only?
+          </Link>
         </p>
       </div>
       {children}
@@ -74,7 +78,7 @@ export default async function LeaderboardPage() {
       <Shell>
         <EmptyState
           title="Sign in to see it"
-          body="The leaderboard only makes sense next to people you actually follow. Sign in with GitHub to see which of them have synced a garden."
+          body="It ranks people you follow on GitHub."
           action={<SignInButton path="/leaderboard" />}
         />
       </Shell>
@@ -97,7 +101,7 @@ export default async function LeaderboardPage() {
       <Shell>
         <EmptyState
           title="Nobody you follow has synced yet"
-          body="Once someone you follow on GitHub connects a garden, their creature shows up here. Share your own profile and be the first."
+          body="Share your profile and be the first."
         />
       </Shell>
     )

@@ -71,7 +71,21 @@ single-column source register so a repository’s identity stays together with
 its tracking state and access status, even when names are long. A selected tile
 uses the soft accent surface for its “tracking” state; an available tile rests
 on raised paper. This keeps long repository lists easy to scan in both themes
-without turning every item into a heavy card.
+without turning every item into a heavy card. A tile labels only states that
+differ from the default (`tracking`, `private`, `archived`, `access paused`),
+never `available`, `public`, or `readable`.
+
+The GitHub page leads with status, not setup (§7). From top to
+bottom: the headline and one line, a "What Terrarium reads" disclosure, the sync
+button with the live schedule status, a three-cell status strip (connection,
+tracking count, last sync), and the latest sync outcome as a `StatusNote`
+(headline plus Details). Below that sit two folds. **Tracked repos** holds the
+repository picker. It is open on first load when nothing is tracked yet, and
+folded once something is. The fold is decided once per load, so ticking a first
+repository never snaps it shut. Its summary shows the count and flags unsaved
+choices. **Settings** holds the automatic-sync cadence and Disconnect. Recovery
+and the cloud-copy chooser appear only while they are active, and destructive
+confirmations keep their full wording.
 
 The repository browser adds a text search across repository names and owner
 paths, plus segmented source filters for all, individual-owner, and organization
@@ -298,3 +312,53 @@ Enforced by `.agents/skills/design-taste-frontend`. The ones this project violat
 - **No div-based fake screenshots.** Real images or none.
 - **Both themes tested** before anything ships.
 - **`min-h-[100dvh]`**, never `h-screen`.
+
+---
+
+## 7. Copy budget
+
+Users reported the UI felt overwhelming because of how much text it showed. The
+rules below keep the meaning and drop the volume. The full plan, with the
+measured word counts per surface, is in `docs-plan/PLAN-calmer-ui.md`.
+
+**Three tiers.** Always visible (T1): the name, the number, the current state,
+and the one primary action. One click away (T2): how it works, why, and edge
+cases, inside a `<details>` disclosure. One page away (T3): rules, formulas,
+rationale, and the privacy model, in `/guide`. A sentence is T1 only if a user
+cannot act correctly without it.
+
+- **R1 · Show state, explain on demand.** Use the three tiers above.
+- **R2 · Intros are optional, one sentence at most (about 15 words).** Drop the
+  intro if the heading and content already explain the section.
+- **R3 · Say it once.** Each reassurance ("nothing uploads", "earned XP is
+  kept", "a new companion arrives each day you visit") has exactly one home.
+  Other surfaces link to it.
+- **R4 · Status lines are short.** A headline of about 8 words, with any detail
+  in a disclosure.
+- **R5 · Navigation is UI, not prose.** Related pages are a row of links, never
+  links inside a sentence.
+- **R6 · Show, don't caption.** A caption appears only for an abnormal state,
+  and says what to do.
+- **R7 · Text stays where it protects the user.** Destructive confirmations,
+  actionable errors, and `aria-label`s are exempt from trimming.
+- **No design rationale on working surfaces.** Why a rule exists (for example,
+  why the leaderboard is friends-only) belongs in `/guide` or `docs/`.
+
+Empty states are what is missing plus one action, in about 15 words.
+
+**Standard patterns** (`apps/web/src/components/ui/`):
+
+| Pattern | Use |
+|---|---|
+| `InfoDisclosure` | "How it works" text one click away. A native `<details>` with a `?` mark, optionally linking to a `/guide` section. Not a hover tooltip. |
+| `StatusNote` | A short status headline, with any detail in a closed "Details" disclosure and at most one action. |
+| `RelatedLinks` | A row of links to related pages. |
+| `lib/copy.ts` | The single home for sentences used on more than one surface, plus the `/guide` anchors that disclosures may link to. |
+
+All three components work in server and client components (no hooks, no client
+directive). Explanations moved off the working surfaces live in `/guide`, which
+has sections for condition, GitHub sync, privacy, and the leaderboard, plus an
+inline contents list on small screens. A disclosure's "More in the guide" link
+uses `GUIDE_ANCHORS`, and a test fails on any `/guide#…` link to a missing
+section. `components/ui/calmer-ui.test.ts` checks that shared sentences are not
+written out again by hand and that every guide anchor exists.

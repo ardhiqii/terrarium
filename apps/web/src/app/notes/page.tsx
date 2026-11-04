@@ -26,7 +26,7 @@ export default function NotesPage() {
             Notes
           </h1>
           <p className="font-ui text-sm leading-relaxed max-w-xl" style={{ color: 'var(--ink-muted)' }}>
-            Browse notes and written projects in one place. Start a new note in your mounted folder when an idea arrives.
+            Your notes and written projects.
           </p>
         </div>
 

@@ -4,6 +4,8 @@ import {
   type EventCategory,
 } from '@/lib/game/events'
 import type { ProductState } from '@/lib/game/product-state'
+import { InfoDisclosure } from '@/components/ui/InfoDisclosure'
+import { GUIDE_ANCHORS } from '@/lib/copy'
 
 const REWARD_RULES: readonly { category: EventCategory; label: string; note: string }[] = [
   { category: 'qualifying-active-day', label: 'Active workday', note: 'once per GitHub activity day' },
@@ -53,9 +55,13 @@ export function GitHubRewardGuide({ state }: { state: ProductState }) {
           <h2 id="github-reward-guide-title" className="font-ui mt-2 text-2xl font-semibold tracking-tight">
             Make progress you can explain.
           </h2>
-          <p className="font-prose mt-2 max-w-2xl text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-            A meaningful commit wakes an active workday and a session; the commit count itself is not an unlimited XP faucet. Every signal goes to your active companion and is capped by its activity window.
-          </p>
+          <InfoDisclosure label="Why there are caps" guide={GUIDE_ANCHORS.githubSync} className="mt-1">
+            <p>
+              A meaningful commit wakes an active workday and a session; the commit count
+              itself is not an unlimited XP faucet. Every signal goes to your active
+              companion and is capped by its activity window.
+            </p>
+          </InfoDisclosure>
         </div>
         <p className="font-data shrink-0 text-xs sm:text-right" style={{ color: 'var(--ink-muted)' }}>
           {receipts.length ? `${receipts.length} recent receipts` : 'No receipts yet'}
@@ -95,7 +101,7 @@ export function GitHubRewardGuide({ state }: { state: ProductState }) {
           </ul>
         ) : (
           <p className="font-prose mt-3 text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-            Your first sync establishes a clean baseline. The next qualifying GitHub activity will appear here with its source and XP value.
+            New activity shows up here after your next sync.
           </p>
         )}
       </div>
