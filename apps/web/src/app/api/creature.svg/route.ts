@@ -45,9 +45,15 @@ import { STAGES } from '@/lib/game/types'
 import type { CreatureState } from '@/lib/game/types'
 import {
   renderCreatureBadgeSvg,
+  renderDressedBadgeSvg,
   renderMessageSvg,
   resolveTheme,
 } from '@/lib/game/svg-render'
+import {
+  DRESSED_S_MAXAGE_SECONDS,
+  lookupDressedCompanion,
+} from '@/lib/game/dressed-repo-lookup'
+import { fetchSpriteDataUri } from '@/lib/game/sprite-data-uri'
 import {
   HANDLE_RE,
   CACHE_TTL_MS,
@@ -61,6 +67,8 @@ import {
   checkRepoExists as checkRepoExistsShared,
   diskCachePathFor,
   readGardenRepoName,
+  cachedRepoMeta,
+  fetchRepoMeta,
 } from '@/lib/game/creature-route-shared'
 
 // Route handlers default to dynamic in this Next version (see
@@ -98,6 +106,7 @@ export async function GET(request: NextRequest): Promise<Response> {
     return svgResponse(renderMessageSvg('repo is not a valid repository name', theme), 200)
   }
 
+  let optedIn = false
   try {
     const state = repoParam
       ? await resolveRepoState(userParam, repoParam)
@@ -105,6 +114,33 @@ export async function GET(request: NextRequest): Promise<Response> {
 
     if (state.kind === 'not-found') {
       return svgResponse(renderMessageSvg(state.message, theme), 200)
+    }
+
+    // DRESSED REPOS (docs-plan/PLAN-dressed-repo-creature.md). Looked up after the
+    // cached state, from metadata the miss already cached, so a cached badge
+    // still costs no GitHub call. Any failure in here falls through to the
+    // automatic creature below.
+    if (repoParam) {
+      const lookup = await lookupDressedCompanion(cachedRepoMeta(userParam, repoParam))
+      if (lookup.dressed) {
+        const dressed = lookup.dressed
+        const svg = renderDressedBadgeSvg({
+          name: dressed.name,
+          stepName: dressed.step.name,
+          stepIndex: dressed.step.index,
+          stepCount: dressed.step.count,
+          xp: dressed.xp,
+          xpIntoStep: dressed.xpIntoStep,
+          xpForNextStep: dressed.xpForNextStep,
+          progress: dressed.progress,
+          spriteDataUri: await fetchSpriteDataUri(dressed.stillUrl),
+          handle: userParam,
+          repo: repoParam,
+          theme,
+        })
+        return svgResponse(svg, 200, lookup.optedIn)
+      }
+      if (lookup.optedIn) optedIn = true
     }
 
     const stage = state.creature.stage
@@ -132,7 +168,7 @@ export async function GET(request: NextRequest): Promise<Response> {
       theme,
     })
 
-    return svgResponse(svg, 200)
+    return svgResponse(svg, 200, optedIn)
   } catch {
     // Absolute last resort. Every function above already has its own
     // never-throws contract, but this route's own promise is stronger than
@@ -231,6 +267,11 @@ async function resolveRepoState(user: string, repo: string): Promise<ResolvedSta
     return { kind: 'not-found', message: `Repository '${user}/${repo}' was not found` }
   }
 
+  // Cached for a day under the same key `/api/creature` uses, so the two routes
+  // share it. The dressed-repo overlay needs the repository's numeric id, its
+  // owner's id and its visibility from here.
+  await fetchRepoMeta(user, repo, TOKEN, 'terrarium-creature-svg')
+
   const fetched = await fetchGithubStats({
     login: user,
     gardenRepo: repo,
@@ -291,7 +332,12 @@ async function checkRepoExists(owner: string, repo: string) {
 // Small helpers
 // ---------------------------------------------------------------------------
 
-function svgResponse(svg: string, status: number): Response {
+function svgResponse(svg: string, status: number, optedIn = false): Response {
+  // An owner who opted in to dressed badges gets the shorter window, so a new
+  // dressing (or opting out) reaches the README within minutes. It depends on
+  // the opt-in only, never on whether this repo is dressed.
+  const maxAge = optedIn ? DRESSED_S_MAXAGE_SECONDS : 3600
+  const swr = optedIn ? DRESSED_S_MAXAGE_SECONDS : 86400
   return new Response(svg, {
     status,
     headers: {
@@ -301,7 +347,7 @@ function svgResponse(svg: string, status: number): Response {
       // stale badge keep serving instantly while a fresh one is computed.
       // The `v` query param (accepted, never read server-side) lets a README
       // author force camo to refetch by changing the URL.
-      'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400',
+      'Cache-Control': `public, s-maxage=${maxAge}, stale-while-revalidate=${swr}`,
       ...corsHeaders(),
     },
   })
