@@ -16,7 +16,7 @@
 import { mkdirSync, readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { cacheGetFresh, cacheSet } from '@/lib/game/api-cache'
+import { cacheGetFresh, cacheGetStale, cacheSet } from '@/lib/game/api-cache'
 
 // GitHub handle rules: 1-39 chars, alphanumeric or single hyphens, cannot
 // start with a hyphen, no consecutive hyphens.
@@ -171,6 +171,38 @@ export interface RepoMeta {
   createdAt: string | null
   pushedAt: string | null
   sizeKb: number | null
+  /**
+   * GitHub's numeric repository id, as a string (the form `RepoAssignment`
+   * stores). Stable across renames, so a dressed repo survives one.
+   */
+  id?: string | null
+  /**
+   * The owning account's immutable numeric id. The dressed-repo lookup keys on
+   * this, never the handle in the URL, so a renamed or reused login cannot
+   * borrow someone else's opt-in, and a transferred repo stops showing the
+   * previous owner's companion.
+   */
+  ownerId?: number | null
+  /** True for a private repository. A private repo never shows a dressed companion. */
+  isPrivate?: boolean | null
+}
+
+/**
+ * The repo metadata `fetchRepoMeta` already cached, without any network call.
+ *
+ * The creature routes answer a fresh cache hit with ZERO GitHub calls (that is
+ * the whole point of their cache). The dressed-repo overlay still needs the
+ * repository's numeric id on that path, so it reads whatever the miss that
+ * filled the cache stored. Stale is fine: ids do not change.
+ */
+export function cachedRepoMeta(owner: string, repo: string): RepoMeta | null {
+  return cacheGetStale<RepoMeta>(`repometa:${owner.toLowerCase()}/${repo.toLowerCase()}`) ?? null
+}
+
+function ownerIdOf(owner: unknown): number | null {
+  if (typeof owner !== 'object' || owner === null) return null
+  const id = (owner as Record<string, unknown>).id
+  return typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? id : null
 }
 
 export async function fetchRepoMeta(
@@ -204,6 +236,9 @@ export async function fetchRepoMeta(
       createdAt: typeof json.created_at === 'string' ? json.created_at : null,
       pushedAt: typeof json.pushed_at === 'string' ? json.pushed_at : null,
       sizeKb: typeof json.size === 'number' ? json.size : null,
+      id: typeof json.id === 'number' && Number.isSafeInteger(json.id) ? String(json.id) : null,
+      ownerId: ownerIdOf(json.owner),
+      isPrivate: typeof json.private === 'boolean' ? json.private : null,
     }
     cacheSet(cacheKey, meta, EXISTS_TTL_MS)
     return meta

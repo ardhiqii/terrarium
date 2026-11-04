@@ -289,6 +289,18 @@ function opaqueId(value: string, prefix: string): string {
   return `${prefix}-${(first >>> 0).toString(16).padStart(8, '0')}-${(second >>> 0).toString(16).padStart(8, '0')}`
 }
 
+/**
+ * The opaque form of a collection reference, as the snapshot stores it.
+ *
+ * Exported for the dressed-repo resolver: `collection[].referenceId` is hashed,
+ * but `assignments[].referenceId` is copied verbatim, so the two only match after
+ * both are put through this. It is idempotent, so an already-opaque id passes
+ * through unchanged.
+ */
+export function opaqueReferenceId(referenceId: string): string {
+  return opaqueId(referenceId, 'ref')
+}
+
 function safeMetadata(metadata: Readonly<Record<string, EventMetadataValue>> | undefined): ProductEventMetadata | undefined {
   if (!metadata) return undefined
   const result = {} as { -readonly [K in keyof ProductEventMetadata]?: ProductEventMetadata[K] }
