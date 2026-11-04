@@ -244,6 +244,48 @@ describe('cache TTL', () => {
     expect(sendMessage).not.toHaveBeenCalled()
   })
 
+  it('a repo entry is discarded after the five-minute dressed window, not an hour', async () => {
+    // A repo response can carry `dressed`, and the owner can opt out at any time.
+    // Holding that answer for an hour contradicts PRODUCT §6.3, so repo entries
+    // use the badge's own window. User-level entries keep the long TTL.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+
+    const sendMessage = vi.fn((message, callback) => {
+      callback({ ok: true, data: { stage: { id: 'sporeling' }, dressed: { companionId: 'pikachu-family' } } })
+    })
+    installChromeMock({ sendMessage })
+
+    const user = 'cache-repo-user'
+    const repo = 'site'
+    await GC.getCreature(user, repo)
+    expect(sendMessage).toHaveBeenCalledTimes(1)
+
+    vi.setSystemTime(new Date(Date.now() + GC.REPO_CACHE_TTL_MS + 1))
+
+    const second = await GC.getCreature(user, repo)
+    expect(second.fromCache).toBe(false)
+    expect(sendMessage).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps a user-level entry for the full hour', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+
+    const sendMessage = vi.fn((message, callback) => {
+      callback({ ok: true, data: { stage: { id: 'sporeling' } } })
+    })
+    installChromeMock({ sendMessage })
+
+    const user = 'cache-user-level-user'
+    await GC.getCreature(user)
+    vi.setSystemTime(new Date(Date.now() + GC.REPO_CACHE_TTL_MS + 60 * 1000))
+
+    const second = await GC.getCreature(user)
+    expect(second.fromCache).toBe(true)
+    expect(sendMessage).toHaveBeenCalledTimes(1)
+  })
+
   it('an entry older than CACHE_TTL_MS is treated as a miss and refetches', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))

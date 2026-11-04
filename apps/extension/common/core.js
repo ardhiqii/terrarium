@@ -29,6 +29,15 @@
   /** Cache TTL for creature responses. At least an hour per the spec. */
   const CACHE_TTL_MS = 60 * 60 * 1000
 
+  /**
+   * Repo responses can carry a dressed companion, and the owner can opt out at
+   * any moment. They are cached for the badge's own five-minute window instead of
+   * an hour, so an opt-out clears from the page badge and popup as fast as it
+   * clears from the badge image. User-level responses never carry `dressed` and
+   * keep the long TTL.
+   */
+  const REPO_CACHE_TTL_MS = 5 * 60 * 1000
+
   /** Never fetch more repos than a single GitHub list/grid page can show. */
   const MAX_REPOS_PER_PASS = 30
 
@@ -590,7 +599,9 @@
       const result = await storageGet(key)
       const entry = result[key]
       if (!entry || typeof entry.fetchedAt !== 'number') return null
-      if (Date.now() - entry.fetchedAt > CACHE_TTL_MS) return null
+      const isRepoEntry = key.slice(STORAGE_KEYS.cachePrefix.length).includes('/')
+      const ttl = isRepoEntry ? REPO_CACHE_TTL_MS : CACHE_TTL_MS
+      if (Date.now() - entry.fetchedAt > ttl) return null
       return entry
     } catch {
       return null
@@ -746,6 +757,7 @@
   global.GardenCreatures = {
     DEFAULT_API_BASE,
     CACHE_TTL_MS,
+    REPO_CACHE_TTL_MS,
     SPECIES_LINES,
     DEFAULT_SPECIES_LINE_ID,
     getSpeciesLine,
