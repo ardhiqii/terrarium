@@ -685,3 +685,53 @@ describe('resolveVariant matches the site implementation', () => {
     expect(GC.resolveVariant(huge, null)).toBe('deep')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Dressed repositories (docs-plan/PLAN-dressed-repo-creature.md)
+// ---------------------------------------------------------------------------
+
+describe('creatureDisplay', () => {
+  const automatic = { stage: { id: 'mossling', name: 'Mossling', index: 2 }, speciesLineId: 'grass' }
+  const dressed = {
+    companionId: 'pikachu-family',
+    name: 'Pikachu',
+    step: { id: 'evolved', name: 'Charged', index: 2, count: 2 },
+    spriteUrl: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated/25.gif',
+    stillUrl: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/25.png',
+  }
+
+  it('keeps the automatic creature when nothing is dressed', () => {
+    const display = GC.creatureDisplay(automatic)
+    expect(display.dressed).toBe(false)
+    expect(display.spriteUrl).toBe(GC.spriteUrl('mossling', 'grass'))
+    expect(display.spriteUrl).toMatch(/\/43\.gif$/)
+    expect(display.label).toBe('Mossling L2')
+  })
+
+  it('shows the dressed companion when the response carries one', () => {
+    const display = GC.creatureDisplay({ ...automatic, dressed })
+    expect(display).toMatchObject({
+      dressed: true,
+      spriteUrl: dressed.spriteUrl,
+      stillUrl: dressed.stillUrl,
+      label: 'Pikachu L2',
+    })
+    expect(display.title).toContain('Charged')
+  })
+
+  it('refuses a dressed sprite from anywhere but the PokeAPI sprites repo', () => {
+    const display = GC.creatureDisplay({
+      ...automatic,
+      dressed: { ...dressed, spriteUrl: 'https://evil.example/x.gif' },
+    })
+    expect(display.dressed).toBe(false)
+    expect(display.spriteUrl).toBe(GC.spriteUrl('mossling', 'grass'))
+  })
+
+  it('falls back on a malformed dressed object instead of throwing', () => {
+    for (const bad of [null, 'pikachu', [], {}, { ...dressed, step: null }, { ...dressed, name: '' }]) {
+      expect(GC.creatureDisplay({ ...automatic, dressed: bad }).dressed).toBe(false)
+    }
+    expect(GC.creatureDisplay(null).label).toBe('?')
+  })
+})

@@ -240,6 +240,58 @@
   }
 
   // -------------------------------------------------------------------------
+  // Dressed repositories
+  //
+  // When a repo's owner has dressed it with one of their companions and opted
+  // in, `/api/creature?repo=` carries a `dressed` object alongside the usual
+  // automatic pick (docs-plan/PLAN-dressed-repo-creature.md). The content badge
+  // and the popup both go through `creatureDisplay` so they cannot disagree on
+  // which one wins. A missing or malformed `dressed` falls back to the
+  // automatic species line, exactly as before.
+  // -------------------------------------------------------------------------
+
+  const DRESSED_SPRITE_PREFIX = 'https://raw.githubusercontent.com/PokeAPI/sprites/'
+
+  function dressedSpriteUrl(value) {
+    return typeof value === 'string' && value.startsWith(DRESSED_SPRITE_PREFIX) ? value : null
+  }
+
+  /**
+   * What to draw for a creature response: `{ dressed, spriteUrl, stillUrl, label, title }`.
+   * `dressed` is true only when the response carries a usable dressed companion.
+   */
+  function creatureDisplay(state) {
+    const dressed = state && isRecord(state.dressed) ? state.dressed : null
+    if (dressed) {
+      const spriteUrlValue = dressedSpriteUrl(dressed.spriteUrl)
+      const name = firstString(dressed.name)
+      const step = isRecord(dressed.step) ? dressed.step : null
+      const stepName = step ? firstString(step.name) : null
+      const stepIndex = step && Number.isInteger(step.index) ? step.index : null
+      if (spriteUrlValue && name && stepName && stepIndex !== null) {
+        return {
+          dressed: true,
+          spriteUrl: spriteUrlValue,
+          stillUrl: dressedSpriteUrl(dressed.stillUrl) || spriteUrlValue,
+          label: `${name} L${stepIndex}`,
+          title: `${name}, ${stepName}. Dressed by the owner.`,
+        }
+      }
+    }
+
+    const stage = state && isRecord(state.stage) ? state.stage : null
+    const lineId = state && typeof state.speciesLineId === 'string' ? state.speciesLineId : undefined
+    const url = stage ? spriteUrl(stage.id, lineId) : null
+    return {
+      dressed: false,
+      spriteUrl: url,
+      stillUrl: url,
+      label: stage ? `${stage.name} L${stage.index}` : '?',
+      title: stage ? `${stage.name}, stage ${stage.index}` : '',
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Public companion payload compatibility
   //
   // This is deliberately pure. The extension only normalizes data it has
@@ -699,6 +751,7 @@
     getSpeciesLine,
     assignSpeciesLine,
     spriteUrl,
+    creatureDisplay,
     normalizePublicCompanionPayload,
     resolveVariant,
     getSettings,
