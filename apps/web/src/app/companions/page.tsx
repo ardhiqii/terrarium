@@ -181,6 +181,17 @@ export default async function CompanionsPage() {
               ) : undefined
             }
           />
+          {/*
+            PRODUCT.md §11.2: a surface says whose garden it shows. The archive
+            below is local, and with no account XP on screen there was nothing
+            left saying the two are different — the same contradiction the
+            section used to carry a paragraph for. Kept VISIBLE rather than
+            behind the Details fold: a disclosure the user has to open cannot
+            stop them reading the numbers as account XP.
+          */}
+          <p className="font-prose mt-2 text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
+            The archive below is local and does not represent account XP.
+          </p>
         </section>
       )}
 
