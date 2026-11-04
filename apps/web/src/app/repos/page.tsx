@@ -48,10 +48,7 @@ export default async function ReposPage() {
           className="font-prose text-base leading-relaxed max-w-2xl"
           style={{ color: 'var(--ink-muted)' }}
         >
-          One creature per repository, species-assigned by its primary language,
-          plus one for every tag that reaches five notes. These are generated from
-          where the activity came from, not companions you own. Your companions
-          live under{' '}
+          Creatures generated from your repos and tags. Your own companions are in{' '}
           <Link
             href="/companions"
             className="underline decoration-dotted underline-offset-2 hover:opacity-70 transition-opacity"
@@ -71,9 +68,7 @@ export default async function ReposPage() {
           className="font-prose text-sm leading-relaxed mb-5 max-w-2xl"
           style={{ color: 'var(--ink-muted)' }}
         >
-          Pick which of your companions appears on which repository. Each companion
-          is spent on exactly one, so you can dress as many repositories as you own
-          companions.
+          Put one of your companions on a repo. Each companion goes on one repo.
         </p>
         <CompanionPicker />
       </section>
@@ -98,9 +93,7 @@ export default async function ReposPage() {
           className="font-prose text-sm leading-relaxed mb-5 max-w-2xl"
           style={{ color: 'var(--ink-muted)' }}
         >
-          One creature per repository, species-assigned by its primary language.
-          These come from GitHub activity rather than from the companions you own,
-          and you dress a companion onto one in the section above.
+          One per repo, picked by its main language.
         </p>
         <CollectionGrid
           entries={repoCollection}
@@ -116,9 +109,7 @@ export default async function ReposPage() {
           className="font-prose text-sm leading-relaxed mb-5 max-w-2xl"
           style={{ color: 'var(--ink-muted)' }}
         >
-          One creature for every tag that reaches five notes, assigned by theme. A
-          cluster is something to open and read, not something to dress onto a
-          repository, which is why it is listed apart from the repositories above.
+          One per tag with five or more notes.
         </p>
         <CollectionGrid
           entries={clusterCollection}

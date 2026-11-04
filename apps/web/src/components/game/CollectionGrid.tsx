@@ -46,9 +46,7 @@ export async function CollectionGrid({ entries, emptyMessage }: CollectionGridPr
       <p className="font-prose text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
         {emptyMessage ?? (
           <>
-            No companions yet. Repo creatures appear once GitHub repo data is
-            reachable at build time; cluster companions appear once a tag
-            reaches five notes.
+            Nothing here yet.
           </>
         )}
       </p>

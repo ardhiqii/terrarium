@@ -83,9 +83,7 @@ export default async function PreviewPage() {
           className="font-prose text-base leading-relaxed max-w-2xl"
           style={{ color: 'var(--ink-muted)' }}
         >
-          One creature at a time. Pick a species line, then tap a number to
-          step through its evolution stages. Animated sprites are the PokeAPI
-          idle set; walk/run/sleep states aren&apos;t in this sprite pool.
+          Pick a species line, then tap a number to see each stage.
         </p>
       </div>
 

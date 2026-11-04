@@ -40,10 +40,7 @@ export default function SpeciesGalleryPage() {
           className="font-prose text-base leading-relaxed max-w-2xl"
           style={{ color: 'var(--ink-muted)' }}
         >
-          Every species line and every evolution stage at a glance. Each row is
-          one line; each column is one stage. Sprites pull from the animated
-          Generation-V set where available, exact same source the creatures on
-          the home page and /companions use.
+          Every species line, one row each, across all its stages.
         </p>
       </div>
 
@@ -71,9 +68,7 @@ export default function SpeciesGalleryPage() {
         style={{ borderTop: '1px solid var(--rule)' }}
       >
         <p className="font-prose text-xs mt-4" style={{ color: 'var(--ink-muted)' }}>
-          The mappings above come from <code className="font-data">apps/web/src/lib/game/sprites/species.ts</code>.
-          Language tags map a repository to its line for the collection view; the garden
-          creature always renders the grass line.
+          Sprites: PokeAPI animated Generation-V set where available.
         </p>
       </div>
     </div>

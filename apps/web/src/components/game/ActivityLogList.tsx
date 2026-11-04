@@ -43,8 +43,7 @@ export function ActivityLogList({ ledger, companionId, limit = 12 }: ActivityLog
   if (log.entries.length === 0) {
     return (
       <p className="font-prose text-sm" style={{ color: 'var(--ink-muted)' }}>
-        No activity recorded yet. Writing a note or landing a pull request will
-        show up here.
+        No activity yet. Write a note or merge a pull request.
       </p>
     )
   }

@@ -25,9 +25,7 @@ export default function ProgressionPage() {
           Progression
         </h1>
         <p className="font-prose text-base leading-relaxed max-w-[52ch]" style={{ color: 'var(--ink-muted)' }}>
-          A rank that climbs with everything you have written and shipped, and
-          the milestones behind it. Both are computed from your own event
-          ledger, the same record that grows your companion.
+          Your rank and milestones, from everything you write and ship.
         </p>
       </div>
       <ProgressionView />
