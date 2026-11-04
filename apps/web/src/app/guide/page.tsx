@@ -11,6 +11,8 @@ import { CLUSTER_THRESHOLD } from '@/lib/game/clusters-from-items'
 import { CreatureSprite } from '@/components/game/CreatureSprite'
 import TableOfContents from '@/components/layout/TableOfContents'
 import type { TocEntry } from '@/lib/mdx'
+import { RelatedLinks } from '@/components/ui/RelatedLinks'
+import { COPY, GUIDE_ANCHORS } from '@/lib/copy'
 
 export const metadata: Metadata = {
   title: 'Guide',
@@ -40,6 +42,22 @@ const TOC_ENTRIES: TocEntry[] = [
   { id: 'companions', text: 'Companions', level: 2 },
   { id: 'items', text: 'Items', level: 2 },
   { id: 'where-xp-comes-from', text: 'Where XP comes from', level: 2 },
+  { id: GUIDE_ANCHORS.condition, text: 'Condition', level: 2 },
+  { id: GUIDE_ANCHORS.githubSync, text: 'GitHub sync', level: 2 },
+  { id: GUIDE_ANCHORS.privacy, text: 'Privacy', level: 2 },
+  { id: GUIDE_ANCHORS.leaderboard, text: 'Leaderboard', level: 2 },
+]
+
+/**
+ * The condition layer's rules, in one table. Surfaces show only a meter and, when
+ * a need is low, what would help (`DESIGN.md` §7); the full rule lives here.
+ */
+const CONDITION_ROWS: { need: string; drops: string; restores: string }[] = [
+  { need: 'Hunger', drops: 'A quarter a day with no meal and no work', restores: 'A meal, or a day of work' },
+  { need: 'Energy', drops: 'Late-night sessions and long streaks', restores: 'A rest' },
+  { need: 'Health', drops: 'Your default branch CI is red', restores: 'Medicine' },
+  { need: 'Cleanliness', drops: 'Your own pull requests sit open', restores: 'Merging or closing them' },
+  { need: 'Diet', drops: 'Only one kind of work this week', restores: 'A quarter per kind of work, up to four' },
 ]
 
 export default async function GuidePage() {
@@ -64,11 +82,14 @@ export default async function GuidePage() {
           Guide
         </h1>
         <p className="font-prose text-base leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-          A creature levels up and nothing tells you why by default. This page
-          states the rules plainly, read directly from the code that runs
-          them, so nothing here can quietly drift out of date the way a
-          written-down copy can.
+          Every rule behind your companion, read from the code that runs it.
         </p>
+        {/* The sidebar contents list is desktop-only; small screens get it inline. */}
+        <RelatedLinks
+          label="On this page"
+          className="mt-2 lg:hidden"
+          links={TOC_ENTRIES.map((entry) => ({ href: `#${entry.id}`, label: entry.text }))}
+        />
       </div>
 
       <div className="lg:grid lg:grid-cols-[1fr_200px] lg:gap-12">
@@ -254,6 +275,10 @@ export default async function GuidePage() {
                 </Link>{' '}
                 for the full, currently-hatched collection.
               </p>
+              <p className="mt-3">
+                {COPY.dailyCompanion} You can dress a companion onto one of your
+                repositories, and each companion goes on exactly one.
+              </p>
             </div>
           </section>
 
@@ -332,6 +357,102 @@ export default async function GuidePage() {
                 commit per push it sees.
               </p>
             </div>
+          </section>
+
+          <section id={GUIDE_ANCHORS.condition} className="mt-14 mb-14 scroll-mt-20">
+            <h2 className="font-ui text-xl font-semibold tracking-tighter mb-4">
+              Condition
+            </h2>
+            <p className="max-w-[65ch] font-prose text-base leading-relaxed mb-6" style={{ color: 'var(--ink)' }}>
+              {COPY.conditionIsRecoverable} After a week with nothing going in,
+              the companion goes dormant; one day of work wakes it.
+            </p>
+            <div className="overflow-x-auto">
+              <table className="w-full font-data text-sm border-collapse">
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--rule)' }}>
+                    <th className="text-left font-medium py-2 pr-4" style={{ color: 'var(--ink-muted)' }}>Need</th>
+                    <th className="text-left font-medium py-2 pr-4" style={{ color: 'var(--ink-muted)' }}>Drops when</th>
+                    <th className="text-left font-medium py-2" style={{ color: 'var(--ink-muted)' }}>Restored by</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {CONDITION_ROWS.map((row) => (
+                    <tr key={row.need} style={{ borderBottom: '1px solid var(--rule)' }}>
+                      <td className="py-2 pr-4 font-ui" style={{ color: 'var(--ink)' }}>{row.need}</td>
+                      <td className="py-2 pr-4" style={{ color: 'var(--ink-muted)' }}>{row.drops}</td>
+                      <td className="py-2" style={{ color: 'var(--ink-muted)' }}>{row.restores}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id={GUIDE_ANCHORS.githubSync} className="mb-14 scroll-mt-20">
+            <h2 className="font-ui text-xl font-semibold tracking-tighter mb-4">
+              GitHub sync
+            </h2>
+            <ul className="max-w-[65ch] font-prose text-base leading-relaxed list-disc pl-5 space-y-2" style={{ color: 'var(--ink)' }}>
+              <li>
+                <strong>Approved</strong> means GitHub lets Terrarium read a repo.{' '}
+                <strong>Tracked</strong> means its future activity can move your companion.
+                Only tracked repos count, and repository contents and code are never read.
+              </li>
+              <li>
+                The first sync of a repo sets a baseline. Old history is not awarded, so
+                connecting a ten-year-old account does not hand out ten years of XP.
+              </li>
+              <li>
+                A meaningful commit wakes an active workday and a session; the commit count
+                itself is not an unlimited XP faucet. Every signal goes to your active
+                companion and is capped by its activity window.
+              </li>
+              <li>Activity from private repos stays visible only to you.</li>
+              <li>
+                Automatic sync runs only while the GitHub page is open, and pauses before
+                your hourly GitHub request limit is spent.
+              </li>
+              <li>
+                Disconnecting stops tracking and removes the stored GitHub token. Earned XP,
+                your companion, and your repo choices are kept. Signing out is not
+                disconnecting.
+              </li>
+            </ul>
+          </section>
+
+          <section id={GUIDE_ANCHORS.privacy} className="mb-14 scroll-mt-20">
+            <h2 className="font-ui text-xl font-semibold tracking-tighter mb-4">
+              Privacy
+            </h2>
+            <ul className="max-w-[65ch] font-prose text-base leading-relaxed list-disc pl-5 space-y-2" style={{ color: 'var(--ink)' }}>
+              <li>
+                Notes stay on your own device. Connecting a folder reads it in the browser tab
+                and computes your creature there.
+              </li>
+              <li>
+                Only a small summary (stage, total XP, and companion count) ever leaves your
+                device, and only once you choose to sync.
+              </li>
+              <li>A public profile is opt-in. Until you turn it on, only you can see yours.</li>
+              <li>
+                Totals on profiles are as reported by each garden. Commit activity can be
+                checked against public GitHub data, but note activity cannot, since notes
+                never leave the writer&apos;s own device.
+              </li>
+            </ul>
+          </section>
+
+          <section id={GUIDE_ANCHORS.leaderboard} className="scroll-mt-20">
+            <h2 className="font-ui text-xl font-semibold tracking-tighter mb-4">
+              Leaderboard
+            </h2>
+            <p className="max-w-[65ch] font-prose text-base leading-relaxed" style={{ color: 'var(--ink)' }}>
+              The leaderboard only shows people you follow on GitHub who have synced a
+              garden here. It is never a global ranking: a public board over public commit
+              data would be farmed within a week, and friend scope removes the incentive
+              instead of trying to police it.
+            </p>
           </section>
         </article>
 
