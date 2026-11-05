@@ -355,6 +355,15 @@ The plan and the remaining phases are in `docs-plan/PLAN-calmer-ui.md`.
 - The extension's page badge and popup show the dressed companion through one
   shared `creatureDisplay` helper.
 - Opted-in owners get a five-minute CDN window instead of an hour.
+- QA fixes (2026-11-05, `docs-plan/PLAN-dressed-repo-qa-fixes.md`):
+  - Dressing pushes itself to the server (`/api/profile/repo-assignments`), and each row shows its state.
+  - Signed-out `/repos` offers sign-in and makes no failing requests.
+  - The badge footer no longer clips.
+  - Timing copy is corrected.
+  - The SVG route sends `X-Cache`.
+  - A GitHub failure gets the short cache window.
+  - Sprite URLs are checked in canonical form.
+- Not fixed here: the egg-hatch `setState` warning, which predates this branch (separate PR).
 - Known gap, not fixed here: a restored profile's assignments keep the raw
   reference while its collection holds hashed ones (`PRODUCT.md` §6.3).
 

@@ -605,3 +605,11 @@ the snapshot.
 **Not shown:** nicknames, the rest of the collection, private repositories, and
 organisation-owned repositories (their owner id is an organisation, never an
 account).
+
+**Dressing has its own narrow write, not the full sync (2026-11-05).** QA found
+that dressing on `/repos` never reached the badge until a full sync on `/github`.
+`/repos` pushes only the assignment list (`PUT /api/profile/repo-assignments`)
+instead of replaying the full sync. The full sync carries checkpoints and receipt
+repair, and running it from a second page could race a sync in flight. The push
+replaces the list, so a take-back is a removal on the server too. It refuses a
+snapshot from a different local profile, and ownership is still checked on read.
