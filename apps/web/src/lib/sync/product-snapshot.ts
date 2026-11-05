@@ -170,6 +170,14 @@ export interface ProductSnapshot {
   readonly eggs?: readonly ProductSnapshotEgg[]
   readonly assignments?: readonly ProductSnapshotAssignment[]
   /**
+   * When the assignment list was last replaced.
+   *
+   * A take-back is an absence, so a union merge cannot represent it: the next
+   * sync re-adds the released repository. The newer stamp takes the whole list.
+   * OPTIONAL: absent on both sides falls back to the union.
+   */
+  readonly assignmentsUpdatedAt?: string
+  /**
    * The condition layer: care timestamps, item mints and spend counters.
    *
    * OPTIONAL for the same reason as `eggs` and `assignments`. Unlike those two,
@@ -457,6 +465,9 @@ export function buildProductSnapshot(
     // had drawn but not yet opened.
     eggs: (profile.eggs ?? []).map((egg) => ({ ...egg })),
     assignments: (profile.assignments ?? []).map((assign) => ({ ...assign })),
+    // Copied, never invented: a device that never dressed anything must not
+    // stamp "now" and beat another device's real list.
+    ...(profile.assignmentsUpdatedAt ? { assignmentsUpdatedAt: profile.assignmentsUpdatedAt } : {}),
     // Carried so a meal fed on one device still counts on another. Copied
     // shallowly at the top level and deeply for `mints`, because that array is
     // the only nested structure and sharing it would let a later mint mutate a
@@ -639,7 +650,7 @@ export function validateProductSnapshot(value: unknown): asserts value is Produc
     // OPTIONAL, not required: a snapshot written by an older client has none of
     // these fields, and requiring them would reject every payload already in
     // flight. All are read as `?? []` (or `createCareState`) on restore.
-    ['eggs', 'assignments', 'condition', 'activeReferenceId'],
+    ['eggs', 'assignments', 'condition', 'activeReferenceId', 'assignmentsUpdatedAt'],
     'Product snapshot',
   )
   if (value.schemaVersion !== PRODUCT_SNAPSHOT_SCHEMA_VERSION) throw new TypeError('Unsupported product snapshot schema version')
@@ -650,6 +661,9 @@ export function validateProductSnapshot(value: unknown): asserts value is Produc
   assertNonEmptyString(value.activeCompanionId, 'activeCompanionId')
   if ('activeReferenceId' in value && value.activeReferenceId !== undefined) {
     assertNonEmptyString(value.activeReferenceId, 'activeReferenceId')
+  }
+  if ('assignmentsUpdatedAt' in value && value.assignmentsUpdatedAt !== undefined) {
+    assertNonEmptyString(value.assignmentsUpdatedAt, 'assignmentsUpdatedAt')
   }
   if (!Array.isArray(value.companions)) throw new TypeError('companions must be an array')
   if (!Array.isArray(value.collection)) throw new TypeError('collection must be an array')
@@ -907,7 +921,19 @@ export function mergeGuestWithServer(guest: ProductSnapshot, server: ProductSnap
   const unionCollection = unionById(guest.collection, server.collection, (reference) => reference.referenceId).sort(
     (left, right) => left.acquiredAt.localeCompare(right.acquiredAt) || left.referenceId.localeCompare(right.referenceId),
   )
-  const mergedAssignments = mergeAssignments(guest.assignments ?? [], server.assignments ?? [])
+  // A take-back is a fact about the LIST, not about one repository, so a union
+  // cannot express it: `A` released repo R, and the union puts R straight back.
+  // Each writer stamps when it last replaced the list, and the newer list wins
+  // whole. Only equal or missing stamps fall back to the union (data written
+  // before the stamp existed).
+  const guestStamp = guest.assignmentsUpdatedAt ?? ''
+  const serverStamp = server.assignmentsUpdatedAt ?? ''
+  const mergedAssignments =
+    guestStamp === serverStamp
+      ? mergeAssignments(guest.assignments ?? [], server.assignments ?? [])
+      : [...(guestStamp > serverStamp ? (guest.assignments ?? []) : (server.assignments ?? []))].map(
+          (assignment) => ({ ...assignment }),
+        )
   // Fold duplicate starters BEFORE anything else reads the collection: companions,
   // the active companion and the assignments all have to agree on the same list.
   const { collection, dropped } = collapseSnapshotStarters(
@@ -956,6 +982,10 @@ export function mergeGuestWithServer(guest: ProductSnapshot, server: ProductSnap
     // a merged snapshot looked like a snapshot taken before the user owned them.
     eggs: unionById(guest.eggs ?? [], server.eggs ?? [], (egg) => egg.drawId),
     assignments,
+    // The stamp follows whichever side won the list.
+    ...(guestStamp || serverStamp
+      ? { assignmentsUpdatedAt: guestStamp >= serverStamp ? guestStamp : serverStamp }
+      : {}),
     // The condition layer merges by NEWEST TIMESTAMP PER FIELD, not by whole
     // state: a laptop that fed the companion and a phone that let it rest must
     // both survive, and taking the newer snapshot whole would erase one of them.

@@ -162,6 +162,7 @@ export function assignCompanion(
     profile: {
       ...profile,
       updatedAt: now,
+      assignmentsUpdatedAt: now,
       assignments: [...assignments(profile), assignment],
     },
   }
@@ -175,7 +176,7 @@ export function releaseRepository(
 ): GuestProfile {
   const kept = assignments(profile).filter((a) => a.repositoryId !== repositoryId)
   if (kept.length === assignments(profile).length) return profile
-  return { ...profile, updatedAt: now, assignments: kept }
+  return { ...profile, updatedAt: now, assignmentsUpdatedAt: now, assignments: kept }
 }
 
 /**

@@ -78,13 +78,24 @@ export async function PUT(request: NextRequest): Promise<Response> {
   const rl = checkRateLimit(`repo-assignments:${session.githubId}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS)
   if (!rl.allowed) return json(429, { error: 'Rate limit exceeded. Try again shortly.' })
 
+  // Refuse before buffering. `request.text()` reads the whole body, so a cap
+  // applied afterwards still lets a caller make this process hold it; the header
+  // is a hint, and the byte count after the read is the real check (a body in
+  // UTF-16 units can be shorter than its UTF-8 byte length).
+  const declared = Number(request.headers.get('content-length') ?? '0')
+  if (Number.isFinite(declared) && declared > MAX_ASSIGNMENTS_BODY_BYTES) {
+    return json(413, { error: 'Request body is too large.' })
+  }
+
   let text: string
   try {
     text = await request.text()
   } catch {
     return json(400, { error: 'Request body could not be read.' })
   }
-  if (text.length > MAX_ASSIGNMENTS_BODY_BYTES) return json(413, { error: 'Request body is too large.' })
+  if (Buffer.byteLength(text, 'utf8') > MAX_ASSIGNMENTS_BODY_BYTES) {
+    return json(413, { error: 'Request body is too large.' })
+  }
   let body: unknown
   try {
     body = JSON.parse(text)
@@ -107,12 +118,13 @@ export async function PUT(request: NextRequest): Promise<Response> {
         return json(409, { reason: 'other-profile', error: 'This account is synced from a different profile.' })
       }
       const previous = record.snapshot.assignments ?? []
-      const next = { ...record.snapshot, assignments: parsed.assignments }
+      const now = new Date().toISOString()
+      const next = { ...record.snapshot, assignments: parsed.assignments, assignmentsUpdatedAt: now }
       const saved = await store.put(
         session.githubId,
         session.handle,
         next,
-        new Date().toISOString(),
+        now,
         record.updatedAt,
       )
       if (saved) {

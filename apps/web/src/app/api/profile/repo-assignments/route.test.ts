@@ -87,7 +87,10 @@ describe('PUT /api/profile/repo-assignments', () => {
 
     const after = await store.get(GITHUB_ID)
     expect(after?.assignments).toEqual([assignment()])
-    const { assignments: _a, ...restAfter } = after!
+    // The list and its stamp are the only two fields the route may touch; the
+    // stamp is what stops the next sync from unioning a take-back away.
+    expect(typeof after?.assignmentsUpdatedAt).toBe('string')
+    const { assignments: _a, assignmentsUpdatedAt: _stamp, ...restAfter } = after!
     const { assignments: _b, ...restBefore } = before
     expect(JSON.stringify(restAfter)).toBe(JSON.stringify(restBefore))
   })

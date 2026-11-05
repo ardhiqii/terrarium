@@ -212,6 +212,16 @@ export interface GuestProfile {
    * companion — the resolver falls back to the first entry of the active species.
    */
   activeReferenceId?: string
+  /**
+   * When the assignment list was last REPLACED (a dress or a take-back).
+   *
+   * WHY A STAMP AND NOT JUST THE LIST: a take-back is the absence of an entry,
+   * and a merge that unions two lists cannot express an absence — the next sync
+   * puts the released repository straight back. The newer stamp wins the whole
+   * list, so intent survives a sync from a device that had not seen the release.
+   * OPTIONAL: profiles written before it existed merge by the old union rule.
+   */
+  assignmentsUpdatedAt?: string
   sourceBaselines: readonly LocalSourceBaseline[]
   collection: readonly GuestCollectionReference[]
   /**
@@ -393,6 +403,9 @@ function validateGuestProfile(value: unknown): void {
   // bad value can do is highlight a different tile.
   if (value.activeReferenceId !== undefined) {
     assertNonEmptyString(value.activeReferenceId, 'activeReferenceId')
+  }
+  if (value.assignmentsUpdatedAt !== undefined) {
+    assertNonEmptyString(value.assignmentsUpdatedAt, 'assignmentsUpdatedAt')
   }
 
   if (!Array.isArray(value.sourceBaselines)) {
