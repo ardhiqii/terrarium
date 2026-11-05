@@ -25,6 +25,10 @@ describe('fetchSpriteDataUri', () => {
       'http://raw.githubusercontent.com/PokeAPI/sprites/a.png',
       'https://raw.githubusercontent.com/someone-else/sprites/a.png',
       'https://raw.githubusercontent.com/PokeAPI/sprites/master/a.gif',
+      // Starts with the prefix, but resolves to another repository.
+      'https://raw.githubusercontent.com/PokeAPI/sprites/../../evil/repo/x.png',
+      'https://raw.githubusercontent.com/PokeAPI/sprites/%2e%2e/%2e%2e/evil/x.png',
+      'https://raw.githubusercontent.com/PokeAPI/sprites/a\\..\\..\\x.png',
     ]) {
       expect(await fetchSpriteDataUri(url)).toBeNull()
     }

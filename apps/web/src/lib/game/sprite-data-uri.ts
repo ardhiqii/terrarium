@@ -24,8 +24,33 @@ const SUCCESS_TTL_MS = 24 * 60 * 60 * 1000
 const FAILURE_TTL_MS = 10 * 60 * 1000
 const TIMEOUT_MS = 5000
 
+/**
+ * Only a canonical PokeAPI sprites URL. A prefix test alone passes
+ * `.../PokeAPI/sprites/../../other/x.png`, which `fetch` resolves to another
+ * repository; requiring the parsed `href` to equal the input rules out `..`,
+ * `%2e%2e`, backslashes, credentials and ports.
+ */
+export function isPokeApiSpriteUrl(url: string): boolean {
+  if (typeof url !== 'string' || !url.startsWith(SPRITE_URL_PREFIX) || !url.endsWith('.png')) return false
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return false
+  }
+  return (
+    parsed.href === url &&
+    parsed.protocol === 'https:' &&
+    parsed.host === 'raw.githubusercontent.com' &&
+    !parsed.username &&
+    !parsed.password &&
+    parsed.pathname.startsWith('/PokeAPI/sprites/') &&
+    !/%2e/i.test(parsed.pathname)
+  )
+}
+
 export async function fetchSpriteDataUri(url: string): Promise<string | null> {
-  if (!url.startsWith(SPRITE_URL_PREFIX) || !url.endsWith('.png')) return null
+  if (!isPokeApiSpriteUrl(url)) return null
 
   const cacheKey = `spriteuri:${url}`
   const cached = cacheGetFresh<string>(cacheKey)
