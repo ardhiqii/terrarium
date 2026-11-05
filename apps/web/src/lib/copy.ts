@@ -39,3 +39,8 @@ export const GUIDE_ANCHORS = {
 } as const
 
 export type GuideAnchor = (typeof GUIDE_ANCHORS)[keyof typeof GUIDE_ANCHORS]
+
+/** "1 companion", "3 companions". English only; `many` defaults to `one + 's'`. */
+export function plural(count: number, one: string, many: string = `${one}s`): string {
+  return `${count.toLocaleString()} ${count === 1 ? one : many}`
+}

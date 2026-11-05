@@ -770,6 +770,34 @@ describe('creatureDisplay', () => {
     expect(display.spriteUrl).toBe(GC.spriteUrl('mossling', 'grass'))
   })
 
+  it('refuses a sprite URL that only looks like the PokeAPI repo', () => {
+    for (const spriteUrl of [
+      'https://raw.githubusercontent.com/PokeAPI/sprites/../../evil/repo/x.gif',
+      'https://raw.githubusercontent.com/PokeAPI/sprites/%2e%2e/%2e%2e/evil/x.gif',
+      'https://raw.githubusercontent.com/PokeAPI/sprites/a\\..\\..\\x.gif',
+      'https://user@raw.githubusercontent.com/PokeAPI/sprites/x.gif',
+      'https://raw.githubusercontent.com:8443/PokeAPI/sprites/x.gif',
+      'http://raw.githubusercontent.com/PokeAPI/sprites/x.gif',
+    ]) {
+      expect(GC.creatureDisplay({ ...automatic, dressed: { ...dressed, spriteUrl } }).dressed).toBe(false)
+    }
+  })
+
+  it('drops a traversal still URL back to the animated one', () => {
+    const display = GC.creatureDisplay({
+      ...automatic,
+      dressed: { ...dressed, stillUrl: 'https://raw.githubusercontent.com/PokeAPI/sprites/../../evil/x.png' },
+    })
+    expect(display.stillUrl).toBe(dressed.spriteUrl)
+  })
+
+  it('refuses a stage index outside 1..count', () => {
+    for (const index of [0, -1, 3, 1.5]) {
+      const step = { ...dressed.step, index }
+      expect(GC.creatureDisplay({ ...automatic, dressed: { ...dressed, step } }).dressed).toBe(false)
+    }
+  })
+
   it('falls back on a malformed dressed object instead of throwing', () => {
     for (const bad of [null, 'pikachu', [], {}, { ...dressed, step: null }, { ...dressed, name: '' }]) {
       expect(GC.creatureDisplay({ ...automatic, dressed: bad }).dressed).toBe(false)

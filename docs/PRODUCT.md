@@ -712,10 +712,19 @@ carries.
   `owner.id` of the repository, not the handle in the URL, so a renamed or reused
   login cannot borrow another account's opt-in, and a transferred repository
   stops showing the previous owner's companion.
+- **Dressing is saved as it is made.** Dressing or taking back on `/repos` pushes
+  the full assignment list to the stored snapshot
+  (`PUT /api/profile/repo-assignments`). Only `assignments` is replaced. The
+  account still needs one full sync from `/github` first, which creates the
+  snapshot. Each dressed row says where it stands: *shown on GitHub*, *saving…*,
+  *not on GitHub yet* (with Retry) or *sync once on GitHub first*.
 - **Freshness.** An opted-in owner's creature responses are cached for five
-  minutes at the CDN instead of an hour, so a change shows within about ten
-  minutes after the next sync. GitHub's own README image proxy can hold a badge
-  longer; changing the `v` query parameter forces a refetch.
+  minutes at the CDN instead of an hour, so a change shows within a few minutes.
+  The first opt-in can take up to an hour, because the undressed badge was cached
+  under the long window. When GitHub cannot answer for the repository (a rate
+  limit, an outage), the response uses the five-minute window too, so an error
+  never pins an undressed badge for a day. GitHub's own README image proxy can
+  hold a badge longer; changing the `v` query parameter forces a refetch.
 - **Known gap:** the sync snapshot copies `assignments[].referenceId` verbatim
   while `collection[].referenceId` is hashed, so after a restore on another
   device a local assignment can stop matching its collection entry. The public

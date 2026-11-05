@@ -20,9 +20,15 @@
  * need to discover it by hitting a refusal.
  */
 
-import { useCallback, useEffect, useState } from 'react'
-import { loadGuestProfile, saveGuestProfile, type GuestProfile } from '@/lib/game/guest-profile'
-import { useViewerProfileKey } from '@/lib/sync/use-viewer-profile-key'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import Link from 'next/link'
+import {
+  GUEST_PROFILE_STORAGE_KEY,
+  loadGuestProfile,
+  saveGuestProfile,
+  type GuestProfile,
+} from '@/lib/game/guest-profile'
+import { useViewerProfileKey, ensureViewerSession } from '@/lib/sync/use-viewer-profile-key'
 import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
 import {
   assignCompanion,
@@ -35,6 +41,16 @@ import {
 import type { GithubRepository } from '@/lib/sync/github-repositories'
 import { InfoDisclosure } from '@/components/ui/InfoDisclosure'
 import { GUIDE_ANCHORS } from '@/lib/copy'
+import SignInButton from '@/components/layout/SignInButton'
+import {
+  assignmentsInSync,
+  DRESSED_ROW_SUFFIX,
+  dressedRowState,
+  isOwnRepository,
+  repoEmptyState,
+  type AssignmentKey,
+  type ServerDressing,
+} from '@/lib/game/dressed-repo-ui'
 
 /**
  * Whether dressed companions show on GitHub (`/api/profile/repo-badges`).
@@ -42,6 +58,25 @@ import { GUIDE_ANCHORS } from '@/lib/copy'
  * because a guest's dressing never leaves the browser anyway.
  */
 type BadgeSetting = 'loading' | 'unavailable' | 'on' | 'off'
+
+/**
+ * How long to wait after a dress or take-back before pushing it to the server
+ * (`PUT /api/profile/repo-assignments`). Several quick changes become one write.
+ */
+const PUSH_DEBOUNCE_MS = 800
+
+/** The full current list, in the shape the route accepts. */
+function assignmentsBody(profile: GuestProfile) {
+  return {
+    guestId: profile.guestId,
+    assignments: (profile.assignments ?? []).map(({ repositoryId, referenceId, companionId, assignedAt }) => ({
+      repositoryId,
+      referenceId,
+      companionId,
+      assignedAt,
+    })),
+  }
+}
 
 /** Human wording for each refusal, so the user is told which rule they hit. */
 const REFUSAL_TEXT: Readonly<Record<AssignmentRefusal, string>> = {
@@ -71,8 +106,26 @@ export function CompanionPicker({ repositories }: CompanionPickerProps) {
   const profileKey = useViewerProfileKey()
   const [badges, setBadges] = useState<BadgeSetting>('loading')
   const [copied, setCopied] = useState<string | null>(null)
+  const [dressing, setDressing] = useState<ServerDressing>({ status: 'unknown' })
+  // The guest key means signed out. `null` means not known yet: fetch nothing.
+  const signedIn = profileKey !== null && profileKey !== GUEST_PROFILE_STORAGE_KEY
+  // Needed to tell "your repo" from a collaborator or org repo: the badge can
+  // only resolve dressing for a repo the account owns.
+  const [viewerHandle, setViewerHandle] = useState<string | null>(null)
+  const latestProfile = useRef<GuestProfile | null>(null)
+  const pushTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
+    latestProfile.current = profile
+  }, [profile])
+
+  useEffect(() => {
+    // Signed out, the setting does not exist: skip the request rather than log a 401.
+    if (profileKey === null) return
+    if (!signedIn) {
+      setBadges('unavailable')
+      return
+    }
     let cancelled = false
     void (async () => {
       try {
@@ -86,7 +139,91 @@ export function CompanionPicker({ repositories }: CompanionPickerProps) {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [profileKey, signedIn])
+
+  useEffect(() => {
+    if (!signedIn) return
+    let cancelled = false
+    void ensureViewerSession().then((session) => {
+      if (!cancelled && session?.handle) setViewerHandle(session.handle)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [signedIn])
+
+  /**
+   * Push the browser's dressing to the stored snapshot, so the badge shows it
+   * without a full sync (docs-plan/PLAN-dressed-repo-qa-fixes.md, fix 1).
+   * Always the full current list: last write wins, and a take-back is a removal.
+   *
+   * The list is re-read from storage first. Another tab may have dressed or
+   * released a repo since this one loaded, and the route REPLACES the list — so
+   * pushing this tab's remembered copy would silently wipe that change.
+   */
+  const push = useCallback(async () => {
+    if (!signedIn || profileKey === null) return
+    const current = loadGuestProfile(window.localStorage, profileKey) ?? latestProfile.current
+    if (!current) return
+    const body = assignmentsBody(current)
+    setDressing({ status: 'saving' })
+    try {
+      const response = await fetch('/api/profile/repo-assignments', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (response.ok) {
+        setDressing({ status: 'ready', server: body.assignments })
+        return
+      }
+      const reason =
+        response.status === 409
+          ? ((await response.json().catch(() => ({}))) as { reason?: unknown }).reason
+          : null
+      if (reason === 'never-synced') setDressing({ status: 'never-synced' })
+      else if (reason === 'other-profile') setDressing({ status: 'other-profile' })
+      else setDressing({ status: 'error' })
+    } catch {
+      setDressing({ status: 'error' })
+    }
+  }, [signedIn, profileKey])
+
+  const schedulePush = useCallback(() => {
+    if (!signedIn) return
+    if (pushTimer.current) clearTimeout(pushTimer.current)
+    pushTimer.current = setTimeout(() => {
+      pushTimer.current = null
+      void push()
+    }, PUSH_DEBOUNCE_MS)
+  }, [signedIn, push])
+
+  useEffect(
+    () => () => {
+      // Leaving the page inside the debounce window must not lose the change:
+      // the route replaces the list, so an unflushed edit is a lost edit. The
+      // request outlives the component; the state update after unmount is a no-op.
+      if (pushTimer.current) {
+        clearTimeout(pushTimer.current)
+        pushTimer.current = null
+        void push()
+      }
+    },
+    [push],
+  )
+
+  // Another tab saved a different dressing: adopt it, so this tab's next push
+  // sends the union of what both tabs know rather than overwriting the other.
+  useEffect(() => {
+    if (profileKey === null) return
+    function onStorage(event: StorageEvent) {
+      if (event.key !== null && event.key !== profileKey) return
+      if (profileKey === null) return
+      setProfile(loadGuestProfile(window.localStorage, profileKey))
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [profileKey])
 
   const setBadgeSetting = useCallback(async (enabled: boolean) => {
     const previous: BadgeSetting = enabled ? 'off' : 'on'
@@ -98,11 +235,13 @@ export function CompanionPicker({ repositories }: CompanionPickerProps) {
         body: JSON.stringify({ enabled }),
       })
       if (!response.ok) throw new Error(String(response.status))
+      // Turning it on is when the server copy starts to matter: make sure it is current.
+      if (enabled) schedulePush()
     } catch {
       setBadges(previous)
       setMessage('Could not save that setting. Try again.')
     }
-  }, [])
+  }, [schedulePush])
 
   const copyBadge = useCallback(async (repo: GithubRepository) => {
     const params = new URLSearchParams({ user: repo.ownerLogin, repo: repo.name })
@@ -134,8 +273,41 @@ export function CompanionPicker({ repositories }: CompanionPickerProps) {
     return () => window.removeEventListener('terrarium:guest-profile-updated', read)
   }, [read])
 
+  // Read what the server holds once per sign-in, and catch up a dressing made
+  // before this existed (or while offline) with one push.
   useEffect(() => {
-    if (repositories) return
+    if (!signedIn || !ready) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const response = await fetch('/api/profile/repo-assignments', { cache: 'no-store' })
+        if (!response.ok) throw new Error(String(response.status))
+        const body = (await response.json()) as { synced?: unknown; guestId?: unknown; assignments?: unknown }
+        if (cancelled) return
+        if (body.synced !== true) {
+          setDressing({ status: 'never-synced' })
+          return
+        }
+        const local = latestProfile.current
+        if (local && body.guestId !== local.guestId) {
+          setDressing({ status: 'other-profile' })
+          return
+        }
+        const server = Array.isArray(body.assignments) ? (body.assignments as AssignmentKey[]) : []
+        setDressing({ status: 'ready', server })
+        if (local && !assignmentsInSync(local.assignments ?? [], server)) void push()
+      } catch {
+        if (!cancelled) setDressing({ status: 'error' })
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [signedIn, ready, push])
+
+  useEffect(() => {
+    // Signed out there is no repository list to read; the empty state says why.
+    if (repositories || !signedIn) return
     let cancelled = false
     void (async () => {
       try {
@@ -153,7 +325,7 @@ export function CompanionPicker({ repositories }: CompanionPickerProps) {
     return () => {
       cancelled = true
     }
-  }, [repositories])
+  }, [repositories, signedIn])
 
   const repos = repositories ?? fetched
 
@@ -161,8 +333,10 @@ export function CompanionPicker({ repositories }: CompanionPickerProps) {
     if (!profileKey) return
     saveGuestProfile(window.localStorage, next, profileKey)
     setProfile(next)
+    latestProfile.current = next
     window.dispatchEvent(new Event('terrarium:guest-profile-updated'))
-  }, [profileKey])
+    schedulePush()
+  }, [profileKey, schedulePush])
 
   const assign = useCallback(
     (repositoryId: string, referenceId: string) => {
@@ -191,9 +365,20 @@ export function CompanionPicker({ repositories }: CompanionPickerProps) {
   // Nothing to dress with, and nothing dressed: the picker would be an empty grid.
   if (profile.collection.length === 0) return null
   if (repos.length === 0) {
-    return (
+    return repoEmptyState(signedIn) === 'sign-in' ? (
+      <div className="flex flex-wrap items-center gap-3">
+        <p className="font-prose text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
+          Sign in to dress your repos.
+        </p>
+        <SignInButton variant="quiet" />
+      </div>
+    ) : (
       <p className="font-prose text-sm leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-        No tracked repos yet. Pick some under GitHub.
+        No tracked repos yet. Pick some on{' '}
+        <Link href="/github" className="underline underline-offset-2" style={{ color: 'var(--accent)' }}>
+          GitHub
+        </Link>
+        .
       </p>
     )
   }
@@ -221,7 +406,8 @@ export function CompanionPicker({ repositories }: CompanionPickerProps) {
           <InfoDisclosure label="What this shows" guide={GUIDE_ANCHORS.dressing}>
             Each dressed public repo shows its companion, stage and XP on the README badge and in
             the browser extension. Nothing else from your collection. Private repos never show.
-            Changes appear after your next sync, within about ten minutes.
+            Changes reach GitHub within a few minutes. The first time you turn this on, it can
+            take up to an hour.
           </InfoDisclosure>
         </div>
       )}
@@ -243,6 +429,15 @@ export function CompanionPicker({ repositories }: CompanionPickerProps) {
           const definition = assignment
             ? PROTOTYPE_COMPANION_CATALOG.get(assignment.companionId)
             : undefined
+          const rowState = assignment
+            ? dressedRowState({
+                badgesOn: badges === 'on',
+                ownedByViewer: isOwnRepository(repo, viewerHandle),
+                isPrivate: repo.private,
+                assignment,
+                dressing,
+              })
+            : null
           return (
             <li
               key={repo.id}
@@ -252,16 +447,32 @@ export function CompanionPicker({ repositories }: CompanionPickerProps) {
               <div>
                 <p className="font-ui text-sm font-medium">{repo.fullName}</p>
                 <p className="font-data mt-1 text-[10px] uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>
-                  {assignment
-                    ? `dressed by ${definition?.name ?? assignment.companionId}${
-                        badges === 'on' ? (repo.private ? ' · private, not shown' : ' · shown on GitHub') : ''
-                      }`
+                  {assignment && rowState
+                    ? `dressed by ${definition?.name ?? assignment.companionId}${DRESSED_ROW_SUFFIX[rowState]}`
                     : 'no companion'}
+                  {rowState === 'needs-first-sync' && (
+                    <>
+                      {' '}
+                      <Link href="/github" className="underline underline-offset-2" style={{ color: 'var(--accent)' }}>
+                        Sync
+                      </Link>
+                    </>
+                  )}
                 </p>
               </div>
 
               {assignment ? (
                 <div className="flex flex-wrap gap-2">
+                  {rowState === 'not-on-github' && (
+                    <button
+                      type="button"
+                      onClick={() => void push()}
+                      className="ui-row font-ui text-xs px-3 py-2 border transition-opacity hover:opacity-80"
+                      style={{ borderColor: 'var(--rule)', color: 'var(--ink)' }}
+                    >
+                      Retry
+                    </button>
+                  )}
                   {badges === 'on' && !repo.private && (
                     <button
                       type="button"

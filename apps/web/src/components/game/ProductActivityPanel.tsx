@@ -5,6 +5,7 @@ import type { ProductState } from '@/lib/game/product-state'
 import { titleForState } from '@/lib/game/achievements'
 import { displayCompanionName } from './display-name'
 import { ActivityLogList } from './ActivityLogList'
+import { plural } from '@/lib/copy'
 
 export interface ProductActivityPanelProps {
   state: ProductState
@@ -121,7 +122,7 @@ export function ProductActivityPanel({
             Collection
           </dt>
           <dd className="font-data mt-1 text-sm">
-            {state.profile.collection.length.toLocaleString()} companions
+            {plural(state.profile.collection.length, 'companion')}
           </dd>
         </div>
       </dl>

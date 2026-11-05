@@ -259,10 +259,35 @@
   // automatic species line, exactly as before.
   // -------------------------------------------------------------------------
 
-  const DRESSED_SPRITE_PREFIX = 'https://raw.githubusercontent.com/PokeAPI/sprites/'
+  const DRESSED_SPRITE_HOST = 'raw.githubusercontent.com'
+  const DRESSED_SPRITE_PATH = '/PokeAPI/sprites/'
 
+  /**
+   * A sprite URL from the PokeAPI sprites repo, or null.
+   *
+   * A prefix check alone is not enough: `.../PokeAPI/sprites/../../evil/x.png`
+   * starts with the prefix and the browser resolves it to another repository.
+   * So the URL is parsed, and it must already be in its canonical form (the
+   * parsed `href` equals the input), which rules out `..`, `%2e%2e`, backslashes,
+   * credentials and ports in one check.
+   */
   function dressedSpriteUrl(value) {
-    return typeof value === 'string' && value.startsWith(DRESSED_SPRITE_PREFIX) ? value : null
+    if (typeof value !== 'string' || value.length > 2048) return null
+    let parsed
+    try {
+      parsed = new URL(value)
+    } catch {
+      return null
+    }
+    if (parsed.href !== value) return null
+    if (parsed.protocol !== 'https:' || parsed.host !== DRESSED_SPRITE_HOST) return null
+    if (parsed.username || parsed.password) return null
+    if (!parsed.pathname.startsWith(DRESSED_SPRITE_PATH)) return null
+    // Any percent-escape: `%2f` decodes to a separator for the server that
+    // resolves it, so `/%2f..%2f..%2fother/repo/x.png` would pass a path test
+    // and reach another repository. Mirrors isPokeApiSpriteUrl on the server.
+    if (parsed.pathname.includes('%')) return null
+    return value
   }
 
   /**
@@ -276,7 +301,12 @@
       const name = firstString(dressed.name)
       const step = isRecord(dressed.step) ? dressed.step : null
       const stepName = step ? firstString(step.name) : null
-      const stepIndex = step && Number.isInteger(step.index) ? step.index : null
+      const stepCount = step && Number.isInteger(step.count) && step.count >= 1 ? step.count : null
+      // Stages count from 1. A 0, a negative or one past the count is malformed.
+      const stepIndex =
+        step && Number.isInteger(step.index) && step.index >= 1 && (stepCount === null || step.index <= stepCount)
+          ? step.index
+          : null
       if (spriteUrlValue && name && stepName && stepIndex !== null) {
         return {
           dressed: true,

@@ -229,3 +229,44 @@ describe('GET /api/creature.svg?repo= with a dressed repository', () => {
     expect(productGet).not.toHaveBeenCalled()
   })
 })
+
+// docs-plan/PLAN-dressed-repo-qa-fixes.md, fixes 5 and 7.
+describe('when GitHub stops answering for the repository metadata', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  async function rateLimitedAfterFirstCall(route: 'json' | 'svg') {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-11-04T00:00:00.000Z'))
+    optIn()
+    const fn = mockGithub()
+    const { GET } = route === 'json' ? await importJsonRoute() : await importSvgRoute()
+    const path = route === 'json' ? 'creature' : 'creature.svg'
+    const url = `http://localhost/api/${path}?user=${freshHandle()}&repo=site`
+    const first = await GET(new NextRequest(url))
+    expect(first.headers.get('X-Cache')).toBe('MISS')
+
+    // Six minutes on: the creature is still cached, the metadata is too old to
+    // decide a privacy question, and GitHub now refuses (rate limit).
+    vi.setSystemTime(new Date('2026-11-04T00:06:00.000Z'))
+    fn.mockImplementation(async () => jsonRes(403, { message: 'API rate limit exceeded' }))
+    return GET(new NextRequest(url))
+  }
+
+  it('JSON: falls back to the automatic creature with the short window, not a day', async () => {
+    const res = await rateLimitedAfterFirstCall('json')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('X-Cache')).toBe('HIT')
+    expect('dressed' in (await res.json())).toBe(false)
+    expect(res.headers.get('Cache-Control')).toContain('s-maxage=300')
+  })
+
+  it('SVG: falls back to the automatic badge with the short window and reports X-Cache', async () => {
+    const res = await rateLimitedAfterFirstCall('svg')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('X-Cache')).toBe('HIT')
+    expect(await res.text()).not.toContain('<image')
+    expect(res.headers.get('Cache-Control')).toContain('s-maxage=300')
+  })
+})

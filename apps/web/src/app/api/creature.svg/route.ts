@@ -107,6 +107,12 @@ export async function GET(request: NextRequest): Promise<Response> {
   }
 
   let optedIn = false
+  // Whether the creature state was already in this process's cache, reported as
+  // `X-Cache` the same way the JSON route does.
+  const stateKey = repoParam
+    ? `svgstate:${userParam.toLowerCase()}/${repoParam.toLowerCase()}`
+    : `svgstate:${userParam.toLowerCase()}`
+  const xCache: 'HIT' | 'MISS' = cacheGetFresh<ResolvedState>(stateKey) ? 'HIT' : 'MISS'
   try {
     const state = repoParam
       ? await resolveRepoState(userParam, repoParam)
@@ -117,12 +123,16 @@ export async function GET(request: NextRequest): Promise<Response> {
     }
 
     // DRESSED REPOS (docs-plan/PLAN-dressed-repo-creature.md). Looked up after the
-    // cached state, from metadata the miss already cached, so a cached badge
-    // still costs no GitHub call. Any failure in here falls through to the
-    // automatic creature below.
+    // cached state. The privacy facts come from metadata at most five minutes old,
+    // so this may make one GitHub call per repo per five minutes, even on a cached
+    // badge. Any failure in here falls through to the automatic creature below.
     if (repoParam) {
       const meta = await freshRepoMeta(userParam, repoParam, TOKEN, 'terrarium-creature-svg')
       const lookup = await lookupDressedCompanion(meta, userParam)
+      // No metadata (GitHub failed or rate limited) means the dressed question
+      // could not be asked. Answer with the short window, so a transient error
+      // never pins an undressed badge for an opted-in owner for a day.
+      if (meta === null) optedIn = true
       if (lookup.dressed) {
         const dressed = lookup.dressed
         const svg = renderDressedBadgeSvg({
@@ -139,7 +149,7 @@ export async function GET(request: NextRequest): Promise<Response> {
           repo: repoParam,
           theme,
         })
-        return svgResponse(svg, 200, lookup.optedIn)
+        return svgResponse(svg, 200, lookup.optedIn, xCache)
       }
       if (lookup.optedIn) optedIn = true
     }
@@ -169,7 +179,7 @@ export async function GET(request: NextRequest): Promise<Response> {
       theme,
     })
 
-    return svgResponse(svg, 200, optedIn)
+    return svgResponse(svg, 200, optedIn, xCache)
   } catch {
     // Absolute last resort. Every function above already has its own
     // never-throws contract, but this route's own promise is stronger than
@@ -333,10 +343,11 @@ async function checkRepoExists(owner: string, repo: string) {
 // Small helpers
 // ---------------------------------------------------------------------------
 
-function svgResponse(svg: string, status: number, optedIn = false): Response {
+function svgResponse(svg: string, status: number, optedIn = false, xCache?: 'HIT' | 'MISS'): Response {
   // An owner who opted in to dressed badges gets the shorter window, so a new
   // dressing (or opting out) reaches the README within minutes. It depends on
-  // the opt-in only, never on whether this repo is dressed.
+  // the opt-in only (or on the opt-in being unknown), never on whether this
+  // repo is dressed.
   const maxAge = optedIn ? DRESSED_S_MAXAGE_SECONDS : 3600
   const swr = optedIn ? DRESSED_S_MAXAGE_SECONDS : 86400
   return new Response(svg, {
@@ -349,6 +360,7 @@ function svgResponse(svg: string, status: number, optedIn = false): Response {
       // The `v` query param (accepted, never read server-side) lets a README
       // author force camo to refetch by changing the URL.
       'Cache-Control': `public, s-maxage=${maxAge}, stale-while-revalidate=${swr}`,
+      ...(xCache ? { 'X-Cache': xCache } : {}),
       ...corsHeaders(),
     },
   })

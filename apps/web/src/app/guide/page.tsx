@@ -472,9 +472,11 @@ export default async function GuidePage() {
               dressed, the badge shows a creature picked from the repo itself.
             </p>
             <p className="max-w-[65ch] font-prose text-base leading-relaxed" style={{ color: 'var(--ink)' }}>
-              Changes appear after your next sync, usually within ten minutes. GitHub keeps its
-              own copy of README images; if a badge looks stuck, add <code>&amp;v=2</code> (any
-              new value) to the end of its URL.
+              Dressing is saved as you make it; your account needs one sync from GitHub first.
+              Changes then reach GitHub within a few minutes. The first time you turn the
+              setting on, it can take up to an hour. GitHub keeps its own copy of README images;
+              if a badge looks stuck, add <code>&amp;v=2</code> (any new value) to the end of its
+              URL.
             </p>
           </section>
         </article>
