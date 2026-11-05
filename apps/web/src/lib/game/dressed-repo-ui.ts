@@ -46,6 +46,13 @@ export type DressedRowState =
   | 'local'
   /** The server copy has not been read yet. */
   | 'checking'
+  /**
+   * The repository belongs to another account (a collaborator or org repo).
+   * The badge resolves dressing against the repo OWNER's opt-in and collection,
+   * so a companion dressed here can never appear on that badge. Saying "shown on
+   * GitHub" would be a promise nothing keeps.
+   */
+  | 'not-yours'
   | 'private'
   | 'shown'
   | 'saving'
@@ -57,11 +64,13 @@ export type DressedRowState =
 
 export function dressedRowState(input: {
   readonly badgesOn: boolean
+  readonly ownedByViewer: boolean
   readonly isPrivate: boolean
   readonly assignment: AssignmentKey
   readonly dressing: ServerDressing
 }): DressedRowState {
   if (!input.badgesOn) return 'local'
+  if (!input.ownedByViewer) return 'not-yours'
   if (input.isPrivate) return 'private'
   switch (input.dressing.status) {
     case 'unknown':
@@ -85,12 +94,37 @@ export function dressedRowState(input: {
 export const DRESSED_ROW_SUFFIX: Readonly<Record<DressedRowState, string>> = {
   local: '',
   checking: ' · checking…',
+  'not-yours': ' · only your own repos show on GitHub',
   private: ' · private, not shown',
   shown: ' · shown on GitHub',
   saving: ' · saving…',
   'not-on-github': ' · not on GitHub yet',
   'needs-first-sync': ' · sync once on GitHub first',
   'other-profile': ' · synced from another profile',
+}
+
+/** The fields of a repository that decide whether its badge could ever show dressing. */
+export interface OwnedRepositoryLike {
+  readonly ownerLogin: string
+  readonly ownerType: 'User' | 'Organization'
+}
+
+/**
+ * Whether the badge could ever show this repository's dressing.
+ *
+ * The public badge resolves dressing against the repository OWNER's opt-in and
+ * snapshot, and `/api/github/repositories` lists every repo the viewer can see
+ * (`owner`, `collaborator`, `organization_member`). So a collaborator repo, or an
+ * org repo, can be dressed locally and stored, but its badge can never resolve
+ * it — not even when the viewer has opted in themselves.
+ *
+ * An unresolved viewer handle answers `true`: "not yours" is a claim about
+ * identity, and it would be wrong to make it before the session is known.
+ */
+export function isOwnRepository(repo: OwnedRepositoryLike, viewerHandle: string | null): boolean {
+  if (viewerHandle === null) return true
+  if (repo.ownerType !== 'User') return false
+  return repo.ownerLogin.toLowerCase() === viewerHandle.toLowerCase()
 }
 
 /** What the picker says when there are no repositories to list. */

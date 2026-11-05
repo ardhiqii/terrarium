@@ -3,6 +3,7 @@ import {
   assignmentsInSync,
   DRESSED_ROW_SUFFIX,
   dressedRowState,
+  isOwnRepository,
   repoEmptyState,
   type ServerDressing,
 } from './dressed-repo-ui'
@@ -27,11 +28,20 @@ describe('assignmentsInSync', () => {
 
 describe('dressedRowState', () => {
   const ready = (server = [A]): ServerDressing => ({ status: 'ready', server })
-  const row = (dressing: ServerDressing, extra: Partial<{ badgesOn: boolean; isPrivate: boolean }> = {}) =>
-    dressedRowState({ badgesOn: true, isPrivate: false, assignment: A, dressing, ...extra })
+  const row = (
+    dressing: ServerDressing,
+    extra: Partial<{ badgesOn: boolean; isPrivate: boolean; ownedByViewer: boolean }> = {},
+  ) => dressedRowState({ badgesOn: true, ownedByViewer: true, isPrivate: false, assignment: A, dressing, ...extra })
 
   it('says nothing about GitHub with the setting off', () => {
     expect(row(ready(), { badgesOn: false })).toBe('local')
+  })
+
+  it('never calls a collaborator or org repo shown', () => {
+    // The badge resolves dressing against the repo OWNER's opt-in and snapshot,
+    // so a repo the viewer merely collaborates on can be stored but never shown.
+    expect(row(ready([A]), { ownedByViewer: false })).toBe('not-yours')
+    expect(row({ status: 'unknown' }, { ownedByViewer: false })).toBe('not-yours')
   })
 
   it('never claims a private repo is shown', () => {
@@ -52,10 +62,27 @@ describe('dressedRowState', () => {
   })
 
   it('has wording for every state', () => {
-    for (const state of ['local', 'checking', 'private', 'shown', 'saving', 'not-on-github', 'needs-first-sync', 'other-profile'] as const) {
+    for (const state of ['local', 'checking', 'not-yours', 'private', 'shown', 'saving', 'not-on-github', 'needs-first-sync', 'other-profile'] as const) {
       expect(typeof DRESSED_ROW_SUFFIX[state]).toBe('string')
     }
     expect(DRESSED_ROW_SUFFIX.local).toBe('')
+  })
+})
+
+describe('isOwnRepository', () => {
+  const repo = (ownerLogin: string, ownerType: 'User' | 'Organization' = 'User') => ({ ownerLogin, ownerType })
+
+  it('accepts the viewer’s own repo, whatever the case', () => {
+    expect(isOwnRepository(repo('Octocat'), 'octocat')).toBe(true)
+  })
+
+  it('refuses a collaborator repo and an org repo', () => {
+    expect(isOwnRepository(repo('someone-else'), 'octocat')).toBe(false)
+    expect(isOwnRepository(repo('octocat', 'Organization'), 'octocat')).toBe(false)
+  })
+
+  it('does not claim "not yours" before the session is known', () => {
+    expect(isOwnRepository(repo('someone-else'), null)).toBe(true)
   })
 })
 

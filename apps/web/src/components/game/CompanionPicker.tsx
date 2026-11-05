@@ -28,7 +28,7 @@ import {
   saveGuestProfile,
   type GuestProfile,
 } from '@/lib/game/guest-profile'
-import { useViewerProfileKey } from '@/lib/sync/use-viewer-profile-key'
+import { useViewerProfileKey, ensureViewerSession } from '@/lib/sync/use-viewer-profile-key'
 import { PROTOTYPE_COMPANION_CATALOG } from '@/lib/game/companion-catalog'
 import {
   assignCompanion,
@@ -46,6 +46,7 @@ import {
   assignmentsInSync,
   DRESSED_ROW_SUFFIX,
   dressedRowState,
+  isOwnRepository,
   repoEmptyState,
   type AssignmentKey,
   type ServerDressing,
@@ -108,6 +109,9 @@ export function CompanionPicker({ repositories }: CompanionPickerProps) {
   const [dressing, setDressing] = useState<ServerDressing>({ status: 'unknown' })
   // The guest key means signed out. `null` means not known yet: fetch nothing.
   const signedIn = profileKey !== null && profileKey !== GUEST_PROFILE_STORAGE_KEY
+  // Needed to tell "your repo" from a collaborator or org repo: the badge can
+  // only resolve dressing for a repo the account owns.
+  const [viewerHandle, setViewerHandle] = useState<string | null>(null)
   const latestProfile = useRef<GuestProfile | null>(null)
   const pushTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -137,14 +141,30 @@ export function CompanionPicker({ repositories }: CompanionPickerProps) {
     }
   }, [profileKey, signedIn])
 
+  useEffect(() => {
+    if (!signedIn) return
+    let cancelled = false
+    void ensureViewerSession().then((session) => {
+      if (!cancelled && session?.handle) setViewerHandle(session.handle)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [signedIn])
+
   /**
    * Push the browser's dressing to the stored snapshot, so the badge shows it
    * without a full sync (docs-plan/PLAN-dressed-repo-qa-fixes.md, fix 1).
    * Always the full current list: last write wins, and a take-back is a removal.
+   *
+   * The list is re-read from storage first. Another tab may have dressed or
+   * released a repo since this one loaded, and the route REPLACES the list — so
+   * pushing this tab's remembered copy would silently wipe that change.
    */
   const push = useCallback(async () => {
-    const current = latestProfile.current
-    if (!signedIn || !current) return
+    if (!signedIn || profileKey === null) return
+    const current = loadGuestProfile(window.localStorage, profileKey) ?? latestProfile.current
+    if (!current) return
     const body = assignmentsBody(current)
     setDressing({ status: 'saving' })
     try {
@@ -167,7 +187,7 @@ export function CompanionPicker({ repositories }: CompanionPickerProps) {
     } catch {
       setDressing({ status: 'error' })
     }
-  }, [signedIn])
+  }, [signedIn, profileKey])
 
   const schedulePush = useCallback(() => {
     if (!signedIn) return
@@ -180,10 +200,30 @@ export function CompanionPicker({ repositories }: CompanionPickerProps) {
 
   useEffect(
     () => () => {
-      if (pushTimer.current) clearTimeout(pushTimer.current)
+      // Leaving the page inside the debounce window must not lose the change:
+      // the route replaces the list, so an unflushed edit is a lost edit. The
+      // request outlives the component; the state update after unmount is a no-op.
+      if (pushTimer.current) {
+        clearTimeout(pushTimer.current)
+        pushTimer.current = null
+        void push()
+      }
     },
-    [],
+    [push],
   )
+
+  // Another tab saved a different dressing: adopt it, so this tab's next push
+  // sends the union of what both tabs know rather than overwriting the other.
+  useEffect(() => {
+    if (profileKey === null) return
+    function onStorage(event: StorageEvent) {
+      if (event.key !== null && event.key !== profileKey) return
+      if (profileKey === null) return
+      setProfile(loadGuestProfile(window.localStorage, profileKey))
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [profileKey])
 
   const setBadgeSetting = useCallback(async (enabled: boolean) => {
     const previous: BadgeSetting = enabled ? 'off' : 'on'
@@ -390,7 +430,13 @@ export function CompanionPicker({ repositories }: CompanionPickerProps) {
             ? PROTOTYPE_COMPANION_CATALOG.get(assignment.companionId)
             : undefined
           const rowState = assignment
-            ? dressedRowState({ badgesOn: badges === 'on', isPrivate: repo.private, assignment, dressing })
+            ? dressedRowState({
+                badgesOn: badges === 'on',
+                ownedByViewer: isOwnRepository(repo, viewerHandle),
+                isPrivate: repo.private,
+                assignment,
+                dressing,
+              })
             : null
           return (
             <li
