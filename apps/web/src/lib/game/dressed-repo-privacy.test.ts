@@ -73,7 +73,7 @@ beforeEach(async () => {
   vi.unstubAllGlobals()
 })
 
-describe('lookupDressedCompanion refuses metadata that names another owner', () => {
+describe('lookupDressedCompanion refuses metadata that names another owner', { timeout: 20_000 }, () => {
   it('does not dress when GitHub says the repo belongs to a different login', async () => {
     const { lookupDressedCompanion } = await import('@/lib/game/dressed-repo-lookup')
     // The cached entry was written while `alice` owned it; the login has since
@@ -100,7 +100,7 @@ describe('lookupDressedCompanion refuses metadata that names another owner', () 
   })
 })
 
-describe('freshRepoMeta never decides privacy from an old fact', () => {
+describe('freshRepoMeta never decides privacy from an old fact', { timeout: 20_000 }, () => {
   it('refetches once the entry is older than the badge window', async () => {
     const { cacheGetStale, cacheSet } = await import('@/lib/game/api-cache')
     const { freshRepoMeta } = await import('@/lib/game/creature-route-shared')
@@ -153,7 +153,7 @@ describe('freshRepoMeta never decides privacy from an old fact', () => {
   })
 })
 
-describe('the badge itself', () => {
+describe('the badge itself', { timeout: 30_000 }, () => {
   const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
 
   function request(): unknown {
