@@ -653,3 +653,55 @@ describe('renderDressedBadgeSvg', () => {
     expect(() => parseXml(renderDressedBadgeSvg(dressedParams({ progress: Number.NaN })))).not.toThrow()
   })
 })
+
+// docs-plan/PLAN-dressed-repo-qa-fixes.md, fixes 2 and 5. The footer used to sit
+// at y=120 in a 120px badge, so descenders in `@owner/repo` were clipped.
+describe('bottom text stays inside the badge', () => {
+  const badges: Array<[string, string]> = [
+    ['automatic', renderCreatureBadgeSvg(baseParams({ repo: 'typography' }))],
+    [
+      'dressed',
+      renderDressedBadgeSvg({
+        name: 'Pikachu',
+        stepName: 'Charged',
+        stepIndex: 2,
+        stepCount: 2,
+        xp: 140,
+        xpIntoStep: 40,
+        xpForNextStep: 100,
+        progress: 0.4,
+        spriteDataUri: null,
+        handle: 'octo',
+        repo: 'typography',
+        theme: 'light',
+      }),
+    ],
+  ]
+
+  it.each(badges)('leaves room for descenders under every text line (%s)', (_kind, svg) => {
+    const root = parseXml(svg)
+    const height = Number(root.attrs.height)
+    const texts = allElements(root).filter((el) => el.tag === 'text')
+    expect(texts.length).toBeGreaterThan(0)
+    for (const text of texts) {
+      expect(Number(text.attrs.y)).toBeLessThanOrEqual(height - 6)
+    }
+  })
+
+  it.each(badges)('keeps the XP line and the footer apart (%s)', (_kind, svg) => {
+    const ys = allElements(parseXml(svg))
+      .filter((el) => el.tag === 'text')
+      .map((el) => Number(el.attrs.y))
+      .sort((a, b) => a - b)
+    const [xp, footer] = ys.slice(-2)
+    expect(footer - xp).toBeGreaterThanOrEqual(12)
+  })
+})
+
+describe('accessible title', () => {
+  it('names the repository on an automatic repo badge', () => {
+    const root = parseXml(renderCreatureBadgeSvg(baseParams({ handle: 'octocat', repo: 'Hello-World' })))
+    const title = allElements(root).find((el) => el.tag === 'title')
+    expect(title?.text).toContain('octocat/Hello-World')
+  })
+})

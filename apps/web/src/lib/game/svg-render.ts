@@ -168,6 +168,13 @@ function renderSpriteGroup(
 
 export const BADGE_WIDTH = 400
 export const BADGE_HEIGHT = 120
+/**
+ * Text baselines for the two bottom lines. The footer used to sit at y=120, ON
+ * the bottom edge of a 120px badge, which clipped descenders (`g`, `p`, `y`) in
+ * `@owner/repo`. Six pixels of room below the footer baseline fits them.
+ */
+export const XP_LABEL_Y = 100
+export const FOOTER_Y = BADGE_HEIGHT - 6
 
 const SPRITE_BOX = 96
 const SPRITE_BOX_X = 12
@@ -244,7 +251,7 @@ export function renderCreatureBadgeSvg(params: CreatureBadgeParams): string {
   return [
     xmlHeader(),
     svgOpen(width, height),
-    `<title>${escapeXml(`${params.stage.name}, ${stageLabel}, ${params.handle}`)}</title>`,
+    `<title>${escapeXml(`${params.stage.name}, ${stageLabel}, ${params.repo ? `${params.handle}/${params.repo}` : params.handle}`)}</title>`,
     panelRect(colors, width, height),
     `<rect x="${SPRITE_BOX_X}" y="${SPRITE_BOX_Y}" width="${SPRITE_BOX}" height="${SPRITE_BOX}" rx="8" fill="${colors.spriteMountBg}" />`,
     spriteGroup,
@@ -253,8 +260,8 @@ export function renderCreatureBadgeSvg(params: CreatureBadgeParams): string {
     `<text x="${barX}" y="54" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" fill="${colors.inkMuted}">${stageLabel}</text>`,
     `<rect x="${barX}" y="${barY}" width="${barWidth}" height="${barHeight}" rx="5" fill="${colors.accentSoft}" />`,
     `<rect x="${barX}" y="${barY}" width="${fillWidth.toFixed(2)}" height="${barHeight}" rx="5" fill="${colors.accent}" />`,
-    `<text x="${barX}" y="106" font-family="ui-monospace, 'Geist Mono', monospace" font-size="11" fill="${colors.inkMuted}">${escapeXml(xpLabel)}</text>`,
-    `<text x="${barX}" y="120" font-family="ui-monospace, 'Geist Mono', monospace" font-size="10" fill="${colors.inkMuted}">@${identity}</text>`,
+    `<text x="${barX}" y="${XP_LABEL_Y}" font-family="ui-monospace, 'Geist Mono', monospace" font-size="11" fill="${colors.inkMuted}">${escapeXml(xpLabel)}</text>`,
+    `<text x="${barX}" y="${FOOTER_Y}" font-family="ui-monospace, 'Geist Mono', monospace" font-size="10" fill="${colors.inkMuted}">@${identity}</text>`,
     '</svg>',
   ]
     .filter(Boolean)
@@ -330,8 +337,8 @@ export function renderDressedBadgeSvg(params: DressedBadgeParams): string {
     `<text x="${barX}" y="54" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" fill="${colors.inkMuted}">${stepLabel}</text>`,
     `<rect x="${barX}" y="${barY}" width="${barWidth}" height="${barHeight}" rx="5" fill="${colors.accentSoft}" />`,
     `<rect x="${barX}" y="${barY}" width="${fillWidth.toFixed(2)}" height="${barHeight}" rx="5" fill="${colors.accent}" />`,
-    `<text x="${barX}" y="106" font-family="ui-monospace, 'Geist Mono', monospace" font-size="11" fill="${colors.inkMuted}">${escapeXml(xpLabel)}</text>`,
-    `<text x="${barX}" y="120" font-family="ui-monospace, 'Geist Mono', monospace" font-size="10" fill="${colors.inkMuted}">@${identity}</text>`,
+    `<text x="${barX}" y="${XP_LABEL_Y}" font-family="ui-monospace, 'Geist Mono', monospace" font-size="11" fill="${colors.inkMuted}">${escapeXml(xpLabel)}</text>`,
+    `<text x="${barX}" y="${FOOTER_Y}" font-family="ui-monospace, 'Geist Mono', monospace" font-size="10" fill="${colors.inkMuted}">@${identity}</text>`,
     '</svg>',
   ]
     .filter(Boolean)
