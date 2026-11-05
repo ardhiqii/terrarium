@@ -117,8 +117,9 @@ export async function GET(request: NextRequest): Promise<Response> {
     ? `creature:${userParam.toLowerCase()}/${repoParam.toLowerCase()}`
     : `creature:${userParam.toLowerCase()}`
 
-  // Cache check happens before anything that could touch the network. A
-  // fresh hit returns here; no GitHub call is made anywhere below this line.
+  // Cache check happens before anything that could touch the network. A fresh
+  // hit skips building the creature. The dressed overlay below may still make
+  // one GitHub call, when the repository metadata is over five minutes old.
   const fresh = cacheGetFresh<CachedPayload>(cacheKey)
   const result = fresh
     ? fresh
@@ -128,8 +129,9 @@ export async function GET(request: NextRequest): Promise<Response> {
 
   // DRESSED REPOS. Laid over the cached body rather than stored inside it, so the
   // one-hour creature cache never pins an old dressing (see dressed-repo-lookup.ts).
-  // Only repo creatures, only successful bodies, and the repo id comes from the
-  // metadata the miss already cached: a fresh hit still makes no GitHub call.
+  // Only repo creatures, only successful bodies. The privacy facts (public, owner)
+  // come from metadata at most five minutes old: `freshRepoMeta` refetches it
+  // once per repo per five minutes, even on a creature cache hit.
   let body = result.body
   let optedIn = false
   if (repoParam && result.status === 200) {
@@ -137,7 +139,9 @@ export async function GET(request: NextRequest): Promise<Response> {
     // it may not rest on repository metadata up to a day old.
     const meta = await freshRepoMeta(userParam, repoParam, TOKEN, 'terrarium-creature-api')
     const lookup = await lookupDressedCompanion(meta, userParam)
-    optedIn = lookup.optedIn
+    // No metadata (GitHub failed or rate limited): the dressed question could not
+    // be asked, so use the short window rather than pin an undressed body for a day.
+    optedIn = lookup.optedIn || meta === null
     if (lookup.dressed) body = { ...body, dressed: lookup.dressed }
   }
 
