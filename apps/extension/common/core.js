@@ -283,7 +283,10 @@
     if (parsed.protocol !== 'https:' || parsed.host !== DRESSED_SPRITE_HOST) return null
     if (parsed.username || parsed.password) return null
     if (!parsed.pathname.startsWith(DRESSED_SPRITE_PATH)) return null
-    if (/%2e/i.test(parsed.pathname)) return null
+    // Any percent-escape: `%2f` decodes to a separator for the server that
+    // resolves it, so `/%2f..%2f..%2fother/repo/x.png` would pass a path test
+    // and reach another repository. Mirrors isPokeApiSpriteUrl on the server.
+    if (parsed.pathname.includes('%')) return null
     return value
   }
 

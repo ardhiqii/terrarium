@@ -44,8 +44,11 @@ export function isPokeApiSpriteUrl(url: string): boolean {
     parsed.host === 'raw.githubusercontent.com' &&
     !parsed.username &&
     !parsed.password &&
-    parsed.pathname.startsWith('/PokeAPI/sprites/') &&
-    !/%2e/i.test(parsed.pathname)
+    // Any percent-escape is refused: `%2f` decodes to a separator on the server
+    // that resolves the URL, so `/%2f..%2f..%2fother/repo/x.png` passes a path
+    // test here and reaches a different repository. Catalog URLs are plain ASCII.
+    !parsed.pathname.includes('%') &&
+    parsed.pathname.startsWith('/PokeAPI/sprites/')
   )
 }
 
