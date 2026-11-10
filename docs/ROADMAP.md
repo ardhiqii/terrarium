@@ -367,6 +367,15 @@ The plan and the remaining phases are in `docs-plan/PLAN-calmer-ui.md`.
 - Known gap, not fixed here: a restored profile's assignments keep the raw
   reference while its collection holds hashed ones (`PRODUCT.md` §6.3).
 
+### Desktop companion, first slice (2026-11-06, in review)
+
+The first part of P4 in `docs-plan/PLAN-living-companion.md` §6, in `apps/desktop/` (Tauri 2). Optional: the core experience still needs no desktop app.
+
+- A transparent, click-through strip docked above the taskbar; the companion walks, sits and sleeps along it. Only the companion and its bubble take clicks.
+- Reads the public `/api/creature?user=&repo=` payload, the same one the README badge uses, and picks dressed-vs-automatic through the extension's `creatureDisplay`, so all three agree. Refreshes every ten minutes.
+- First run asks for a GitHub username and a repo, kept in the webview's storage. The tray menu offers Open Terrarium, Change companion, Refresh, Quiet mode and Quit.
+- Not in this slice: sign-in, background sync (XP with the browser closed), local git-watch reactions, hiding on fullscreen apps, and taskbars on other edges or monitors. Windows only so far.
+
 ## Delivery order
 
 | Phase | Goal | Status |
