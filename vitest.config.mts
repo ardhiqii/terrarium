@@ -6,7 +6,7 @@ const rootDir = import.meta.dirname
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['apps/web/src/**/*.test.ts', 'apps/extension/**/*.test.js'],
+    include: ['apps/web/src/**/*.test.ts', 'apps/extension/**/*.test.js', 'apps/desktop/src/**/*.test.js'],
   },
   resolve: {
     alias: {

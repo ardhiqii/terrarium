@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Terrarium</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="pet" hidden>
+      <div id="bubble" hidden role="status"></div>
+      <span id="zzz" hidden aria-hidden="true">z</span>
+      <img id="sprite" alt="" draggable="false" />
+    </div>
+
+    <form id="settings" hidden>
+      <h1>Your companion</h1>
+      <p class="hint">
+        Shows the companion you dressed on one of your public repos, from your Terrarium badge.
+        Without a repo, or if the repo is not dressed, it shows that repo's automatic companion.
+      </p>
+      <label>GitHub username <input id="user" name="user" required maxlength="39" autocomplete="off" spellcheck="false" /></label>
+      <label>Repository <input id="repo" name="repo" required maxlength="100" autocomplete="off" spellcheck="false" placeholder="SplitBillApp" /></label>
+      <details>
+        <summary>Advanced</summary>
+        <label>Terrarium address <input id="apiBase" name="apiBase" maxlength="200" autocomplete="off" spellcheck="false" /></label>
+      </details>
+      <p id="settings-error" class="error" hidden></p>
+      <div class="row">
+        <button type="button" id="cancel">Cancel</button>
+        <button type="submit">Save</button>
+      </div>
+    </form>
+
+    <script src="vendor/core.js"></script>
+    <script src="walker.js"></script>
+    <script src="main.js"></script>
+  </body>
+</html>
