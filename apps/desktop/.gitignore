@@ -1,0 +1,11 @@
+node_modules/
+src/vendor/
+src-tauri/target/
+src-tauri/gen/
+
+# `tauri icon` also writes mobile and Windows Store icons this app does not use.
+src-tauri/icons/android/
+src-tauri/icons/ios/
+src-tauri/icons/Square*Logo.png
+src-tauri/icons/StoreLogo.png
+src-tauri/icons/64x64.png

@@ -1,0 +1,195 @@
+:root {
+  --ink: #1f2328;
+  --ink-muted: #59636e;
+  --paper: #ffffff;
+  --line: #d1d9e0;
+  --accent: #1f6feb;
+  --error: #cf222e;
+  color-scheme: light dark;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #f0f6fc;
+    --ink-muted: #9198a1;
+    --paper: #151b23;
+    --line: #3d444d;
+    --accent: #4493f8;
+    --error: #f85149;
+  }
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  /* The window is transparent: only the companion and its panels are drawn. */
+  background: transparent;
+  user-select: none;
+}
+
+#pet {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 96px;
+  will-change: transform;
+}
+
+#sprite {
+  display: block;
+  width: 96px;
+  height: 96px;
+  object-fit: contain;
+  object-position: bottom;
+  image-rendering: pixelated;
+  cursor: pointer;
+  transform: scaleX(var(--face, 1));
+}
+
+#pet.walk #sprite {
+  animation: bob 0.5s steps(2) infinite;
+}
+
+#pet.sleep #sprite {
+  filter: saturate(0.6);
+}
+
+@keyframes bob {
+  50% {
+    translate: 0 -2px;
+  }
+}
+
+#zzz {
+  position: absolute;
+  right: 8px;
+  top: 4px;
+  font: 600 14px/1 ui-monospace, monospace;
+  color: var(--ink-muted);
+  animation: drift 2.4s ease-in-out infinite;
+}
+
+@keyframes drift {
+  0% {
+    opacity: 0;
+    translate: 0 6px;
+  }
+  40% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    translate: 6px -10px;
+  }
+}
+
+#bubble {
+  position: absolute;
+  bottom: 100px;
+  left: 50%;
+  translate: -50% 0;
+  white-space: nowrap;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.4;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.15);
+}
+
+#bubble .muted {
+  color: var(--ink-muted);
+}
+
+#settings {
+  position: absolute;
+  right: 16px;
+  bottom: 8px;
+  width: 300px;
+  max-height: calc(100% - 16px);
+  overflow: auto;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 13px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.2);
+  user-select: text;
+}
+
+#settings h1 {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+
+#settings .hint {
+  margin: 0 0 8px;
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+#settings label {
+  display: block;
+  margin: 6px 0;
+}
+
+#settings input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 2px;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+#settings details {
+  margin: 6px 0;
+  color: var(--ink-muted);
+}
+
+#settings .row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+#settings button {
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+#settings button[type='submit'] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.error {
+  margin: 6px 0 0;
+  color: var(--error);
+  font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #pet.walk #sprite,
+  #zzz {
+    animation: none;
+  }
+}
